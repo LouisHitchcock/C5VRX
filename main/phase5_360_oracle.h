@@ -28,8 +28,9 @@ static inline uint8_t phase5_360_adjacent_dac(uint8_t previous, uint8_t middle,
     if (pair == phase5_360_wrap((int)current - previous))
         return s_phase5_360_golden_dac[((unsigned)previous << 5) | current];
 
-    int dac = 20 + 2 * pair;
-    return (uint8_t)(dac < 0 ? 0 : dac > 63 ? 63 : dac);
+    /* Golden's P20/G2 slope is ~6 codes per Phase5 bin. Every winding sum
+     * is >=16 or <=-17 bins, and the calibrated output clips to a rail. */
+    return pair > 0 ? 63u : 0u;
 }
 
 static inline uint8_t phase5_360_live_dac(uint8_t previous, uint8_t current)

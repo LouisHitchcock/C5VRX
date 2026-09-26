@@ -700,6 +700,18 @@ check("Full adjacent oracle cannot silently replace the live TX program",
       "phase5_360_adjacent_dac(prev2_phase" in video_c and
       "BITSCRAMBLER_PROGRAM(s_fm_phase5_360_program" in video_c)
 
+# External-logic candidate has a generated 11-bit output ROM. This proof
+# validates its contents, not FPGA timing or physical C5 pin integration.
+import gen_phase5_360_11bit_rom
+phase_11bit, dac_11bit = gen_phase5_360_11bit_rom.roms()
+hw_dir = ROOT / "hardware" / "phase5_360"
+check("external Phase5-360 11-bit ROM and raw Phase5 map match Golden",
+      (hw_dir / "phase5_256x5.mem").read_text(encoding="ascii") ==
+      "".join(f"{v:02x}\n" for v in phase_11bit) and
+      (hw_dir / "dac_2048x6.mem").read_text(encoding="ascii") ==
+      "".join(f"{v:02x}\n" for v in dac_11bit) and
+      (hw_dir / "phase5_360_reference.v").exists())
+
 # Direct Gain Feed-Forward & Inverse-Q4 Architecture validation
 direct_gain_h = read(MAIN / "direct_gain.h")
 direct_gain_c = read(MAIN / "direct_gain.c")

@@ -21,7 +21,8 @@ int main(void)
                                independent_wrap((int)c - (int)m);
                 int endpoint = independent_wrap((int)c - (int)p);
                 int expected_winding = (adjacent - endpoint) / 32;
-                int linear = 20 + 2 * adjacent;
+                /* Production P20/G2 is ~6 codes per Phase5 bin. */
+                int linear = 20 + 6 * adjacent;
                 if (linear < 0) linear = 0;
                 if (linear > 63) linear = 63;
                 uint8_t golden = s_phase5_360_golden_dac[(p << 5) | c];

@@ -18,7 +18,7 @@ endpoint = wrap32(C - P)
 if adjacent == endpoint:
     dac = calibrated_golden[P, C]
 else:
-    dac = clamp(20 + 2 * adjacent, 0, 63)
+    dac = clamp(20 + 6 * adjacent, 0, 63)  # calibrated slope, always 0/63
 ```
 
 Each 25 ns step is interpreted by the Phase5 shortest arc. This cannot infer
@@ -111,8 +111,11 @@ if e <  0: k = +1 when 16+e < u < 16, otherwise 0
 ```
 
 The proof checks this against both wrapped adjacent differences for all
-32,768 triples. For the winding case, the exact adjacent sum is `e + 32*k`;
-otherwise emit the Golden calibrated DAC byte. This reduces the **final
+32,768 triples. For the winding case, the exact adjacent sum is `e + 32*k`.
+At Golden's P20/G2 slope this always clips to 63 for `k=+1` or 0 for `k=-1`;
+otherwise emit the Golden calibrated DAC byte. An earlier oracle used
+`20+2*adjacent` on winding events, a softer transfer inconsistent with Golden's
+calibrated slope. This reduces the **final
 decision** to an interval predicate, but the circuit still needs five bits of
 middle phase until `C` is decoded, a modulo-32 subtraction, comparisons and
 the calibrated output selection. No two-bundle single-C5 implementation of
@@ -124,6 +127,15 @@ combinational datapath, then apply the calibrated Golden DAC for no winding.
 It needs a third computation path beyond the two measured C5 TX LUT accesses,
 or a proved C5 counter/bit-routing implementation of the same predicate and
 DAC transfer. This is an architectural target, **not** a new live C5 mode.
+
+`hardware/phase5_360/` now contains a concrete external-logic reference:
+the generated 256x5 raw Phase5 ROM feeds an interval comparator; the final
+DAC ROM takes exactly `{winding_flag, P[4:0], C[4:0]}` (11 address bits,
+2048 entries). The exhaustive generator verifies 32,768 triples. The RTL
+has not been synthesized, wired to a shared 40 MHz source clock, or tested
+on an FPGA; the XIAO's existing DAC pins cannot be driven by both devices.
+This is a plausible **additional hardware** escape, not an 11-bit C5-only
+BitScrambler factorization.
 
 ### Partial correction with fewer middle bits
 
