@@ -137,6 +137,15 @@ on an FPGA; the XIAO's existing DAC pins cannot be driven by both devices.
 This is a plausible **additional hardware** escape, not an 11-bit C5-only
 BitScrambler factorization.
 
+An alternative in the same hardware directory retains the C5 Golden output
+and uses the extra logic only as a PASS/FORCE_LOW/FORCE_HIGH overlay. Its
+two-bit correction stream must be delayed by the actual RX-to-TX lag and
+phase-aligned with the `[D,D]` output; the nominal half-ring is 8,192 pairs.
+The overlay stays on PASS until an independent lock check is implemented and
+validated. It also needs a separate six-bit mux/output path so the FPGA and
+C5 never drive the resistor DAC pins against one another. This source-level
+reference has not established clock lock, pair alignment or clean live video.
+
 ### Partial correction with fewer middle bits
 
 For an optional conservative demodulator, a coarse middle token can correct

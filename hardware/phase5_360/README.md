@@ -43,3 +43,38 @@ An average or median cannot recover the missing winding when two triplets
 have identical endpoints but different middle routes; it can only filter
 noise *after* the route is identified. This circuit retains the information
 until the endpoint arrives and then compresses the correction to one bit.
+
+## Golden overlay candidate (keep C5's live demodulator unchanged)
+
+`phase5_360_sidecar.v` models a second, potentially cleaner wiring option:
+tap the C5's raw 8-bit IQ **and** six Golden DAC digital lines. It computes
+one two-bit action for each IQ pair (`PASS`, `FORCE_LOW`, `FORCE_HIGH`), delays
+the action stream to the corresponding Golden output pair, then digitally
+selects the Golden code or rail. The C5 remains on its proven two-bundle
+Golden program; the sidecar never tries to replace its FM calculation.
+`tools/test_phase5_360_sidecar.py` exhausts the correction identity and
+demonstrates why a one-pair offset corrupts synthetic output. It also models
+a fail-closed Golden-sequence correlation check: accept only a unique exact
+lag over a window with enough transitions; reject flat or slipped output.
+That Python gate is an illustrative source-domain model. It is **not** an
+implemented clock-domain-safe FPGA lock and does not prove that real analog
+video always offers a unique alignment signature.
+
+**Alignment is the hard integration gate.** Current production code starts TX
+after `RAW_RING_BYTES/2 = 16,384` raw bytes at 40 MS/s, nominally **8,192
+50-ns output pairs / 409.6 us** behind RX. Driver startup and BitScrambler
+prefetch add unmeasured offset, and RX/TX clock phase or restart behavior may
+change it. The overlay's parameterized two-bit action FIFO defaults to 8,192
+entries (2 KiB), **not an established correct delay**. Its output passes
+Golden untouched until `alignment_valid` is asserted by a future verified
+lock circuit. This reference does not generate that signal. The real design
+must compare a predicted Golden sequence against tapped C5 Golden output,
+establish the exact pair parity and lag, and promptly drop the lock on
+ambiguity, menu, transport fault, clock slip, output-mode change or reset.
+The XIAO's DAC GPIOs must feed sidecar **inputs**, with a separate six-bit
+digital output/mux driving the resistor network; tying two push-pull outputs
+together is unsafe. This requires wiring changes and clock-domain analysis.
+
+The C5's compiled PR firmware still emits unmodified Golden. Neither source
+RTL has been synthesized or qualified on a logic device, and an ESP32-C5 CI
+build does not validate sidecar timing or a physical video signal.
