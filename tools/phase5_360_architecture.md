@@ -1,5 +1,10 @@
 # Phase5-360 & Phase5-360+ Architecture Specification
 
+> Historical ideal architecture, not a validated live program. The proposed
+> instruction schedule and dual-LUT packing below have not produced winding
+> correction on hardware. See [the compact delta model](../docs/phase5-360-compact-model.md)
+> for the exhaustive 1024-word reference and the remaining two-bundle gate.
+
 ## 1. Executive Summary
 
 This document specifies the architecture, mathematical proofs, and BitScrambler instruction scheduling for **Phase5-360** (Exact Adjacent50) and **Phase5-360+** on the ESP32-C5.
