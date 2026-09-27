@@ -1,4 +1,12 @@
 menu "C5VRX diagnostic probes"
+    config C5VRX_BS_SPEEDLAB
+        bool "Measure boot-only BitScrambler M2M bundle throughput"
+        default n
+        help
+            Run K=1..8 synthetic DMA-to-DMA workloads across supported
+            attachment selectors before RF/video start, then restore the
+            usual live Golden path. Only enable for an explicit silicon test.
+
     config C5VRX_BS_RELATIVE_WORKER_PROBE
         bool "Run Counter-A relative-mux loopback oracle before starting video"
         default n

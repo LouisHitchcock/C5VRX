@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "bs_relative_worker_probe.c"
         "bs_relative_middle_probe.c"
+        "bs_speedlab.c"
         "arc_phy.c"
         "arc_v3_controller.c"
         "arc_v5_autotune.c"
@@ -41,3 +42,7 @@ target_bitscrambler_add_src("bs_relative_middle_probe.bsasm")
 target_bitscrambler_add_src("fm_phase5_fsm_capture.bsasm")
 target_bitscrambler_add_src("fm4.bsasm")
 target_bitscrambler_add_src("fm_traj.bsasm")
+
+foreach(k RANGE 1 8)
+    target_bitscrambler_add_src("bs_speedlab_k${k}.bsasm")
+endforeach()

@@ -11,9 +11,15 @@
 #include "esp_log.h"
 #include "bs_relative_worker_probe.h"
 #include "bs_relative_middle_probe.h"
+#if CONFIG_C5VRX_BS_SPEEDLAB
+#include "bs_speedlab.h"
+#endif
 
 void app_main(void)
 {
+#if CONFIG_C5VRX_BS_SPEEDLAB
+    bs_speedlab_run();
+#endif
 #if CONFIG_C5VRX_BS_RELATIVE_WORKER_PROBE
     bs_relative_worker_probe_run();
 #endif
