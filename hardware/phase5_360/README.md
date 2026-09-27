@@ -1,6 +1,6 @@
 # 11-bit Phase5-360 external logic reference
 
-This is a **source-level FPGA/CPLD candidate**, not a wired or measured board.
+This is a **source-level FPGA candidate**, not a wired or measured board.
 It is independent of the C5's two BitScrambler bundles: an external 40 MHz
 logic device samples the eight packed Q4/I4 diagnostic pins, decodes each
 raw byte with the 256x5 Phase5 ROM, retains `P,M,C`, computes the exact
@@ -19,9 +19,12 @@ lookup even though early middle compression cannot be exact.
 
 Run `python tools/gen_phase5_360_11bit_rom.py` to regenerate both checked-in
 ROM files; `--check` validates them. The generator verifies all 32,768 Phase5
-triplets against the independent wrapped adjacent oracle. The reference RTL
-accepts alternating first/second raw samples at 40 MHz and updates DAC at
-20 MHz after one priming pair.
+triplets against the wrapped adjacent oracle. The reference RTL separates
+raw-phase decode, winding decision and DAC ROM across three registered stages.
+It accepts alternating first/second raw samples at 40 MHz and updates DAC at
+20 MHz with a fixed one-pair delay after startup. Run
+`python tools/test_phase5_360_direct_pipeline.py` for a continuous 18,000-pair
+source-level pipeline check, including former DMA-boundary positions.
 
 ## Hardware integration gate
 
@@ -44,50 +47,15 @@ have identical endpoints but different middle routes; it can only filter
 noise *after* the route is identified. This circuit retains the information
 until the endpoint arrives and then compresses the correction to one bit.
 
-## Golden overlay candidate (keep C5's live demodulator unchanged)
+## Why the Golden overlay was dropped
 
-`phase5_360_sidecar.v` models a second, potentially cleaner wiring option:
-tap the C5's raw 8-bit IQ **and** six Golden DAC digital lines. It computes
-one two-bit action for each IQ pair (`PASS`, `FORCE_LOW`, `FORCE_HIGH`), delays
-the action stream to the corresponding Golden output pair, then digitally
-selects the Golden code or rail. The C5 remains on its proven two-bundle
-Golden program; the sidecar never tries to replace its FM calculation.
-`tools/test_phase5_360_sidecar.py` exhausts the correction identity and
-demonstrates why a one-pair offset corrupts synthetic output. It also models
-a fail-closed Golden-sequence correlation check: accept only a unique exact
-lag over a window with enough transitions; reject flat or slipped output.
-That Python gate is an illustrative source-domain model. It is **not** an
-implemented clock-domain-safe FPGA lock and does not prove that real analog
-video always offers a unique alignment signature.
+The C5 starts TX after a nominal half-ring delay of 16,384 raw bytes (409.6
+us). A sidecar that modifies its already generated DAC would need to buffer
+and synchronize thousands of 50 ns corrections with a separate output clock.
+An unmeasured one-pair slip applies winding corrections to the wrong video.
+The direct pipeline uses the same raw IQ samples to calculate its own output,
+so its latency is fixed in registers and does not depend on the C5's ring.
 
-**Alignment is the hard integration gate.** Current production code starts TX
-after `RAW_RING_BYTES/2 = 16,384` raw bytes at 40 MS/s, nominally **8,192
-50-ns output pairs / 409.6 us** behind RX. Driver startup and BitScrambler
-prefetch add unmeasured offset, and RX/TX clock phase or restart behavior may
-change it. The overlay's parameterized two-bit action FIFO defaults to 8,192
-entries (2 KiB), **not an established correct delay**. A companion six-bit
-expected-Golden FIFO (6 KiB) uses the Golden ROM only as an alignment
-cross-check; a differing C5 Golden code causes immediate PASS. Matching one
-code does not establish alignment. A mismatch also latches a fault so the
-overlay stays on PASS until the external lock is dropped and reacquired.
-The overlay otherwise passes Golden
-untouched until `alignment_valid` is asserted by a future verified lock
-circuit. This reference does not generate that signal. The real design
-must compare a predicted Golden sequence against tapped C5 Golden output,
-establish the exact pair parity and lag, and promptly drop the lock on
-ambiguity, menu, transport fault, clock slip, output-mode change or reset.
-The XIAO's DAC GPIOs must feed sidecar **inputs**, with a separate six-bit
-digital output/mux driving the resistor network; tying two push-pull outputs
-together is unsafe. This requires wiring changes and clock-domain analysis.
-
-The overlay reference needs at least eight IQ inputs, six tapped Golden DAC
-inputs, six corrected DAC outputs and a usable clock connection (21 signal
-I/Os before reset/control). Its default action and expected-code FIFOs alone
-store 8 KiB; the phase/Golden ROMs and clock-domain handling add more. That
-points to a small FPGA with on-chip RAM rather than assuming a minimal CPLD
-has enough storage. The I/O budget and clock route must be checked against
-the actual board before selecting a part.
-
-The C5's compiled PR firmware still emits unmodified Golden. Neither source
-RTL has been synthesized or qualified on a logic device, and an ESP32-C5 CI
-build does not validate sidecar timing or a physical video signal.
+The C5 PR firmware still emits unmodified Golden. The external direct RTL
+has not been synthesized or qualified on a logic device, and an ESP32-C5 CI
+build does not validate FPGA timing or a physical video signal.

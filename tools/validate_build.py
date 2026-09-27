@@ -711,10 +711,10 @@ check("external Phase5-360 11-bit ROM and raw Phase5 map match Golden",
       (hw_dir / "dac_2048x6.mem").read_text(encoding="ascii") ==
       "".join(f"{v:02x}\n" for v in dac_11bit) and
       (hw_dir / "phase5_360_reference.v").exists())
-import test_phase5_360_sidecar
-test_phase5_360_sidecar.main()
-check("external Phase5-360 Golden overlay source model and lag guard pass",
-      (hw_dir / "phase5_360_sidecar.v").exists())
+import test_phase5_360_direct_pipeline
+test_phase5_360_direct_pipeline.run()
+check("external direct Phase5-360 pipeline source model passes",
+      (hw_dir / "phase5_360_reference.v").exists())
 
 # Direct Gain Feed-Forward & Inverse-Q4 Architecture validation
 direct_gain_h = read(MAIN / "direct_gain.h")

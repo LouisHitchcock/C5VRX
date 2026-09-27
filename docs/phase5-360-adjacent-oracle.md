@@ -137,14 +137,14 @@ on an FPGA; the XIAO's existing DAC pins cannot be driven by both devices.
 This is a plausible **additional hardware** escape, not an 11-bit C5-only
 BitScrambler factorization.
 
-An alternative in the same hardware directory retains the C5 Golden output
-and uses the extra logic only as a PASS/FORCE_LOW/FORCE_HIGH overlay. Its
-two-bit correction stream must be delayed by the actual RX-to-TX lag and
-phase-aligned with the `[D,D]` output; the nominal half-ring is 8,192 pairs.
-The overlay stays on PASS until an independent lock check is implemented and
-validated. It also needs a separate six-bit mux/output path so the FPGA and
-C5 never drive the resistor DAC pins against one another. This source-level
-reference has not established clock lock, pair alignment or clean live video.
+The earlier Golden DAC overlay was dropped: C5 TX starts nominally half a
+ring (8,192 output pairs) behind raw RX, so a two-bit correction would need
+an independently proven clock/pair lock and a large delay buffer. The direct
+pipeline registers phase decode, interval comparison and DAC lookup over
+successive 25 ns clocks, emits one code each 50 ns with fixed latency, and
+removes the C5 Golden stream from the external DAC timing path. Its source
+model checks 18,000 continuous raw-IQ pairs; Verilog synthesis and silicon
+timing remain open.
 
 ### Partial correction with fewer middle bits
 
