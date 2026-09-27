@@ -1,13 +1,16 @@
 # ESP32-C5 BitScrambler M2M speedlab
 
-This is an opt-in **silicon throughput probe**, not an FM demodulator or a
+This is a boot-only **silicon throughput probe**, not an FM demodulator or a
 working Phase5-360 mode. It runs once at boot **before** RF and video are
 started; the normal Golden DAC pipeline starts afterward. It is C5-only and
 does not change the 40 MS/s production ring or DAC pins.
 
-Enable `CONFIG_C5VRX_BS_SPEEDLAB=y` in the ESP-IDF configuration, build and
-flash the experimental firmware, then read the serial output lines starting
-with `BS_SPEEDLAB`. Default is `n`.
+The PR #87 artifact is built with `CONFIG_C5VRX_BS_SPEEDLAB=y` specifically
+for the pull request and can be flashed via the experimental PR build. Read
+the serial output lines starting with `BS_SPEEDLAB` immediately after boot;
+they print before normal video begins. All other builds, including a future
+merge into `main`, retain the production default `n`. For a separate local
+experiment, explicitly set `CONFIG_C5VRX_BS_SPEEDLAB=y` before building.
 
 For every attach selector supported by the current C5 headers (I2S0, GPSPI2,
 UHCI, AES, SHA, ADC, PARLIO) the probe requests one loopback handle, loads

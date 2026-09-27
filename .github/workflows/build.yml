@@ -188,9 +188,20 @@ jobs:
 
       - name: Build C5VRX-3 Firmware
         shell: bash
+        env:
+          SPEEDLAB_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'feat/c5-bs-speedlab' }}
         run: |
           . /opt/esp/idf/export.sh
+          # Only this draft PR's published firmware runs the boot speedlab.
+          # A merge/push to main builds with the production default (off).
+          if [[ "$SPEEDLAB_PR" == "true" ]]; then
+            printf '\nCONFIG_C5VRX_BS_SPEEDLAB=y\n' >> sdkconfig.defaults
+            echo 'Experimental PR firmware: BS_SPEEDLAB enabled at boot'
+          fi
           idf.py build
+          if [[ "$SPEEDLAB_PR" == "true" ]]; then
+            grep -qx 'CONFIG_C5VRX_BS_SPEEDLAB=y' sdkconfig
+          fi
 
       - name: Prepare Release Artifacts
         shell: bash
