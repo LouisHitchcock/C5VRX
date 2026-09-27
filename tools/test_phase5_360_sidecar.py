@@ -67,7 +67,7 @@ def main():
         phase_triplets.append((previous, middle, current))
         previous = current
 
-    matching = differing = 0
+    matching = differing = false_even_with_single_code_guard = 0
     for tx_pair in range(actual_lag, pairs):
         source = tx_pair - actual_lag
         p, m, c = phase_triplets[source]
@@ -79,9 +79,17 @@ def main():
         # correction is mathematically exact for its own source triplet.
         wrong = overlay(golden, action(*phase_triplets[source + 1]))
         differing += wrong != expected
+        other_p, _other_m, other_c = phase_triplets[source + 1]
+        other_golden = GOLDEN[(other_p << 5) | other_c] & 63
+        # A same-code coincidence can pass a one-pair guard, hence the need
+        # for an independently earned multi-sample alignment lock.
+        guarded_wrong = wrong if other_golden == golden else golden
+        false_even_with_single_code_guard += guarded_wrong != expected
     assert matching == pairs - actual_lag and differing > 1000
+    assert false_even_with_single_code_guard > 0
     print(f"Delayed Golden alignment: {matching} exact pairs at lag {actual_lag};"
-          f" lag+1 corrupts {differing} pairs")
+          f" lag+1 corrupts {differing} pairs ({false_even_with_single_code_guard}"
+          " even after same-code gating)")
 
     source_golden = [GOLDEN[(p << 5) | c] & 63
                      for p, _m, c in phase_triplets]

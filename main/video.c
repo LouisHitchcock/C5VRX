@@ -314,8 +314,9 @@ static const char *TAG = "c5vrx3_video";
 
 /* DMA-aligned ring buffer in HP SRAM.
  * RX GDMA writes at 40 MB/s; TX GDMA reads at 40 MB/s.
- * TX starts one block (4096 bytes = 102.4 µs) behind RX; they share
- * PLL_F240M/6, so separation cannot drift during normal operation. */
+ * TX is started after half a ring (16,384 bytes = 409.6 us) of RX production.
+ * Actual sample separation also includes startup/driver timing and requires
+ * measurement; both PARLIO paths request the same 40 MHz clock source. */
 static DMA_ATTR __attribute__((aligned(64))) uint8_t s_raw_ring[RAW_RING_BYTES];
 
 static parlio_rx_unit_handle_t      s_rx;

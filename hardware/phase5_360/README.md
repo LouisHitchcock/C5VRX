@@ -65,9 +65,12 @@ after `RAW_RING_BYTES/2 = 16,384` raw bytes at 40 MS/s, nominally **8,192
 50-ns output pairs / 409.6 us** behind RX. Driver startup and BitScrambler
 prefetch add unmeasured offset, and RX/TX clock phase or restart behavior may
 change it. The overlay's parameterized two-bit action FIFO defaults to 8,192
-entries (2 KiB), **not an established correct delay**. Its output passes
-Golden untouched until `alignment_valid` is asserted by a future verified
-lock circuit. This reference does not generate that signal. The real design
+entries (2 KiB), **not an established correct delay**. A companion six-bit
+expected-Golden FIFO (6 KiB) uses the Golden ROM only as an alignment
+cross-check; a differing C5 Golden code causes immediate PASS. Matching one
+code does not establish alignment. The overlay otherwise passes Golden
+untouched until `alignment_valid` is asserted by a future verified lock
+circuit. This reference does not generate that signal. The real design
 must compare a predicted Golden sequence against tapped C5 Golden output,
 establish the exact pair parity and lag, and promptly drop the lock on
 ambiguity, menu, transport fault, clock slip, output-mode change or reset.
