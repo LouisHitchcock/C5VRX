@@ -721,33 +721,26 @@ check("Direct Gain confirms ordinary direction before writing",
       direct_gain_c.index("if (p > 44)") <
       direct_gain_c.index("int8_t direction = delta > 0"))
 
-# Phase5c Static Correction validation
-phase5_360_asm = read(MAIN / "fm_phase5_360.bsasm")
-p360_words = [int(w) for w in phase5_360_asm.split("\nlut ", 1)[1].split("\n\n# Both workers", 1)[0].split()]
-golden_words = [int(w) for w in read(MAIN / "fm.bsasm").split("\nlut ", 1)[1].split("\n\naddress_delta:", 1)[0].split()]
-# In Phase5c, large delta pairs (|delta| >= 12) must output Golden pedestal 20 (bits 8..13), never rail-slam to 0 or 63!
-p360_large_delta_dacs = [(p360_words[i] >> 8) & 63 for i in range(1024) if abs(((i & 31) - ((i >> 5) & 31) + 16) % 32 - 16) >= 12]
-check("Phase5c static squelch eliminates harsh salt-and-pepper rails",
-      len(p360_large_delta_dacs) == 288 and
-      all(dac == 20 for dac in p360_large_delta_dacs))
-check("Live Phase5c LUT matches Golden or pedestal for all endpoint pairs",
-      len(p360_words) == len(golden_words) == 1024 and
-      all(((p360_words[i] >> 8) & 63) ==
-          (20 if abs(((i & 31) - (i >> 5) + 16) % 32 - 16) >= 12
-           else golden_words[i] & 63)
-          for i in range(1024)) and
-      all((p360_words[i] & 31) == ((golden_words[i & 255] >> 8) & 31)
-          for i in range(1024)))
-
-workers = phase5_360_asm.split("worker_golden:\n", 1)[1].split("worker_360:\n", 1)
-check("Live middle-sample branch remains endpoint Golden, not ideal 360",
-      len(workers) == 2 and
-      "set 0..5 L8..L13" in workers[0] and
-      "set 0..5 L8..L13" in workers[1] and
-      sum(1 for p in range(32) for m in range(32) for c in range(32)
-          if (((m - p + 16) % 32 - 16) +
-              ((c - m + 16) % 32 - 16)) !=
-             ((c - p + 16) % 32 - 16)) == 8192)
+# Q2 adjacent-50 candidate: generated table, actual BS dataflow, and
+# independent clean/weak/edge holdouts must all pass before publication.
+import train_phase5_360_q2
+import test_phase5_360_q2
+import bench_phase5_360_q2
+train_phase5_360_q2.self_test()
+test_phase5_360_q2.main()
+check("Q2 adjacent-50 BS dataflow and LUT self-test", True)
+for scene_name, count, amplitude, sigma, seed in (
+        ("clean", 20000, 6.0, 0.35, 0x3601),
+        ("weak", 30000, 4.8, 0.60, 0x3602),
+        ("edges", 30000, 6.0, 0.35, 0x3603)):
+    result = bench_phase5_360_q2.measure(
+        scene_name, count, amplitude, sigma, seed)
+    check(f"Q2 adjacent-50 beats Phase5 on {scene_name} holdout",
+          result["q2_mae"] < result["golden_mae"] and
+          result["q2_hard"] <= result["golden_hard"] and
+          (scene_name != "edges" or
+           (result["true_winding"] > 0 and
+            result["q2_winding_mae"] < result["golden_winding_mae"])))
 
 # ---- Summary ----
 print(f"\n{'='*50}")

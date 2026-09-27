@@ -39,8 +39,7 @@ available bundles. A 1024-word table also leaves no *address* capacity for a
 separate phase decoder, even though unused bits within each word may help if
 the lookup schedule can be solved.
 
-The next hardware experiment should demonstrate the complete data dependency
-from raw `M,C` through two differences to a real DAC write at the fixed
-two-bundle cadence. It must compare all 32,768 Phase5 triples, then measure
-the continuous live path and `tx_empty`. Until that experiment passes, the
-existing `fm_phase5_360.bsasm` remains the Phase5c endpoint implementation.
+The exact 32-bin model still needs a raw-IQ hardware schedule. A separate,
+approximate live candidate now uses both raw middle-sample sign bits and a
+learned two-stage LUT; see [Q2 adjacent-50](phase5-360-q2-live.md). That
+candidate does not claim exact agreement with this model for all triples.

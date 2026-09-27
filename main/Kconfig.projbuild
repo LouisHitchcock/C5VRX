@@ -36,12 +36,13 @@ endmenu
 
 menu "C5VRX experimental video demodulators"
     config C5VRX_PHASE5_360_LIVE
-        bool "Use Phase5-360 research program (Golden DAC output only)"
+        bool "Use experimental Q2 adjacent-50 trajectory model"
         default y
         help
-            Load the two-bundle middle-sample routing experiment. Both worker
-            branches currently output the same Golden DAC bytes. No adjacent
-            winding correction is active in the live firmware.
+            Load a two-bundle trajectory program trained on adjacent 25 ns
+            steps, including 50 ns phase travel beyond 180 degrees. It uses
+            both raw middle-IQ sign bits. This is an approximate 360-aware
+            reconstruction, not exact Phase5-360 for every raw triplet.
 
     config C5VRX_RELATIVE_GOLDEN_LIVE
         bool "Use relative-mux Golden in the live 6-bit video path"

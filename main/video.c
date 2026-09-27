@@ -1148,7 +1148,11 @@ static const char *output_mode_name(void)
 
 static const char *demod_mode_name(void)
 {
-    return s_demod_mode == DEMOD_MODE_TRAJECTORY_V2 ? "TRAJ V2" : "GOLDEN";
+    if (s_demod_mode == DEMOD_MODE_TRAJECTORY_V2) return "TRAJ V2";
+#if CONFIG_C5VRX_PHASE5_360_LIVE
+    if (s_output_mode == VIDEO_OUTPUT_6BIT_40) return "Q2 ADJ50";
+#endif
+    return "GOLDEN";
 }
 
 static void cycle_demod_mode(void)
