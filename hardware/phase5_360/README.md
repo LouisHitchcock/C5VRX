@@ -68,7 +68,9 @@ change it. The overlay's parameterized two-bit action FIFO defaults to 8,192
 entries (2 KiB), **not an established correct delay**. A companion six-bit
 expected-Golden FIFO (6 KiB) uses the Golden ROM only as an alignment
 cross-check; a differing C5 Golden code causes immediate PASS. Matching one
-code does not establish alignment. The overlay otherwise passes Golden
+code does not establish alignment. A mismatch also latches a fault so the
+overlay stays on PASS until the external lock is dropped and reacquired.
+The overlay otherwise passes Golden
 untouched until `alignment_valid` is asserted by a future verified lock
 circuit. This reference does not generate that signal. The real design
 must compare a predicted Golden sequence against tapped C5 Golden output,
@@ -77,6 +79,14 @@ ambiguity, menu, transport fault, clock slip, output-mode change or reset.
 The XIAO's DAC GPIOs must feed sidecar **inputs**, with a separate six-bit
 digital output/mux driving the resistor network; tying two push-pull outputs
 together is unsafe. This requires wiring changes and clock-domain analysis.
+
+The overlay reference needs at least eight IQ inputs, six tapped Golden DAC
+inputs, six corrected DAC outputs and a usable clock connection (21 signal
+I/Os before reset/control). Its default action and expected-code FIFOs alone
+store 8 KiB; the phase/Golden ROMs and clock-domain handling add more. That
+points to a small FPGA with on-chip RAM rather than assuming a minimal CPLD
+has enough storage. The I/O budget and clock route must be checked against
+the actual board before selecting a part.
 
 The C5's compiled PR firmware still emits unmodified Golden. Neither source
 RTL has been synthesized or qualified on a logic device, and an ESP32-C5 CI

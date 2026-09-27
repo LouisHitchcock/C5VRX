@@ -47,6 +47,7 @@ module phase5_360_sidecar #(
     reg [1:0] delayed_action;
     reg [5:0] delayed_expected;
     reg delayed_valid;
+    reg alignment_fault;
     wire ready = (filled == DELAY_PAIRS);
 
     always @(posedge clk40) begin
@@ -81,9 +82,19 @@ module phase5_360_sidecar #(
         end
     end
 
+    // A verified lock must be dropped and re-earned after ANY mismatch.
+    // The combinational comparison below also bypasses the offending sample
+    // before this registered fault takes effect.
+    always @(posedge clk40) begin
+        if (reset || !alignment_valid)
+            alignment_fault <= 1'b0;
+        else if (delayed_valid && golden_in != delayed_expected)
+            alignment_fault <= 1'b1;
+    end
+
     // A mismatch always passes Golden. A matching sample alone does not prove
     // alignment: alignment_valid must be earned by a unique multi-pair lock.
-    assign dac_out = (!alignment_valid || !delayed_valid ||
+    assign dac_out = (!alignment_valid || !delayed_valid || alignment_fault ||
                       golden_in != delayed_expected) ? golden_in :
                      delayed_action == FORCE_LOW ? 6'd0 :
                      delayed_action == FORCE_HIGH ? 6'd63 : golden_in;
