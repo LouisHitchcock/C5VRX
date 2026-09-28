@@ -32,6 +32,13 @@ menu "C5VRX diagnostic probes"
             single-cycle Counter-A hardware subtraction (ADDCTIAL + LDCTIAL)
             and compact 32-entry DAC lookup for Phase5-360, then start the
             normal RF/video path.
+    config C5VRX_BS_PHASE8_HR_PROBE
+        bool "Run two-bundle Phase8-HR arithmetic oracle before video"
+        default y
+        help
+            Test the 8-slot full-width Counter-A arithmetic on hardware.
+            This research program is not loaded into live video because
+            large signed deltas still require a safe range guard.
 endmenu
 
 menu "C5VRX experimental video demodulators"
