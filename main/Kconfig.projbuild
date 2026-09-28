@@ -35,6 +35,15 @@ menu "C5VRX diagnostic probes"
 endmenu
 
 menu "C5VRX experimental video demodulators"
+    config C5VRX_GOLDEN_HARD_GUARD_LIVE
+        bool "Use Golden hard guard with pedestal and phase-history reseed"
+        default y
+        help
+            Preserve Golden for endpoint deltas through 11 Phase5 bins.
+            For 12 or more bins, emit pedestal 20, discard the endpoint,
+            and reseed phase history on the next raw endpoint. This is an
+            experimental two-bundle video path requiring hardware A/B.
+
     config C5VRX_PHASE5_360_LIVE
         bool "Use Phase5-360 research program (Golden DAC output only)"
         default y

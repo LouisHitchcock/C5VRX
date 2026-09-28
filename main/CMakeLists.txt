@@ -39,6 +39,7 @@ idf_component_register(
 target_bitscrambler_add_src("fm.bsasm")
 target_bitscrambler_add_src("fm_relative_golden.bsasm")
 target_bitscrambler_add_src("fm_phase5_360.bsasm")
+target_bitscrambler_add_src("fm_golden_hard_guard.bsasm")
 target_bitscrambler_add_src("bs_relative_worker_probe.bsasm")
 target_bitscrambler_add_src("bs_relative_middle_probe.bsasm")
 target_bitscrambler_add_src("fm_phase5_fsm_capture.bsasm")

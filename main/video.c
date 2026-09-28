@@ -141,6 +141,7 @@ static volatile int64_t s_last_user_lag_mark_us;
 BITSCRAMBLER_PROGRAM(s_fm_program, "fm");
 BITSCRAMBLER_PROGRAM(s_fm_relative_golden_program, "fm_relative_golden");
 BITSCRAMBLER_PROGRAM(s_fm_phase5_360_program, "fm_phase5_360");
+BITSCRAMBLER_PROGRAM(s_fm_golden_hard_guard_program, "fm_golden_hard_guard");
 BITSCRAMBLER_PROGRAM(s_fm_fsm_capture_program, "fm_phase5_fsm_capture");
 BITSCRAMBLER_PROGRAM(s_fm4_program, "fm4");
 
@@ -824,6 +825,8 @@ typedef struct {
     int strong_winding_events;
     int strong_winding_triplets;
     int strong_winding_permille;
+    uint16_t delta_hist[17];
+    uint16_t strong_delta_hist[17];
     uint32_t trajectory_uncertainty_sum;
     uint32_t trajectory_states;
     fusion_shadow_metrics_t fusion_shadow;
@@ -882,6 +885,11 @@ static control_metrics_t analyze_control_window(const uint8_t *sample, size_t by
             i >= production_first + 2u &&
             ((i - production_first) & 1u) == 0u;
         if (production_endpoint) {
+            int endpoint_delta = ((int)phase - (int)prev2_phase + 16) & 31;
+            endpoint_delta -= 16;
+            unsigned delta_bin = (unsigned)(endpoint_delta < 0 ?
+                                            -endpoint_delta : endpoint_delta);
+            ++m.delta_hist[delta_bin];
             bool winding = demod_phase5_endpoint_loses_winding(prev2_phase,
                                                                prev_phase,
                                                                phase);
@@ -890,6 +898,7 @@ static control_metrics_t analyze_control_window(const uint8_t *sample, size_t by
             if (prev2_power >= DEMOD_STRONG_POWER_MIN &&
                 prev_power >= DEMOD_STRONG_POWER_MIN &&
                 raw_power >= DEMOD_STRONG_POWER_MIN) {
+                ++m.strong_delta_hist[delta_bin];
                 ++m.strong_winding_triplets;
                 if (winding) ++m.strong_winding_events;
             }
@@ -1191,6 +1200,9 @@ static const char *output_mode_name(void)
 
 static const char *demod_mode_name(void)
 {
+#if CONFIG_C5VRX_GOLDEN_HARD_GUARD_LIVE
+    if (s_output_mode == VIDEO_OUTPUT_6BIT_40) return "GOLDEN GUARD";
+#endif
     return "GOLDEN";
 }
 
@@ -1236,6 +1248,11 @@ static volatile int s_last_iq_skew_permille = 0;
 static volatile int s_last_iq_cross_permille = 0;
 static volatile int s_last_winding_permille = 0;
 static volatile int s_last_strong_winding_permille = 0;
+/* Completed-window diagnostic only. Never read from the per-sample path. */
+static uint64_t s_delta_hist[17];
+static uint64_t s_strong_delta_hist[17];
+static uint32_t s_delta_hist_windows;
+static uint32_t s_delta_hist_gain_writes_start;
 static volatile int s_last_fusion_quality = 0;
 static volatile int s_last_fusion_confidence = 0;
 static volatile int s_last_fusion_context = FUSION_CONTEXT_NO_CARRIER;
@@ -1744,6 +1761,34 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            (unsigned long)lab_delta(current.gain_quality_drop_count, base->gain_quality_drop_count),
            gain_age_ms, phy_age_ms, (unsigned)s_last_phy_write_kind,
            transport_age_ms, (unsigned long)s_last_transport_flags);
+}
+
+static void lab_print_delta_hist(void)
+{
+    uint64_t total = 0, strong_total = 0;
+    uint64_t over9 = 0, over12 = 0, over15 = 0;
+    for (unsigned bin = 0; bin <= 16u; ++bin) {
+        total += s_delta_hist[bin];
+        strong_total += s_strong_delta_hist[bin];
+        if (bin >= 9u) over9 += s_delta_hist[bin];
+        if (bin >= 12u) over12 += s_delta_hist[bin];
+        if (bin >= 15u) over15 += s_delta_hist[bin];
+    }
+    printf("C5VRX_DELTA_HIST windows=%lu gain=%u gain_writes=%lu total=%llu "
+           "strong_total=%llu ge9=%llu ge12=%llu ge15=%llu\n",
+           (unsigned long)s_delta_hist_windows, s_current_gain,
+           (unsigned long)(s_gain_transition_count - s_delta_hist_gain_writes_start),
+           (unsigned long long)total, (unsigned long long)strong_total,
+           (unsigned long long)over9, (unsigned long long)over12,
+           (unsigned long long)over15);
+    for (unsigned bin = 0; bin <= 16u; ++bin)
+        printf("C5VRX_DELTA_BIN bin=%u count=%llu strong=%llu\n", bin,
+               (unsigned long long)s_delta_hist[bin],
+               (unsigned long long)s_strong_delta_hist[bin]);
+    memset(s_delta_hist, 0, sizeof(s_delta_hist));
+    memset(s_strong_delta_hist, 0, sizeof(s_strong_delta_hist));
+    s_delta_hist_windows = 0;
+    s_delta_hist_gain_writes_start = s_gain_transition_count;
 }
 
 static void lab_apply_fixed_gain(uint8_t gain)
@@ -3452,7 +3497,10 @@ static void start_flight_demodulator(void)
     if (s_output_mode == VIDEO_OUTPUT_4BIT_80) {
         ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs, s_fm4_program));
     } else {
-#if CONFIG_C5VRX_PHASE5_360_LIVE
+#if CONFIG_C5VRX_GOLDEN_HARD_GUARD_LIVE
+        ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
+                                                s_fm_golden_hard_guard_program));
+#elif CONFIG_C5VRX_PHASE5_360_LIVE
         ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
                                                 s_fm_phase5_360_program));
 #elif CONFIG_C5VRX_RELATIVE_GOLDEN_LIVE
@@ -4110,6 +4158,13 @@ static void analog_agc_task(void *arg)
             analyze_control_window(s_control_sample_buf,
                                    sizeof(s_control_sample_buf),
                                    ring_offset);
+        if (s_delta_hist_windows == 0)
+            s_delta_hist_gain_writes_start = s_gain_transition_count;
+        for (unsigned bin = 0; bin <= 16u; ++bin) {
+            s_delta_hist[bin] += metrics.delta_hist[bin];
+            s_strong_delta_hist[bin] += metrics.strong_delta_hist[bin];
+        }
+        ++s_delta_hist_windows;
 
         int p_median = metrics.p_median;
         int q_phase = metrics.q_phase;
@@ -4732,6 +4787,8 @@ static void console_diag_task(void *arg)
 #if CONFIG_C5VRX_BS_RELATIVE_MIDDLE_PROBE
                     bs_relative_middle_probe_report();
 #endif
+                } else if (c == 'z') {
+                    lab_print_delta_hist();
                 } else if (c == 'g') {
                     lab_start_gain_sweep();
                 } else if (c == 'F') {

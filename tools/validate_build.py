@@ -32,7 +32,7 @@ def read(path):
 # ---- BitScrambler checks ----
 bsasm_files = list(MAIN.glob("*.bsasm"))
 check("BitScrambler source artifacts, including historical Trajectory, remain available",
-      {f.name for f in bsasm_files} == {"fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm",
+      {f.name for f in bsasm_files} == {"fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm", "fm_golden_hard_guard.bsasm",
                                       "fm_phase5_fsm_capture.bsasm", "bs_relative_worker_probe.bsasm",
                                       "bs_relative_middle_probe.bsasm", "bs_addctia_probe.bsasm", "fm4.bsasm", "fm_traj.bsasm"},
       f"found {[f.name for f in bsasm_files]}")
@@ -643,7 +643,7 @@ check("no periodic telemetry or timer tasks in production",
 cmake_main = read(MAIN / "CMakeLists.txt")
 bs_srcs = re.findall(r'target_bitscrambler_add_src\("([^"]+)"\)', cmake_main)
 check("only selectable and diagnostic BitScrambler programs are in CMakeLists",
-      bs_srcs == ["fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm",
+      bs_srcs == ["fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm", "fm_golden_hard_guard.bsasm",
                   "bs_relative_worker_probe.bsasm", "bs_relative_middle_probe.bsasm",
                   "fm_phase5_fsm_capture.bsasm", "fm4.bsasm",
                   "bs_addctia_probe.bsasm"], f"found: {bs_srcs}")
