@@ -43,3 +43,17 @@ The optional boot probe prints `BS_PHASE8_HR status=...` and `p` repeats it
 after startup. A hardware PASS validates the full-width Counter A schedule
 for its representative transitions; it does not validate live picture quality
 or the unsolved range guard.
+
+## Silicon result (ESP32-C5 v1.0, 2026-09-28)
+
+The flashed oracle reported:
+
+```text
+BS_PHASE8_HR status=PASS written=256 mismatches=0 err=ESP_OK
+```
+
+The same USB snapshot showed `tx_empty=0`, `rx_ovf=0`, `bs_empty=0`, and
+`bs_eof=0` after normal mainline video startup. At that moment `p=0` and
+`sync_q=0`, so the VTX was not supplying a usable signal for picture quality
+assessment. This is a successful arithmetic/transport oracle, not a live
+Phase8-HR video result.
