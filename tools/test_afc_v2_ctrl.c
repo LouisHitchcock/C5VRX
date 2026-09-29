@@ -13,6 +13,16 @@ static afc2_result_t est(int porch, int sync, int8_t pol, uint8_t std)
 
 int main(void)
 {
+    uint8_t lost = 0;
+    assert(!afc2_native_lock(false, true, true, 15, &lost));
+    assert(afc2_native_lock(false, true, true, 16, &lost));
+    assert(!afc2_native_lock(false, true, false, 16, &lost));
+    /* CFO drift alone must never turn tracking into frequency writes. */
+    assert(afc2_native_lock(true, true, false, 16, &lost));
+    for (unsigned k = 1; k < AFC2_NATIVE_LOST_WINDOWS; ++k)
+        assert(afc2_native_lock(true, false, false, 0, &lost));
+    assert(!afc2_native_lock(true, false, false, 0, &lost));
+
     afc2_ctrl_t c = {0};
     int32_t step = 0;
     afc2_ctrl_reset(&c, 1u, true);

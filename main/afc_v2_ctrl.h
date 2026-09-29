@@ -29,6 +29,19 @@
 #define AFC2_CTRL_DEADBAND_KHZ     50
 #define AFC2_CTRL_MAX_STEP_KHZ     250
 #define AFC2_CTRL_MAX_CORRECTIONS  4u
+#define AFC2_NATIVE_LOST_WINDOWS   4u
+
+/* Acquisition lock must be sticky. A changed CFO while otherwise receiving
+ * valid video is not permission to retune mid-flight. Invalid windows, rather
+ * than the retired firmware gain controller, re-arm acquisition. */
+static inline bool afc2_native_lock(bool locked, bool valid, bool centred,
+                                     unsigned fresh, uint8_t *lost)
+{
+    if (valid) *lost = 0;
+    else if (*lost < AFC2_NATIVE_LOST_WINDOWS) ++*lost;
+    if (locked) return *lost < AFC2_NATIVE_LOST_WINDOWS;
+    return valid && centred && fresh >= AFC2_CTRL_SAMPLES;
+}
 
 typedef enum {
     AFC2_REF_PORCH = 0,

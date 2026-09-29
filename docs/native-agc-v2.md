@@ -178,6 +178,9 @@ IQ-envelope gate rejects suspected transitions, but cannot prove autonomous
 gain stayed fixed without per-sample metadata. The 20+6 smoother group delay
 is 12 samples (0.3 us), not 26 samples. AFC remains OFF by default pending
 centre/sign validation.
+Native acquisition lock is sticky: CFO drift alone does not authorize an
+in-flight retune. Four invalid windows re-arm acquisition and its correction
+budget; changing the receive context also resets the lock.
 
 The analyzer requires complete ordered 4092-byte windows, validates both
 frequency endpoints, and uses Cartesian-cell radius bounds before reporting

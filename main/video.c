@@ -4448,6 +4448,8 @@ static void analog_agc_task(void *arg)
     /* #115 AFC V2: AUTO AFC corrects only from the burst-free reference. */
     afc2_ctrl_t afc2_ctrl = {0};
     bool afc2_own_write = false;
+    bool native_locked = false;
+    uint8_t native_lost_windows = 0;
     int bw_deep_fade_ticks = 0;
     int bw_recovery_ticks = 0;
     int overload_counter = 0;
@@ -4661,6 +4663,8 @@ static void analog_agc_task(void *arg)
         bool afc_context_changed = afc2_ctrl_sync(&afc2_ctrl, afc_ctx, afc2_own_write);
         afc2_own_write = false;
         if (afc_context_changed) {
+            native_locked = false;
+            native_lost_windows = 0;
             s_afc2_lines = 0;
             s_afc2_sync_khz = s_afc2_porch_khz = 0;
             s_afc2_polarity = s_afc2_standard = s_afc2_burst_x10 = 0;
@@ -4795,9 +4799,15 @@ static void analog_agc_task(void *arg)
         if (rf_native_agc_active()) {
             /* Native is a separate receive-control path: no firmware gain
              * controller owns its lock state. Burst evidence gates AFC. */
-            s_agc_state = afc2_ctrl.n >= AFC2_CTRL_SAMPLES &&
-                s_afc2_porch_khz >= -AFC2_CTRL_DEADBAND_KHZ &&
-                s_afc2_porch_khz <= AFC2_CTRL_DEADBAND_KHZ ? AGC_STATE_TRACK : AGC_STATE_SEARCH;
+            bool was_native_locked = native_locked;
+            bool centred = s_afc2_porch_khz >= -AFC2_CTRL_DEADBAND_KHZ &&
+                           s_afc2_porch_khz <= AFC2_CTRL_DEADBAND_KHZ;
+            native_locked = afc2_native_lock(native_locked,
+                afc_window_ok && s_afc2_lines && q_phase >= 55,
+                centred, afc2_ctrl.n, &native_lost_windows);
+            if (was_native_locked && !native_locked)
+                afc2_ctrl_reset(&afc2_ctrl, afc_ctx, true);
+            s_agc_state = native_locked ? AGC_STATE_TRACK : AGC_STATE_SEARCH;
             goto profile_post_gain;
         }
 
