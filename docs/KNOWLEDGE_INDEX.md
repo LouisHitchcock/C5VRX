@@ -38,6 +38,7 @@ Modern C5VRX
 | Golden360 / Adjacent50 exact-capacity proof, one-middle-bit impossibility result, and reproducible oracle | [golden360-feasibility.md](golden360-feasibility.md) |
 | ARC V5 predictive local-gain model and persistence rules | [arc-v5-autotune.md](arc-v5-autotune.md) |
 | Native hardware AGC as default gain owner, walk-test evidence, Q4 origin-collapse oracle (`E`/`P8ENV`), firmware-gain fallback (`N`), issue #119 | [phase8-range-envelope.md](phase8-range-envelope.md) |
+| Native AGC V2 research: register semantics (ESP-SDR + disassembly), false-colour simulation, AFC V2 burst-free reference, next bench script (#121/#115/#118) | [native-agc-v2.md](native-agc-v2.md) |
 | Proven RF writer, SRAM visibility, MODEM_DIAG mapping, rates | [continuous-iq-findings.md](continuous-iq-findings.md) |
 | Realtime contracts and source abstraction | [realtime-iq-plan.md](realtime-iq-plan.md) |
 | Current image-quality path and proof gates | [image-quality.md](image-quality.md) |

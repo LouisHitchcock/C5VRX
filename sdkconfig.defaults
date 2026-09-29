@@ -44,9 +44,10 @@ CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
 # ----- PHY -----
 CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
 CONFIG_ESP_PHY_DEBUG=y
-# Compiled in so it can be A/B tested per boot (#121 section 9); rf_start()
-# still stops the tracking timer unless NVS c5vrx/pll_track = 1.
-CONFIG_ESP_PHY_DISABLE_PLL_TRACK=n
+# Production keeps PLL/RXCAL tracking out of the build. For the #121 section 9
+# A/B build a lab image with this set to n; rf_start() then stops the timer
+# unless NVS c5vrx/pll_track = 1 ('i' toggles and reboots).
+CONFIG_ESP_PHY_DISABLE_PLL_TRACK=y
 
 # ----- Power management -----
 CONFIG_PM_ENABLE=n

@@ -146,21 +146,35 @@ static inline bool afc2_sync_run_ok(const int8_t *ring, size_t n, size_t k,
 static inline int afc2_burst_x10(const uint8_t *s, size_t n, size_t end,
                                  const uint8_t lut[256], int standard)
 {
-    const double fsc = standard == 2 ? 4433618.75 : 3579545.0;
+    /* Single-precision tables built once: the C5 FPU has no double support,
+     * so per-sample double cos()/sin() would cost milliseconds per window. */
+    static float tab_cos[2][AFC2_BURST_LEN], tab_sin[2][AFC2_BURST_LEN];
+    static bool tab_ready;
+    if (!tab_ready) {
+        for (unsigned t = 0; t < 2u; ++t) {
+            float fsc = t ? 4433618.75f : 3579545.0f;
+            for (unsigned j = 0; j < AFC2_BURST_LEN; ++j) {
+                float w = 6.2831853f * fsc * (float)j / 40e6f;
+                tab_cos[t][j] = cosf(w);
+                tab_sin[t][j] = sinf(w);
+            }
+        }
+        tab_ready = true;
+    }
+    const unsigned t = standard == 2 ? 1u : 0u;
     size_t j0 = end + AFC2_BURST_START, j1 = j0 + AFC2_BURST_LEN;
     if (j1 + 1u >= n) return 0;
-    double si = 0.0, sq = 0.0;
+    float si = 0.0f, sq = 0.0f;
     unsigned used = 0;
     for (size_t j = j0; j < j1; ++j) {
         int d = afc2_delta(s[j], s[j + 1], lut);
         if (d == INT16_MIN) continue;
-        double w = 2.0 * 3.14159265358979 * fsc * (double)(j - j0) / 40e6;
-        si += d * cos(w);
-        sq += d * sin(w);
+        si += (float)d * tab_cos[t][j - j0];
+        sq += (float)d * tab_sin[t][j - j0];
         ++used;
     }
     if (used < AFC2_BURST_LEN / 2u) return 0;
-    return (int)(20.0 * sqrt(si * si + sq * sq) / used);
+    return (int)(20.0f * sqrtf(si * si + sq * sq) / (float)used);
 }
 
 /* Evidence for one accepted run: 1 point, +4 when a colour burst follows. */

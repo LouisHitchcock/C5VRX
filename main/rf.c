@@ -400,6 +400,11 @@ void rf_dump_agc_regs(void)
         if ((addr & 0x1Fu) == 0u) printf("\nAGCREGS 0x%08lx:", (unsigned long)addr);
         printf(" %08lx", (unsigned long)REG32(addr));
     }
+    /* bb_agc_reg_update() programs 0x600A8004..0x600A807C. */
+    for (uint32_t addr = 0x600A8000u; addr < 0x600A8080u; addr += 4u) {
+        if ((addr & 0x1Fu) == 0u) printf("\nAGCREGS 0x%08lx:", (unsigned long)addr);
+        printf(" %08lx", (unsigned long)REG32(addr));
+    }
     printf("\n");
 }
 
@@ -484,10 +489,19 @@ typedef struct {
  * intervention for stable gain; on C5 that is the rfagc block, whose only
  * register write in phy_rfagc_disable() is 0x600A705C = 0 (a width-0 entry
  * below toggles the whole word between 0 and its boot value). */
+/* 0x600A80xx entries: written only by the vendor bb_agc_reg_update()
+ * (8028 = 0xC0403020 looks like four stacked level thresholds, 8018/801C/8020
+ * like single levels); the prime candidates for the native target level. */
 static const agc_lab_field_t s_agc_lab_fields[] = {
     {"7094_8_2_initgain", 0x600A7094u, 2u, 7u, 8u, false},
     {"713C_24_18_thresh", 0x600A713Cu, 18u, 7u, 8u, false},
     {"705C_rfsat_word",   0x600A705Cu, 0u, 0u, 0u, false},
+    {"8028_7_0",          0x600A8028u, 0u, 8u, 8u, false},
+    {"8028_15_8",         0x600A8028u, 8u, 8u, 8u, false},
+    {"8028_23_16",        0x600A8028u, 16u, 8u, 8u, false},
+    {"8028_31_24",        0x600A8028u, 24u, 8u, 8u, false},
+    {"8020_9_0",          0x600A8020u, 0u, 10u, 32u, false},
+    {"801C_7_0",          0x600A801Cu, 0u, 8u, 16u, false},
     {"7128_31_24", 0x600A7128u, 24u, 8u, 2u, true},
     {"7034_30_24", 0x600A7034u, 24u, 7u, 1u, false},
     {"7158_6_0",   0x600A7158u, 0u,  7u, 1u, false},
