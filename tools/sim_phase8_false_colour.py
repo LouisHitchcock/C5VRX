@@ -64,6 +64,7 @@ def arc_mid_lut(design_radius):
 
 
 LUTS = {"centre": LUT}
+_VIDEO_STATE = _VIDEO_CODES = None
 
 
 def q4_bytes(freq_hz, radius, noise, rng, n=N):
@@ -79,9 +80,18 @@ def q4_bytes(freq_hz, radius, noise, rng, n=N):
 def demod(raw, mode):
     """Return DAC codes (float, 0..63) at the demodulator's output rate."""
     name, _, lut_name = mode.partition(":")
-    lut = LUTS.setdefault(lut_name or "centre",
-                          LUT if not lut_name or lut_name == "centre"
-                          else arc_mid_lut(float(lut_name[1:])))
+    global _VIDEO_STATE, _VIDEO_CODES
+    if name == "video32":
+        if _VIDEO_STATE is None:
+            from gen_phase8_video import build
+            _, _, states, _, codes = build()
+            _VIDEO_STATE, _VIDEO_CODES = np.array(states), np.array(codes)
+        st = _VIDEO_STATE[raw][1::2]
+        return _VIDEO_CODES[(st[:-1] << 5) | st[1:]].astype(float), 20e6, 6.0
+    key = lut_name or "centre"
+    if key not in LUTS:
+        LUTS[key] = arc_mid_lut(float(key[1:]))
+    lut = LUTS[key]
     p = lut[raw]
     if name == "adj25":          # reference only: adjacent pair, 25 ns
         d = (128 + p[1::2] - p[0::2]) & 255
@@ -104,13 +114,10 @@ def false_chroma_ire(freq_hz, radius, noise, mode, std, rng):
     band = np.abs(f - FSC[std]) <= CHROMA_BW
     # rms of the band-limited component (Hann window power correction 1.5).
     power = 2 * np.sum(np.abs(spec[band]) ** 2) / (len(x) ** 2) / 0.375
-    level_err = dac.mean() * 0 + 0
+    pedestal = 20 if mode.startswith("video32") else 32
+    ideal = pedestal + freq_hz / 1e3 / (4 * 156.25 / gain)
+    level_err = float((dac.mean() - ideal) * ire_per_step)
     return math.sqrt(power), level_err
-
-
-def luma_error_ire(freq_hz, mode):
-    """Mean DAC level vs ideal, i.e. brightness bias of flat areas."""
-    return 0.0
 
 
 def sweep(radius, noise, mode, std, cfo_khz=0.0, seed=1):
@@ -124,7 +131,7 @@ def sweep(radius, noise, mode, std, cfo_khz=0.0, seed=1):
 
 
 def report(std="PAL", noise=0.25):
-    modes = ("adj25", "live50", "live50:r2.5", "live50:r4.0")
+    modes = ("adj25", "live50", "live50:r2.5", "live50:r4.0", "video32")
     print(f"False chroma (IRE rms in {std} chroma band), noise sigma={noise} cells")
     for radius in (1.5, 2.5, 4.0, 5.5):
         print(f"\nQ4 radius {radius} cells")
@@ -146,8 +153,16 @@ def self_test():
     assert large < small, (small, large)
     raw = q4_bytes(1e6, 5.0, 0.0, rng, 64)
     assert raw.min() >= 0 and raw.max() <= 255
+    # Constant-SNR comparison: changing RF gain also changes receiver noise.
+    # Do not present the fixed-sigma sweep as a measured sensitivity gain.
+    same_snr_small = max(v for i, v in sweep(2.5, 0.25, "live50", "PAL", seed=4) if 0 <= i <= 20)
+    same_snr_large = max(v for i, v in sweep(5.5, 0.55, "live50", "PAL", seed=4) if 0 <= i <= 20)
+    assert same_snr_large < same_snr_small
+    candidate, rate, _ = demod(raw, "video32")
+    assert candidate.min() >= 0 and candidate.max() <= 63 and rate == 20e6
     print(f"sim_phase8_false_colour: small-radius dark false chroma {small:.2f} IRE > "
           f"large-radius {large:.2f} IRE (self-test passed)")
+    print(f"constant-SNR dark chroma: {same_snr_small:.2f} -> {same_snr_large:.2f} IRE; simulation only")
 
 
 if __name__ == "__main__":

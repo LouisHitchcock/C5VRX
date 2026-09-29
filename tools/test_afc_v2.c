@@ -103,7 +103,17 @@ int main(void)
     for (unsigned n = 0; n < sizeof(noise_buf); ++n)
         noise_buf[n] = (uint8_t)(((q4(gauss() * 0.7) & 15) << 4) | (q4(gauss() * 0.7) & 15));
     afc2_result_t none = afc2_measure(noise_buf, sizeof(noise_buf), c5vrx_phase8_gain_lut);
-    assert(none.lines <= 1);
+    assert(none.lines == 0);
+
+    /* Settling/transition evidence is conservative IQ gating, not decoded
+     * native gain telemetry. Origin collapse and a large envelope jump fail. */
+    static uint8_t envelope[128];
+    for (unsigned k = 0; k < sizeof(envelope); ++k) envelope[k] = 0x22;
+    assert(afc2_envelope_stationary(envelope, sizeof(envelope)));
+    for (unsigned k = 64; k < sizeof(envelope); ++k) envelope[k] = 0x66;
+    assert(!afc2_envelope_stationary(envelope, sizeof(envelope)));
+    for (unsigned k = 0; k < sizeof(envelope); ++k) envelope[k] = 0x00;
+    assert(!afc2_envelope_stationary(envelope, sizeof(envelope)));
 
     /* Too-short input is rejected. */
     assert(afc2_measure(noise_buf, 100, c5vrx_phase8_gain_lut).lines == 0);

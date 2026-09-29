@@ -168,6 +168,21 @@ The continuous pixel path runs in AHB GDMA, BitScrambler, and PARLIO TX. A backg
 - The mapping preserves direction across the signed range. A phase step that crosses the +/-180 degree representation boundary remains ambiguous and can alias.
 - Phase8 is selected by default in the current build and was viewed live with Direct Gain V3.
 
+### Demodulator A/B (PR #122)
+
+The VIDEO OUTPUT menu cycles **Golden**, **P8 VIDEO32**, and **P8 FULL** with
+long press; the selection is saved and takes effect on menu exit. Serial
+`u` toggles Golden / P8 VIDEO32 with a reboot; `d` returns to the original
+P8 FULL. Native hardware AGC owns gain in every mode. Fresh installations
+keep P8 FULL; existing Golden/Phase8 choices migrate.
+
+P8 VIDEO32 is an experimental bounded video-range mapping: pedestal 20,
+saturated gain and tapered extreme tails. It uses 32 Phase8-derived endpoint
+states to keep two bundles per pair, so it **does not retain full 8-bit phase
+state**. It improves the digital video swing, but simulated fine grain is not
+lower than P8 FULL at identical IQ. Test loaded CVBS levels and picture/range
+before selecting it for flight. No unverified AGC-target register is enabled.
+
 ### Known limits
 - A signed adjacent-phase estimate cannot distinguish an actual step beyond 180 degrees from its wrapped equivalent.
 - The hardware observation documented above covers a working live picture at the tested VTX and receiver setup. It does not establish performance at all distances, channels, antenna orientations, or gain transitions.

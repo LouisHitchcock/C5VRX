@@ -148,6 +148,7 @@ BITSCRAMBLER_PROGRAM(s_fm_program, "fm");
 BITSCRAMBLER_PROGRAM(s_fm_relative_golden_program, "fm_relative_golden");
 BITSCRAMBLER_PROGRAM(s_fm_phase5_360_program, "fm_phase5_360");
 BITSCRAMBLER_PROGRAM(s_fm_phase8_hr_live_program, "fm_phase8_hr_live");
+BITSCRAMBLER_PROGRAM(s_fm_phase8_video_program, "fm_phase8_video");
 BITSCRAMBLER_PROGRAM(s_fm_fsm_capture_program, "fm_phase5_fsm_capture");
 BITSCRAMBLER_PROGRAM(s_fm4_program, "fm4");
 
@@ -607,6 +608,31 @@ static uint8_t *get_completed_rx_sample_window(size_t bytes)
     return s_raw_ring;
 }
 
+
+/* Capture validity, not merely a pointer to the previous DMA descriptor.
+ * Never accept a copy that could have been lapped while this task was preempted. */
+static bool copy_completed_rx_window(uint8_t *dst, size_t bytes)
+{
+    if (s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 3) return false;
+    int64_t start = esp_timer_get_time();
+    uint32_t before = AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val;
+    int active = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count, before);
+    if (active < 0) return false;
+    int idx = (active - 1 + s_rx_dscr_count) % s_rx_dscr_count;
+    uint8_t *src = s_rx_dscr_nodes[idx].buffer;
+    if (!src || s_rx_dscr_nodes[idx].length < bytes || src < s_raw_ring ||
+        src + bytes > s_raw_ring + sizeof(s_raw_ring)) return false;
+    sync_dma_m2c(src, bytes);
+    memcpy(dst, src, bytes);
+    int after = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count,
+        AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val);
+    uint64_t safe_us = (sizeof(s_raw_ring) - 2u * CONTROL_SAMPLE_BYTES) *
+                       1000000ULL / IQ_RATE_HZ;
+    int advance = after < 0 ? s_rx_dscr_count :
+                  (after - active + s_rx_dscr_count) % s_rx_dscr_count;
+    return after >= 0 && after != idx && advance < s_rx_dscr_count - 1 &&
+           (uint64_t)(esp_timer_get_time() - start) < safe_us;
+}
 
 /* Exact Phase5 state decode mirrored from the embedded fm.bsasm LUT.  The
  * detector is observation-only: the realtime BitScrambler remains the sole
@@ -1221,59 +1247,71 @@ static const char *output_mode_name(void)
     return s_output_mode == VIDEO_OUTPUT_4BIT_80 ? "4BIT@80" : "6BIT@40";
 }
 
+/* Selection is persisted separately from the legacy settings blob. Menu
+ * changes apply when leaving the menu; serial choices explicitly reboot. */
+#define DEMOD_AB_NVS_NAMESPACE "c5vrx"
+#define DEMOD_AB_NVS_KEY "demod_golden"
+#define DEMOD_LIVE_NVS_KEY "demod_live"
+typedef enum { LIVE_PHASE8_FULL, LIVE_GOLDEN, LIVE_PHASE8_VIDEO } live_demod_t;
+static live_demod_t s_live_demod = LIVE_PHASE8_FULL;
+
 static const char *demod_mode_name(void)
 {
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-    return "PHASE8 HR TEST";
-#endif
+    return s_live_demod == LIVE_GOLDEN ? "GOLDEN" :
+           s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" : "P8 FULL";
+#else
     return "GOLDEN";
-}
-
-/* Telemetry tag for the demodulator actually loaded in the BitScrambler.
- * The Phase8 build selects its program at compile time while s_demod_mode
- * still holds the GOLDEN enum, so logs must not report the enum (#121). */
-/* #118/#119 range A/B: the Phase8 build can boot the proven Golden Phase5
- * program instead (NVS c5vrx/demod_golden = 1, console 'u' toggles and
- * reboots) so both demodulators can be compared at identical RF without
- * reflashing. Default and absent key: Phase8. */
-#define DEMOD_AB_NVS_NAMESPACE "c5vrx"
-#define DEMOD_AB_NVS_KEY       "demod_golden"
-static bool s_lab_boot_golden;
-
-static bool demod_ab_golden_requested(void)
-{
-    nvs_handle_t handle;
-    uint8_t value = 0;
-    if (nvs_open(DEMOD_AB_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
-    if (nvs_get_u8(handle, DEMOD_AB_NVS_KEY, &value) != ESP_OK) value = 0;
-    nvs_close(handle);
-    return value == 1u;
-}
-
-static void lab_toggle_demod_ab_boot(void)
-{
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(DEMOD_AB_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_u8(handle, DEMOD_AB_NVS_KEY, s_lab_boot_golden ? 0u : 1u);
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    printf("C5VRX_DEMOD_AB_ARMED next_boot=%s err=%s action=reboot\n",
-           s_lab_boot_golden ? "PHASE8" : "GOLDEN", esp_err_to_name(err));
-    if (err != ESP_OK) return;
-    fflush(stdout);
-    vTaskDelay(pdMS_TO_TICKS(120));
-    esp_restart();
+#endif
 }
 
 static const char *live_demod_tag(void)
 {
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-    return s_lab_boot_golden ? "GOLDEN_AB" : "PHASE8";
+    return s_live_demod == LIVE_GOLDEN ? "GOLDEN" :
+           s_live_demod == LIVE_PHASE8_VIDEO ? "PHASE8_VIDEO32" : "PHASE8_FULL";
 #else
     return s_demod_mode == DEMOD_MODE_TRAJECTORY_V2 ? "TRAJ_V2" : "GOLDEN";
 #endif
+}
+
+static live_demod_t demod_boot_requested(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = LIVE_PHASE8_FULL;
+    if (nvs_open(DEMOD_AB_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+        return LIVE_PHASE8_FULL;
+    if (nvs_get_u8(handle, DEMOD_LIVE_NVS_KEY, &value) != ESP_OK) {
+        uint8_t old;
+        if (nvs_get_u8(handle, DEMOD_AB_NVS_KEY, &old) == ESP_OK)
+            value = old == 1u ? LIVE_GOLDEN : LIVE_PHASE8_FULL;
+    }
+    nvs_close(handle);
+    return value <= LIVE_PHASE8_VIDEO ? (live_demod_t)value : LIVE_PHASE8_FULL;
+}
+
+static esp_err_t persist_live_demod(live_demod_t mode)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(DEMOD_AB_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, DEMOD_LIVE_NVS_KEY, (uint8_t)mode);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+static void lab_select_demod_boot(bool full)
+{
+    live_demod_t next = full ? LIVE_PHASE8_FULL :
+        s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
+    esp_err_t err = persist_live_demod(next);
+    printf("C5VRX_DEMOD_ARMED next_boot=%u err=%s action=reboot\n",
+           (unsigned)next, esp_err_to_name(err));
+    if (err != ESP_OK) return;
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    esp_restart();
 }
 
 static void apply_rf_bandwidth(bool bw40)
@@ -2075,8 +2113,8 @@ static void p8env_capture_report(void)
 
     printf("P8ENV t_ms=%lld ch=%s mhz=%u native=%u blocked=%lu gain_reg=0x%08lx agc_reg=0x%08lx "
            "gain_reg_changes=%lu fw_gain_epochs=%lu gain=%u agc=%u profile=%u demod=%s "
-           "ngain=%u ngain_min=%u ngain_max=%u ngain_sw_per_ms_x10=%lu "
-           "nagc_restart_per_ms_x10=%lu pll=%u initgain=%u "
+           "agc_state=%u agc_state_min=%u agc_state_max=%u agc_state_sw_per_ms_x10=%lu "
+           "agc_start_reentry_per_ms_x10=%lu pll=%u initgain=%u "
            "afc2_lines=%lu afc2_std=%s afc2_pol=%d afc2_sync_khz=%d afc2_porch_khz=%d "
            "afc2_burst_x10=%d "
            "probes=%u stale=%u n=%lu pairs=%lu p50=%u p90=%u p95=%u "
@@ -2157,21 +2195,7 @@ static void lab_dump_full_window(void)
     }
     bool ok = false;
     for (unsigned attempt = 0; attempt < 16u && !ok; ++attempt) {
-        if (s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 2) break;
-        uint32_t active_addr = AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val;
-        int active_idx = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count, active_addr);
-        if (active_idx < 0) { vTaskDelay(1); continue; }
-        int idx = (active_idx - 1 + s_rx_dscr_count) % s_rx_dscr_count;
-        uint8_t *src = s_rx_dscr_nodes[idx].buffer;
-        if (!src || s_rx_dscr_nodes[idx].length < CONTROL_SAMPLE_BYTES ||
-            src < s_raw_ring || src + CONTROL_SAMPLE_BYTES > s_raw_ring + sizeof(s_raw_ring)) {
-            vTaskDelay(1);
-            continue;
-        }
-        sync_dma_m2c(src, CONTROL_SAMPLE_BYTES);
-        memcpy(copy, src, CONTROL_SAMPLE_BYTES);
-        active_addr = AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val;
-        ok = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count, active_addr) != idx;
+        ok = copy_completed_rx_window(copy, CONTROL_SAMPLE_BYTES);
         if (!ok) vTaskDelay(1);
     }
     if (ok) {
@@ -3890,7 +3914,7 @@ static void menu_draw_video_page(void)
         snprintf(detected, sizeof(detected), "SEARCHING");
     }
     menu_ui_value_box(238, 34, 138, "DETECTED", detected);
-    menu_ui_text("LONG:DAC - APPLIES ON EXIT", 100, 47, UI_MUTED);
+    menu_ui_text("LONG:DEMOD - APPLIES ON EXIT", 100, 47, UI_MUTED);
 }
 
 static void menu_draw_exit_page(void)
@@ -3934,7 +3958,8 @@ static void start_flight_demodulator(void)
     ESP_ERROR_CHECK(s_output_mode == VIDEO_OUTPUT_6BIT_40 ?
                     ESP_OK : ESP_ERR_INVALID_STATE);
     ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
-                                             s_lab_boot_golden ? s_fm_program :
+                                             s_live_demod == LIVE_GOLDEN ? s_fm_program :
+                                             s_live_demod == LIVE_PHASE8_VIDEO ? s_fm_phase8_video_program :
                                              s_fm_phase8_hr_live_program));
 #else
     if (s_output_mode == VIDEO_OUTPUT_4BIT_80) {
@@ -4385,7 +4410,12 @@ static void handle_button_long_click(void)
             break;
         case 4: /* VIDEO OUTPUT */
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-            printf("[MENU: OUTPUT] 6BIT@40 fixed for PHASE8 HR TEST\n");
+            live_demod_t next = s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_VIDEO :
+                               s_live_demod == LIVE_PHASE8_VIDEO ? LIVE_PHASE8_FULL : LIVE_GOLDEN;
+            esp_err_t err = persist_live_demod(next);
+            if (err == ESP_OK) s_live_demod = next;
+            printf("[MENU: DEMOD] %s (applies on exit) err=%s\n",
+                   demod_mode_name(), esp_err_to_name(err));
 #else
             s_output_mode = s_output_mode == VIDEO_OUTPUT_6BIT_40 ?
                             VIDEO_OUTPUT_4BIT_80 : VIDEO_OUTPUT_6BIT_40;
@@ -4462,6 +4492,11 @@ static void analog_agc_task(void *arg)
         /* The RSSI oracle owns gain/BW/AFC for this interval. Manual AGC
          * alone would still allow the AUTO gearbox and AFC below to write. */
         if (s_rssi_probe_active) continue;
+
+        if (settle_ticks > 0) --settle_ticks;
+        int64_t control_now_us = esp_timer_get_time();
+        if (s_last_phy_write_us > 0 && control_now_us - s_last_phy_write_us < 100000)
+            settle_ticks = 2;
 
         int command;
         for (unsigned commands = 0; commands < 16 &&
@@ -4581,13 +4616,19 @@ static void analog_agc_task(void *arg)
         /* A complete finished descriptor gives 102.3 us of Q4/I4 rather than
          * the old 6.4 us peek, while averaging only ~82 kB/s of CPU reads. */
         uint32_t sampled_gain_epoch = s_gain_transition_count;
+        uint32_t sampled_rf_context = afc_context((unsigned)s_afc_mode,
+            (unsigned)rf_get_channel_index(), s_profile_generation,
+            s_current_bw40, rf_get_frequency_offset_khz(), rf_get_arc_generation());
         uint32_t sampled_v2_write_seq = s_direct_gain_v2_write_seq;
         uint8_t sampled_gain = s_current_gain;
         uint8_t *sample_src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
         size_t ring_offset = (sample_src >= s_raw_ring && sample_src < s_raw_ring + sizeof(s_raw_ring))
                            ? (size_t)(sample_src - s_raw_ring) : 0u;
-        sync_dma_m2c((void *)sample_src, CONTROL_SAMPLE_BYTES);
-        memcpy(s_control_sample_buf, sample_src, sizeof(s_control_sample_buf));
+        if (!copy_completed_rx_window(s_control_sample_buf, sizeof(s_control_sample_buf))) {
+            afc2_ctrl_invalidate(&afc2_ctrl);
+            afc_invalidate(&afc_state);
+            continue;
+        }
         control_metrics_t metrics =
             analyze_control_window(s_control_sample_buf,
                                    sizeof(s_control_sample_buf),
@@ -4614,32 +4655,41 @@ static void analog_agc_task(void *arg)
         s_last_winding_permille = metrics.winding_permille;
         s_last_strong_winding_permille = metrics.strong_winding_permille;
 
-        /* #115: burst-free blanking reference, measured only from windows
-         * without a settle period or gain/PHY transition. */
-        if (settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count) {
+        uint32_t afc_ctx = afc_context((unsigned)s_afc_mode,
+            (unsigned)rf_get_channel_index(), s_profile_generation,
+            s_current_bw40, rf_get_frequency_offset_khz(), rf_get_arc_generation());
+        bool afc_context_changed = afc2_ctrl_sync(&afc2_ctrl, afc_ctx, afc2_own_write);
+        afc2_own_write = false;
+        if (afc_context_changed) {
+            s_afc2_lines = 0;
+            s_afc2_sync_khz = s_afc2_porch_khz = 0;
+            s_afc2_polarity = s_afc2_standard = s_afc2_burst_x10 = 0;
+        }
+        bool afc_window_ok = settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count &&
+            sampled_rf_context == afc_ctx &&
+            control_now_us - s_last_phy_write_us >= 100000 &&
+            afc2_envelope_stationary(s_control_sample_buf, sizeof(s_control_sample_buf));
+        /* Firmware epochs do not reveal autonomous AGC transitions. This IQ
+         * stationarity gate rejects suspected jumps, not a proof of no writes. */
+        if (afc_window_ok) {
             afc2_result_t afc2 = afc2_measure(s_control_sample_buf,
-                                              sizeof(s_control_sample_buf),
-                                              c5vrx_phase8_gain_lut);
-            (void)afc2_ctrl_sync(&afc2_ctrl,
-                                 afc_context((unsigned)s_afc_mode,
-                                             (unsigned)rf_get_channel_index(),
-                                             s_profile_generation, s_current_bw40,
-                                             rf_get_frequency_offset_khz(),
-                                             rf_get_arc_generation()),
-                                 afc2_own_write);
-            afc2_own_write = false;
+                sizeof(s_control_sample_buf), c5vrx_phase8_gain_lut);
             afc2_ctrl_observe(&afc2_ctrl, &afc2);
-            if (afc2.lines && afc2.standard) {
-                bool first = s_afc2_lines == 0u;
-                s_afc2_sync_khz = first ? afc2.sync_khz :
-                                  (s_afc2_sync_khz * 7 + afc2.sync_khz) / 8;
-                s_afc2_porch_khz = first ? afc2.porch_khz :
-                                   (s_afc2_porch_khz * 7 + afc2.porch_khz) / 8;
+            if (afc2.lines && afc2.standard && afc2.porch_pairs) {
+                s_afc2_sync_khz = afc2.sync_khz;
+                s_afc2_porch_khz = afc2.porch_khz;
                 s_afc2_polarity = afc2.polarity;
                 s_afc2_standard = afc2.standard;
                 s_afc2_burst_x10 = afc2.burst_x10;
-                s_afc2_lines += afc2.lines;
+                s_afc2_lines = afc2.lines;
+            } else {
+                s_afc2_lines = 0;
+                s_afc2_standard = 0;
             }
+        } else {
+            afc2_ctrl_invalidate(&afc2_ctrl);
+            s_afc2_lines = 0;
+            s_afc2_standard = 0;
         }
 
         /* The undocumented reads are observation-only and rate-limited. AUTO
@@ -4741,6 +4791,15 @@ static void analog_agc_task(void *arg)
         s_last_fusion_recovery = fusion_tm.recovery_score;
         s_last_fusion_stability = fusion_tm.stability;
         s_last_fusion_fast_samples = fusion_tm.samples;
+
+        if (rf_native_agc_active()) {
+            /* Native is a separate receive-control path: no firmware gain
+             * controller owns its lock state. Burst evidence gates AFC. */
+            s_agc_state = afc2_ctrl.n >= AFC2_CTRL_SAMPLES &&
+                s_afc2_porch_khz >= -AFC2_CTRL_DEADBAND_KHZ &&
+                s_afc2_porch_khz <= AFC2_CTRL_DEADBAND_KHZ ? AGC_STATE_TRACK : AGC_STATE_SEARCH;
+            goto profile_post_gain;
+        }
 
         if ((s_rx_profile == RX_PROFILE_FUSION_EXP ||
              s_rx_profile == RX_PROFILE_RANGE_V2_EXP) &&
@@ -4912,7 +4971,6 @@ static void analog_agc_task(void *arg)
         /* Allow severe clipping protection after two observation ticks even
          * while ordinary gain decisions are held for settling. */
         if (settle_ticks > 0) {
-            --settle_ticks;
             if (!(clip_permille >= 80 &&
                   settle_ticks <= GAIN_SETTLE_TICKS - 2)) goto control_tail;
         }
@@ -5107,7 +5165,7 @@ profile_post_gain:
                 bw_deep_fade_ticks = 0;
                 bw_recovery_ticks = 0;
             } else if (s_current_bw40) {
-                bool auto_range_weak = (s_current_gain >=
+                bool auto_range_weak = (rf_native_agc_active() || s_current_gain >=
                                          (s_rx_profile == RX_PROFILE_RANGE_EXP ? 56u : 58u)) &&
                                        (p_median < 12 || q_phase < 45);
                 if (s_rx_profile == RX_PROFILE_AUTO_EXP &&
@@ -5157,7 +5215,7 @@ profile_post_gain:
              * gain re-assert writes; any remaining CFO is frozen until lock is
              * lost and the controller returns to SEARCH/LEARN. */
             bool eligible = s_agc_state != AGC_STATE_TRACK &&
-                            q_phase >= 75 && p_median >= 18 && settle_ticks == 0;
+                            q_phase >= 55 && settle_ticks == 0 && afc_window_ok;
             /* #115: corrections come only from the burst-free blanking
              * reference (afc_v2_ctrl.h); the scene-biased WBFM slope in
              * afc_state is kept for display only. */
@@ -5278,7 +5336,9 @@ static void console_diag_task(void *arg)
                 } else if (c == 'z') {
                     lab_dump_full_window();
                 } else if (c == 'u') {
-                    lab_toggle_demod_ab_boot();
+                    lab_select_demod_boot(false);
+                } else if (c == 'd') {
+                    lab_select_demod_boot(true);
                 } else if (c == 'w') {
                     /* Cycle the persisted native AGC start gain: vendor -> 74
                      * -> 66 -> vendor. Candidate fix for restart jolts. */
@@ -5286,6 +5346,7 @@ static void console_diag_task(void *arg)
                     uint8_t vendor = rf_native_initgain_vendor();
                     uint8_t next = now >= vendor ? 74u : now > 66u ? 66u : 0u;
                     esp_err_t ig_err = rf_set_native_initgain(next);
+                    if (ig_err == ESP_OK) s_last_phy_write_us = esp_timer_get_time();
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
@@ -5293,6 +5354,7 @@ static void console_diag_task(void *arg)
                     rf_poll_agc_live();
                 } else if (c == 'P' || c == 'M' || c == 'J' || c == 'B') {
                     rf_lab_agc_field((char)c);
+                    if (c != 'P') s_last_phy_write_us = esp_timer_get_time();
                     if (c != 'P') {
                         vTaskDelay(pdMS_TO_TICKS(150));
                         p8env_capture_report();
@@ -5624,7 +5686,7 @@ static void console_diag_task(void *arg)
 #endif
                     printf("  'K':         Erase stored PHY calibration and reboot for a fresh vendor calibration\n");
                     printf("  'X':         Cycle RX profile (V2/V1/ARC V3)\n");
-                    printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
+                    printf("  'u'/'d':     Golden <-> Phase8 VIDEO32 / original Phase8 FULL (persist + reboot)\n  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");
                     printf("  '+' / '-':   Manual gain step (+/-2)\n");
@@ -5667,7 +5729,7 @@ esp_err_t video_start(void)
     if (!s_menu_commands) return ESP_ERR_NO_MEM;
 
     settings_load();
-    s_lab_boot_golden = demod_ab_golden_requested();
+    s_live_demod = demod_boot_requested();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     s_output_mode = VIDEO_OUTPUT_6BIT_40;
 #endif

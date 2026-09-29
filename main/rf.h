@@ -111,12 +111,13 @@ void rf_poll_agc_live(void);
  * 'B' restore all captured vendor values. Prints the selected field. */
 void rf_lab_agc_field(char action);
 
-/* Read-only fast poll of the live native gain index (0x600A706C[7:0]). */
+/* Read-only state-byte statistics. Neither gain-index nor restart semantics
+ * have been validated against per-sample C5 gain metadata. */
 typedef struct {
     uint8_t median, min, max;
     uint32_t switches;
     uint32_t switches_per_ms_x10;
-    uint32_t restarts;            /* 7078 re-entries into >=80 (re-acquisition) */
+    uint32_t restarts;            /* 7078 re-entries into configured start byte; proxy only */
     uint32_t restarts_per_ms_x10;
     uint32_t elapsed_us;
 } rf_native_gain_stats_t;

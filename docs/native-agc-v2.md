@@ -33,7 +33,9 @@ on this board.
 
 - Native AGC re-acquires constantly with a carrier present: the state byte
   changes 137-319 times per ~20 ms. `7078` re-enters 82 roughly 1-4 times per
-  ms, i.e. several times per video line. With no signal it can sit still.
+  ms, i.e. 0.064-0.256 re-entries per 64 us line on average. With no signal
+  it can sit still. These bytes are state proxies, not validated per-sample
+  gain metadata; re-entry is not proof of a hardware restart.
 - Pinning the gain (force bit) gave a perfectly steady Q4 circle and zero phase
   jumps, but the picture got noisier at the AGC's own low median gain. Firmware
   holding is also ruled out by #121 (zero CPU gain decisions).
@@ -61,7 +63,8 @@ With little noise, specific picture levels produce deterministic tones up to
 ~4.8 IRE at radius 2.5: a dark tone at such a level decodes as a colour cast.
 An arc-midpoint LUT does not help (4.38 -> 4.28), and the live path already
 uses Golden's 50 ns delta. **The fix is a larger Q4 radius, i.e. the native
-AGC target level.**
+AGC target level, if that control is identified and measured.** Larger
+radius with fixed post-gain noise is not a constant-SNR RF range comparison.
 
 ## AFC
 
@@ -97,22 +100,26 @@ removing them. C5VRX puts the demodulated frequency straight on the 20 MS/s
 DAC, which attenuates 6.5 MHz only ~16 %, so a tone of roughly 10 IRE at
 6-6.5 MHz is probably present in the CVBS output as fine static patterns. This
 is unconfirmed on this VTX: the short `Q` captures were too noisy to resolve it.
-A full-window capture (`z` + `tools/analyze_q4_window.py`) settles it. If
-confirmed, the fix is analog: a 6.0/6.5 MHz ceramic sound trap (the part TVs
-use) or an LC notch at the DAC output. A single RC pole cannot separate 6.5
-MHz from 4.43 MHz chroma.
+A full-window capture (`z` + `tools/analyze_q4_window.py`) can expose spectral
+peaks but cannot identify their cause. The review reproduced 22 dB / 20 dB
+peaks in these bands from constant-envelope FM with NO audio, due to Q4
+harmonics. Change picture level / CFO and compare the tone's motion before
+attributing it to audio. No sound trap or AGC register change is enabled by
+these observations. The loaded DAC resistor network and 470 pF capacitor
+must also be included in any measured filter response.
 
 ## Lab tools in this PR (all read-only unless stated)
 
 | Key | Function |
 |---|---|
-| `E` | P8ENV row: channel, Q4 envelope, native AGC state/switch/restart rate, start gain, AFC V2 reference |
+| `E` | P8ENV row: channel, Q4 envelope, state-byte changes and start-byte re-entry proxy, start gain, AFC V2 reference |
 | `h` | fast poll of the native AGC state bytes (histogram, switch rate) |
 | `Q` / `z` | raw Q4: four 64-sample runs / one contiguous 4092-sample window |
 | `T` | AGC register dump (`0x600A7000..71FC`, `0x600A8000..807C`) |
 | `P` `M` `J` `B` | *writes*: select / step / restore candidate AGC fields (reversible, reboot restores) |
 | `w` | *writes, persisted*: native AGC start gain vendor -> 74 -> 66 -> vendor |
-| `u` | *persisted, reboots*: Golden (Phase5) <-> Phase8 demodulator A/B |
+| `u` | *persisted, reboots*: Golden <-> Phase8 VIDEO32 (bounded video-transfer candidate) |
+| `d` | *persisted, reboots*: original Phase8 FULL (8-bit endpoint arithmetic) |
 | `i` | *persisted, reboots*: PLL-tracking A/B (only in a lab build with `CONFIG_ESP_PHY_DISABLE_PLL_TRACK=n`) |
 | `N` | *persisted, reboots*: native AGC <-> firmware gain |
 
@@ -123,8 +130,57 @@ MHz from 4.43 MHz chroma.
    answers "blue / not blue, noisy / clean" per setting (no timing race).
 3. Range: same spot at the edge, Phase8 vs Golden (`u`) and start gain vendor
    vs best candidate; compare with `main` if doubts remain.
-4. Two `z` windows with the VTX on: confirm or reject the 6.0/6.5 MHz audio
-   tones and measure AGC steps per line.
+4. Several `z` windows with different picture levels / CFO: investigate the
+   6.0/6.5 MHz peaks and candidate envelope edges. Neither proves audio or AGC.
 5. AFC V2 on hardware: step the offset (`,` / `.`) and check `afc2_porch_khz`
    follows 1:1 with the expected sign; only then try AUTO AFC.
 6. PLL tracking A/B for the white-screen / stuck-low state (lab build).
+
+## Review fixes and bounded video candidate
+
+The VIDEO OUTPUT menu now cycles Golden -> P8 VIDEO32 -> P8 FULL with a long
+press; the choice is persisted and applied when leaving the menu. Serial
+`u` / `d` selects and reboots. Fresh installations still default to P8 FULL;
+existing `demod_golden` choices migrate without changing their meaning.
+
+P8 FULL maps the entire signed endpoint range onto 64 DAC codes, pedestal
+32. It has much less video swing than Golden at the same RF. P8 VIDEO32
+uses Phase8 cell-centre angles to design a 32-state codebook and a bounded
+pair LUT: pedestal 20, gain 0.75 code per Phase8 bin, saturation before
+conversion, tapered far tail at 96..112 bins (135..157.5 degrees). The far
+tail is a video prior, not proof that a transition is impossible. Both use
+two bundles, 20 MS/s unique DAC output duplicated at 40 MHz, and continuous
+state across DMA boundaries. VIDEO32 does NOT preserve eight bits of
+endpoint state; it is an explicit precision/transfer tradeoff. A full-precision
+nonlinear transfer has not been proven at two-bundle throughput.
+
+`tools/test_phase8_video.py` exhausts all 65,536 raw endpoint pairs through
+the emitted assembly. `sim_phase8_false_colour.py` also models VIDEO32 and
+reports brightness error instead of returning a placeholder zero. At sigma
+0.25, PAL dark maximum at radius 2.5 is approximately 4.38 IRE for FULL versus
+4.79 for VIDEO32, and at radius 5.5 2.31 versus 2.78. Thus this candidate is
+NOT advertised as a fine-grain cure and is opt-in. It fixes output range and
+unsafe amplified tails; loaded voltage, colour, sharpness and range need A/B.
+
+Grain is already present in noiseless Q4 simulations. Eliminating it needs
+better input information / suitable filtering, not simply more phase bits or
+digital gain. Raising the native target, a finer pre-Q4 tap with explicit
+overflow handling, or a proven realtime filter are still hardware research;
+no guessed native AGC target register is written by this change.
+
+AFC now uses individually burst-confirmed runs with sufficient valid tip and
+porch pairs. Invalid estimates discard ALL consecutive history. Context is
+checked across the snapshot; a bounded DMA-copy deadline prevents accepting
+a copy after the ring could have lapped. Settling ticks advance before any
+native/manual/profile branch. Native mode skips firmware gain state machines;
+its AFC gate no longer requires firmware-controller power >=18. A conservative
+IQ-envelope gate rejects suspected transitions, but cannot prove autonomous
+gain stayed fixed without per-sample metadata. The 20+6 smoother group delay
+is 12 samples (0.3 us), not 26 samples. AFC remains OFF by default pending
+centre/sign validation.
+
+The analyzer requires complete ordered 4092-byte windows, validates both
+frequency endpoints, and uses Cartesian-cell radius bounds before reporting
+envelope candidates. Rotating a noiseless radius-1.2 vector no longer creates
+hundreds of fake AGC events. State fields are labelled as proxies; start-byte
+re-entry uses the configured start (including 66/74), not a hard-coded >=80.

@@ -63,9 +63,23 @@ static inline bool afc2_ctrl_sync(afc2_ctrl_t *c, uint32_t context, bool own_wri
     return true;
 }
 
+/* Loss of evidence must discard the whole consecutive estimate window.
+ * Keep the per-acquisition correction budget; only explicit acquisition reset
+ * replenishes it. No stale decision after settling, bad IQ, or missing burst. */
+static inline void afc2_ctrl_invalidate(afc2_ctrl_t *c)
+{
+    c->n = 0;
+    c->polarity = 0;
+    c->standard = 0;
+}
+
 static inline void afc2_ctrl_observe(afc2_ctrl_t *c, const afc2_result_t *r)
 {
-    if (!r || !r->lines || !r->standard || !r->polarity) return;
+    if (!r || !r->lines || !r->standard || !r->polarity ||
+        r->burst_x10 < AFC2_BURST_MIN_X10 || !r->sync_pairs || !r->porch_pairs) {
+        afc2_ctrl_invalidate(c);
+        return;
+    }
     if (c->n && (r->polarity != c->polarity || r->standard != c->standard)) c->n = 0;
     c->polarity = r->polarity;
     c->standard = r->standard;

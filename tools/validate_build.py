@@ -35,7 +35,7 @@ check("BitScrambler source artifacts, including historical Trajectory, remain av
       {f.name for f in bsasm_files} == {"fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm",
                                       "fm_phase5_fsm_capture.bsasm", "bs_relative_worker_probe.bsasm",
                                       "bs_relative_middle_probe.bsasm", "bs_addctia_probe.bsasm", "fm4.bsasm", "fm_traj.bsasm",
-                                      "fm_phase8_hr_live.bsasm"},
+                                      "fm_phase8_hr_live.bsasm", "fm_phase8_video.bsasm"},
       f"found {[f.name for f in bsasm_files]}")
 
 for bsasm_file in bsasm_files:
@@ -142,7 +142,8 @@ check("4BIT@80 remains reachable with a valid GOLDEN pairing",
       "s_fm4_program" in all_c)
 check("TRAJ V2 is absent from the live demod selector",
       "cycle_demod_mode" not in all_c and
-      "LONG:DAC - APPLIES ON EXIT" in all_c and
+      "LONG:DEMOD - APPLIES ON EXIT" in all_c and
+      "persist_live_demod(next)" in all_c and
       "bitscrambler_load_program(s_flight_bs, s_fm_traj_program)" not in all_c)
 check("menu lifecycle does not double-disable BitScrambler",
       menu_lifecycle.count("bitscrambler_disable(s_flight_bs)") == 1)
@@ -326,10 +327,10 @@ check("Trajectory v2 live two-stage address contract is mirrored everywhere",
       "middle raw-I sign" in traj_gen and
       "middle_raw >> 7" in read(ROOT / "tools/range_demod_bench.py") and
       "c5vrx_trajectory_v2_token" in read(MAIN / "trajectory_v2_lut.h"))
-check("live demod is fixed Golden with no menu switch",
+check("live demod selectors exclude Trajectory",
       'return "GOLDEN";' in all_c and
       "cycle_demod_mode" not in all_c and
-      "2S:DEMOD" not in all_c)
+      "TRAJ_V2" not in read(MAIN / "fm_phase8_video.bsasm"))
 check("stored legacy demod choice migrates safely to Golden",
       "SETTINGS_VERSION 4u" in all_c and
       ".demod_mode = (uint8_t)s_demod_mode" in all_c and
@@ -394,8 +395,9 @@ check("RF menu offers only native AGC plus BW control; no on-screen profile sele
       '"LONG: BANDWIDTH"' in all_c and
       "2S:PROFILE" not in all_c and
       "btn_profile_fired" not in all_c)
-check("VIDEO menu has only the Golden live demodulator",
-      "LONG:DAC - APPLIES ON EXIT" in all_c and
+check("VIDEO menu persists Golden / Phase8 VIDEO32 / Phase8 FULL",
+      "LONG:DEMOD - APPLIES ON EXIT" in all_c and
+      "persist_live_demod(next)" in all_c and
       "cycle_demod_mode();" not in all_c and
       "btn_demod_fired" not in all_c)
 check("experimental PHY environment reads stay out of the range default",
@@ -651,7 +653,7 @@ check("only selectable and diagnostic BitScrambler programs are in CMakeLists",
       bs_srcs == ["fm.bsasm", "fm_relative_golden.bsasm", "fm_phase5_360.bsasm",
                   "bs_relative_worker_probe.bsasm", "bs_relative_middle_probe.bsasm",
                   "fm_phase5_fsm_capture.bsasm", "fm4.bsasm",
-                  "bs_addctia_probe.bsasm", "fm_phase8_hr_live.bsasm"], f"found: {bs_srcs}")
+                  "bs_addctia_probe.bsasm", "fm_phase8_hr_live.bsasm", "fm_phase8_video.bsasm"], f"found: {bs_srcs}")
 
 # Phase5-360 architecture and simulator validation
 TOOLS_DIR = ROOT / "tools"

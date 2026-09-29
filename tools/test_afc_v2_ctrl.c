@@ -5,6 +5,7 @@
 static afc2_result_t est(int porch, int sync, int8_t pol, uint8_t std)
 {
     afc2_result_t r = {0};
+    r.sync_pairs = 100; r.porch_pairs = 40;
     r.lines = 1; r.polarity = pol; r.standard = std;
     r.porch_khz = porch; r.sync_khz = sync; r.burst_x10 = 40;
     return r;
@@ -66,10 +67,21 @@ int main(void)
     afc2_ctrl_observe(&c, &ntsc);
     assert(c.n == 1);
 
-    /* Windows without a burst-confirmed sync are ignored. */
+    /* Loss of burst evidence invalidates all retained estimates. */
     afc2_result_t none = {0};
     afc2_ctrl_observe(&c, &none);
-    assert(c.n == 1);
+    assert(c.n == 0);
+    afc2_ctrl_reset(&c, 8u, true);
+    for (unsigned k = 0; k < AFC2_CTRL_SAMPLES; ++k) {
+        afc2_result_t s = est(400, -1900, -1, 2);
+        afc2_ctrl_observe(&c, &s);
+    }
+    for (unsigned k = 0; k < 100; ++k) afc2_ctrl_observe(&c, &none);
+    assert(!afc2_ctrl_decide(&c, true, &step));
+    afc2_result_t missing_pairs = est(400, -1900, -1, 2);
+    missing_pairs.porch_pairs = 0;
+    afc2_ctrl_observe(&c, &missing_pairs);
+    assert(c.n == 0);
 
     /* Correction budget per acquisition. */
     afc2_ctrl_reset(&c, 6u, true);

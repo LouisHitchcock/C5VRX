@@ -40,7 +40,7 @@
 #define AFC2_SAMPLE_RATE_KHZ   40000
 #define AFC2_KHZ_PER_CODE_X100 15625  /* 156.25 kHz */
 #define AFC2_MIN_POWER         2u     /* exclude the four origin cells */
-#define AFC2_SMOOTH            26u    /* total delay of the cascaded smoother (0.65 us) */
+#define AFC2_SMOOTH            26u    /* warm-up bound; group delay is 12 samples (0.3 us) */
 #define AFC2_SYNC_MIN          140u   /* 3.5 us */
 #define AFC2_SYNC_MAX          220u   /* 5.5 us */
 #define AFC2_TIP_GUARD         20u    /* 0.5 us */
@@ -74,6 +74,23 @@ static inline unsigned afc2_power(uint8_t raw)
     return (unsigned)(ci * ci + cq * cq + 2) / 4u;
 }
 
+/* Conservative IQ stationarity gate for AFC only. It rejects large changes
+ * in block-averaged Q4 power; it does NOT decode the native gain state or
+ * identify their cause. Whole 32-sample blocks reduce cell-rotation artifacts. */
+static inline bool afc2_envelope_stationary(const uint8_t *s, size_t n)
+{
+    if (!s || n < 64u) return false;
+    unsigned prev = 0;
+    for (size_t k = 0; k + 32u <= n; k += 32u) {
+        unsigned sum = 0;
+        for (size_t j = k; j < k + 32u; ++j) sum += afc2_power(s[j]);
+        if (sum < 64u) return false;
+        if (prev && (sum * 2u > prev * 5u || prev * 2u > sum * 5u)) return false;
+        prev = sum;
+    }
+    return true;
+}
+
 /* Signed phase step in LUT codes, or INT16_MIN when either endpoint is too
  * close to the origin to carry phase. */
 static inline int afc2_delta(uint8_t a, uint8_t b, const uint8_t lut[256])
@@ -99,9 +116,10 @@ static inline int afc2_codes_to_khz(int64_t sum_codes, uint32_t n)
  * subcarriers at 6.0 and 6.5 MHz (-25..-30 dBc, ~0.4-0.7 MHz peak carrier
  * deviation each) that no filter removes before this point. 20 samples are
  * exactly 3 periods of 6.0 MHz (null) and 6 samples are 0.975 periods of
- * 6.5 MHz (-31 dB); together 26 samples (0.65 us) of delay. */
+ * 6.5 MHz (-31 dB); their group delay is (19 + 5)/2 = 12 samples (0.3 us). */
 #define AFC2_BOX1 20u
 #define AFC2_BOX2 6u
+#define AFC2_DELAY ((AFC2_BOX1 + AFC2_BOX2 - 2u) / 2u)
 
 typedef struct {
     int32_t sum;
@@ -143,13 +161,13 @@ static inline bool afc2_sync_run_ok(const int8_t *ring, size_t n, size_t k,
                                     size_t len, int pol, int32_t lo, int32_t hi)
 {
     if (len < AFC2_SYNC_MIN || len > AFC2_SYNC_MAX) return false;
-    size_t start = k - len - AFC2_SMOOTH / 2u, end = k - AFC2_SMOOTH / 2u;
+    size_t start = k - len - AFC2_DELAY, end = k - AFC2_DELAY;
     /* Front porch ~0.45-1.0 us before sync; back porch ~0.07-0.65 us after
      * sync end, before the colour burst. */
-    if (start < 30u + AFC2_SMOOTH || end + 14u + AFC2_SMOOTH / 2u >= n) return false;
-    int32_t front = AFC2_AT(ring, start - 30u + AFC2_SMOOTH / 2u);
-    int32_t back = AFC2_AT(ring, end + 14u + AFC2_SMOOTH / 2u);
-    int32_t sync = AFC2_AT(ring, (start + end) / 2u + AFC2_SMOOTH / 2u);
+    if (start < 30u + AFC2_SMOOTH || end + 14u + AFC2_DELAY >= n) return false;
+    int32_t front = AFC2_AT(ring, start - 30u + AFC2_DELAY);
+    int32_t back = AFC2_AT(ring, end + 14u + AFC2_DELAY);
+    int32_t sync = AFC2_AT(ring, (start + end) / 2u + AFC2_DELAY);
     int32_t sep_f = pol < 0 ? front - sync : sync - front;
     int32_t sep_b = pol < 0 ? back - sync : sync - back;
     int32_t depth = (sep_f + sep_b) / 2;
@@ -200,7 +218,7 @@ static inline unsigned afc2_run_score(const uint8_t *s, size_t n, size_t end,
     int pal = afc2_burst_x10(s, n, end, lut, 2);
     *best_std = pal > ntsc ? 2 : 1;
     *best_amp = pal > ntsc ? pal : ntsc;
-    return *best_amp >= AFC2_BURST_MIN_X10 ? 5u : 1u;
+    return *best_amp >= AFC2_BURST_MIN_X10 ? 5u : 0u;
 }
 
 #define AFC2_MAX_RUNS 8u
@@ -242,9 +260,10 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
             if (pend_len[p] && k >= pend_k[p] + 14u) {
                 if (afc2_sync_run_ok(ring, n, pend_k[p], pend_len[p], pol, lo, hi)) {
                     int std_id, amp;
-                    size_t end = pend_k[p] - AFC2_SMOOTH / 2u;
-                    score[p] += afc2_run_score(s, n, end, lut, &std_id, &amp);
-                    if (acc_n[p] < AFC2_MAX_RUNS) {
+                    size_t end = pend_k[p] - AFC2_DELAY;
+                    unsigned evidence = afc2_run_score(s, n, end, lut, &std_id, &amp);
+                    score[p] += evidence;
+                    if (evidence && acc_n[p] < AFC2_MAX_RUNS) {
                         acc_end[p][acc_n[p]] = end;
                         acc_len[p][acc_n[p]] = pend_len[p];
                         ++acc_n[p];
@@ -273,12 +292,12 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
         size_t p0 = end + AFC2_PORCH_START, p1 = p0 + AFC2_PORCH_LEN;
         int std_id, amp;
         (void)afc2_run_score(s, n, end, lut, &std_id, &amp);
-        if (amp >= AFC2_BURST_MIN_X10) {
-            burst_sum += amp;
-            ++burst_n;
-            std_votes += std_id == 2 ? 1 : -1;
-        }
-        if (p1 >= n) continue;
+        if (amp < AFC2_BURST_MIN_X10 || p1 >= n) continue;
+        burst_sum += amp;
+        ++burst_n;
+        std_votes += std_id == 2 ? 1 : -1;
+        uint32_t old_sync_pairs = r.sync_pairs, old_porch_pairs = r.porch_pairs;
+        int64_t old_sync_sum = sync_sum, old_porch_sum = porch_sum;
         for (size_t j = start + AFC2_TIP_GUARD; j < end - AFC2_TIP_GUARD; ++j) {
             int d = afc2_delta(s[j], s[j + 1], lut);
             if (d != INT16_MIN) { sync_sum += d; ++r.sync_pairs; }
@@ -286,6 +305,13 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
         for (size_t j = p0; j < p1; ++j) {
             int d = afc2_delta(s[j], s[j + 1], lut);
             if (d != INT16_MIN) { porch_sum += d; ++r.porch_pairs; }
+        }
+        if ((r.sync_pairs - old_sync_pairs) * 4u < (end - start - 2u * AFC2_TIP_GUARD) * 3u ||
+            (r.porch_pairs - old_porch_pairs) * 4u < AFC2_PORCH_LEN * 3u) {
+            r.sync_pairs = old_sync_pairs; r.porch_pairs = old_porch_pairs;
+            sync_sum = old_sync_sum; porch_sum = old_porch_sum;
+            --burst_n; burst_sum -= amp; std_votes -= std_id == 2 ? 1 : -1;
+            continue;
         }
         ++r.lines;
     }

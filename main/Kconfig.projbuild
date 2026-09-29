@@ -36,12 +36,15 @@ endmenu
 
 menu "C5VRX experimental video demodulators"
     config C5VRX_PHASE8_HR_LIVE_TEST
-        bool "Run full-range adjacent Phase8 on live 6BIT@40 video"
+        bool "Enable Golden / Phase8 FULL / Phase8 VIDEO32 selection"
         default y
         help
-            Experimental full signed Phase8 delta mapping plus Direct Gain V3.
-            Maps -128..+127 phase bins across the 64 DAC levels and forces
-            6BIT@40 output. A phase step crossing +/-180 degrees still aliases.
+            Native AGC gain ownership is independent of this selector.
+            Phase8 FULL preserves the 8-bit endpoint arithmetic baseline.
+            Phase8 VIDEO32 is an opt-in bounded video-transfer candidate using
+            32 Phase8-derived endpoint states. Golden remains the baseline.
+            All modes use two bundles and 6BIT@40 output. No >180-degree
+            winding recovery is claimed.
 
     config C5VRX_PHASE5_360_LIVE
         bool "Use Phase5-360 research program (Golden DAC output only)"

@@ -394,7 +394,10 @@ static uint8_t native_initgain_load(void)
 static void native_initgain_apply(void)
 {
     uint32_t reg = REG32(NATIVE_INITGAIN_REG);
-    s_native_initgain_vendor = (uint8_t)((reg & NATIVE_INITGAIN_MASK) >> 2);
+    uint8_t observed = (uint8_t)((reg & NATIVE_INITGAIN_MASK) >> 2);
+    /* A retune need not rewrite this field. Never mistake our override for
+     * the vendor default or progressively lower the restore ceiling. */
+    if (!s_native_initgain_vendor) s_native_initgain_vendor = observed;
     if (!s_native_agc || !s_native_initgain) return;
     uint8_t g = s_native_initgain;
     /* Never above the vendor start (the calibrated maximum - 1). */
@@ -498,13 +501,14 @@ void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
     uint32_t switches = 0, restarts = 0;
     uint8_t last = (uint8_t)REG32(AGC_LIVE_REG_A);
     uint8_t last_b = (uint8_t)REG32(AGC_LIVE_REG_B);
+    uint8_t start_index = rf_native_initgain();
     int64_t start = esp_timer_get_time();
     for (unsigned n = 0; n < samples; ++n) {
         uint8_t v = (uint8_t)REG32(AGC_LIVE_REG_A);
         uint8_t b = (uint8_t)REG32(AGC_LIVE_REG_B);
         ++hist[v];
         switches += v != last;
-        restarts += b >= 80u && last_b < 80u;
+        restarts += start_index && b == start_index && last_b != start_index;
         last = v;
         last_b = b;
         esp_rom_delay_us(2);

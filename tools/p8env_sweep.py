@@ -138,9 +138,9 @@ def analyze(rows):
             "class": max(classes, key=classes.get),
             "gain_regs": len({r.get("gain_reg") for r in group}),
             "picture": group[0].get("picture", "-"),
-            "ngain": median(group, "ngain"),
-            "ngain_sw_ms": (median(group, "ngain_sw_per_ms_x10") / 10.0
-                            if median(group, "ngain_sw_per_ms_x10") is not None else None),
+            "agc_state": median(group, "agc_state"),
+            "state_sw_ms": (median(group, "agc_state_sw_per_ms_x10") / 10.0
+                            if median(group, "agc_state_sw_per_ms_x10") is not None else None),
         })
 
     rho = spearman([r["central_pm"] for r in rows], [r["hard_pm"] for r in rows])
@@ -201,7 +201,7 @@ def fmt(value):
 def print_report(report):
     print(f"rows={report['rows']}")
     cols = ("label", "n", "picture", "class", "p50", "p95", "central_pm", "origin_pm",
-            "clip_pm", "hard_pm", "hard_central_pm", "hard_outer_pm", "ngain", "ngain_sw_ms",
+            "clip_pm", "hard_pm", "hard_central_pm", "hard_outer_pm", "agc_state", "state_sw_ms",
             "video_ok")
     print(" ".join(f"{c:>15}" for c in cols))
     for step in report["steps"]:
