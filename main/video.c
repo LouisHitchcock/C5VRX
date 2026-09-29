@@ -44,6 +44,7 @@
 #include "direct_gain_v3.h"
 #include "phase8_gain_lut.h"
 #include "phase8_envelope.h"
+#include "afc_state.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -823,6 +824,10 @@ typedef struct {
     int n_coherent;
     int sum_cross;
     int sum_dot;
+    /* CFO-only accumulators (#115 item 2): both endpoints must be valid. */
+    int cfo_pairs;
+    int cfo_cross;
+    int cfo_dot;
     int sum_i;
     int sum_q;
     int sum_i2;
@@ -886,6 +891,11 @@ static control_metrics_t analyze_control_window(const uint8_t *sample, size_t by
                 ++m.n_coherent;
                 m.sum_cross += cross;
                 m.sum_dot += dot;
+                if (prev_power >= 8) {
+                    ++m.cfo_pairs;
+                    m.cfo_cross += cross;
+                    m.cfo_dot += dot;
+                }
             }
         }
 
@@ -4303,7 +4313,7 @@ static void analog_agc_task(void *arg)
     int settle_ticks = 0;
     int drift_counter = 0;
     int lost_counter = 0;
-    int afc_ticks = 0;
+    afc_state_t afc_state = {0};
     int bw_deep_fade_ticks = 0;
     int bw_recovery_ticks = 0;
     int overload_counter = 0;
@@ -4545,12 +4555,23 @@ static void analog_agc_task(void *arg)
             }
         }
 
-        if (metrics.n_coherent >= (int)(CONTROL_SAMPLE_BYTES / 8u) && metrics.sum_dot > 0) {
-            int instant_cfo = (int)(((int64_t)metrics.sum_cross * 6366LL) / metrics.sum_dot);
-            if (instant_cfo > 2000) instant_cfo = 2000;
-            if (instant_cfo < -2000) instant_cfo = -2000;
-            s_cfo_khz = (s_cfo_khz * 7 + instant_cfo) / 8;
+        /* #115 items 4/5: AFC state is owned by its receive context and a
+         * CFO sample is only trusted from a window with no PHY transition. */
+        if (afc_sync_context(&afc_state,
+                             afc_context((unsigned)s_afc_mode,
+                                         (unsigned)rf_get_channel_index(),
+                                         s_profile_generation, s_current_bw40,
+                                         rf_get_frequency_offset_khz(),
+                                         rf_get_arc_generation())))
+            s_cfo_khz = 0;
+        if (settle_ticks > 0 || sampled_gain_epoch != s_gain_transition_count) {
+            afc_invalidate(&afc_state);
+        } else if (metrics.cfo_pairs >= (int)(CONTROL_SAMPLE_BYTES / 8u) &&
+                   metrics.cfo_dot > 0) {
+            afc_observe(&afc_state,
+                        (int)(((int64_t)metrics.cfo_cross * 6366LL) / metrics.cfo_dot));
         }
+        s_cfo_khz = afc_state.filtered_khz;
 
         int sync_quality = 0;
         bool fresh_sync = false;
@@ -5003,20 +5024,13 @@ profile_post_gain:
             /* AUTO AFC is acquisition-only. TRACK performs zero frequency or
              * gain re-assert writes; any remaining CFO is frozen until lock is
              * lost and the controller returns to SEARCH/LEARN. */
-            if (s_agc_state != AGC_STATE_TRACK &&
-                q_phase >= 75 && p_median >= 18 && settle_ticks == 0) {
-                if (s_cfo_khz > 35 || s_cfo_khz < -35) {
-                    if (++afc_ticks >= 20) {
-                        int cur_offset = rf_get_frequency_offset_khz();
-                        apply_frequency_offset_khz_tracked(cur_offset + s_cfo_khz);
-                        afc_ticks = 0;
-                        settle_ticks = 2;
-                    }
-                } else {
-                    afc_ticks = 0;
-                }
-            } else {
-                afc_ticks = 0;
+            bool eligible = s_agc_state != AGC_STATE_TRACK &&
+                            q_phase >= 75 && p_median >= 18 && settle_ticks == 0;
+            if (afc_tick(&afc_state, eligible)) {
+                int cur_offset = rf_get_frequency_offset_khz();
+                /* The offset change resets the AFC context next tick. */
+                apply_frequency_offset_khz_tracked(cur_offset + afc_state.filtered_khz);
+                settle_ticks = 2;
             }
         } else if (s_afc_mode == AFC_MODE_OFF && rf_get_frequency_offset_khz() != 0) {
             apply_frequency_offset_khz_tracked(0);

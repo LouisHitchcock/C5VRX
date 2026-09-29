@@ -717,6 +717,13 @@ check("Native HW AGC is the default boot gain owner; firmware gain needs explici
       re.search(r"static bool native_agc_boot_requested\(void\)\s*\{\s*nvs_handle_t handle;\s*"
                 r"uint8_t value = 1u;", rf_c) and
       "return value != 0u;" in rf_c)
+check("AFC state hygiene: context-owned state, transition-invalidated CFO (#115)",
+      '#include "afc_state.h"' in video_c and
+      "afc_sync_context(&afc_state" in video_c and
+      "afc_invalidate(&afc_state)" in video_c and
+      "afc_tick(&afc_state, eligible)" in video_c and
+      "if (prev_power >= 8) {" in video_c and
+      "afc_ticks" not in video_c)
 check("RSSI probe owns every AGC/BW/AFC write during its measurement",
       "s_rssi_probe_active = true;" in video_c and
       "if (s_rssi_probe_active) continue;" in video_c and
