@@ -177,6 +177,7 @@ jobs:
           /tmp/test_afc_v2
           pip install --quiet numpy
           python3 tools/sim_phase8_false_colour.py --self-test
+          python3 tools/analyze_q4_window.py --self-test
 
   build:
     name: Build Production Firmware (ESP32-C5)

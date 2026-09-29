@@ -51,6 +51,20 @@ static bool s_analog_bw40 = true;
 #define NATIVE_AGC_NVS_KEY       "native_agc"
 #define RX_AGC_CTRL_REG          0x600A7030u
 static bool s_native_agc;
+/* #121 native AGC start gain. 0x600A7094[8:2] is the gain each native
+ * acquisition starts from (vendor: max-1 = 82, ESPARGOS esp-sdr semantics).
+ * The loop re-acquires several times per video line, so every restart
+ * swings from 82 down to the operating point (~40-65). A lower start keeps
+ * those swings short. This is a one-time native-AGC policy setting, not a
+ * CPU gain decision; 0 keeps the vendor value. Persisted in NVS, re-applied
+ * after boot and after every channel retune (vendor paths rewrite it). */
+#define NATIVE_INITGAIN_NVS_KEY "agc_init"
+#define NATIVE_INITGAIN_REG     0x600A7094u
+#define NATIVE_INITGAIN_MASK    0x000001FCu
+#define NATIVE_INITGAIN_MIN     40u
+static uint8_t s_native_initgain;
+static uint8_t s_native_initgain_vendor;
+
 /* #121 section 9 lab A/B: PHY PLL/RXCAL tracking stays stopped unless this
  * boot was explicitly requested with NVS c5vrx/pll_track = 1. */
 #define PLL_TRACK_NVS_KEY "pll_track"
@@ -366,6 +380,64 @@ bool rf_pll_track_active(void)
     return s_pll_track;
 }
 
+static uint8_t native_initgain_load(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+        return 0;
+    if (nvs_get_u8(handle, NATIVE_INITGAIN_NVS_KEY, &value) != ESP_OK) value = 0;
+    nvs_close(handle);
+    return value;
+}
+
+static void native_initgain_apply(void)
+{
+    uint32_t reg = REG32(NATIVE_INITGAIN_REG);
+    s_native_initgain_vendor = (uint8_t)((reg & NATIVE_INITGAIN_MASK) >> 2);
+    if (!s_native_agc || !s_native_initgain) return;
+    uint8_t g = s_native_initgain;
+    /* Never above the vendor start (the calibrated maximum - 1). */
+    if (g > s_native_initgain_vendor) g = s_native_initgain_vendor;
+    REG32(NATIVE_INITGAIN_REG) = (reg & ~NATIVE_INITGAIN_MASK) | ((uint32_t)g << 2);
+}
+
+uint8_t rf_native_initgain(void)
+{
+    return (uint8_t)((REG32(NATIVE_INITGAIN_REG) & NATIVE_INITGAIN_MASK) >> 2);
+}
+
+uint8_t rf_native_initgain_vendor(void)
+{
+    return s_native_initgain_vendor;
+}
+
+esp_err_t rf_set_native_initgain(uint8_t gain)
+{
+    if (gain && gain < NATIVE_INITGAIN_MIN) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, NATIVE_INITGAIN_NVS_KEY, gain);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) return err;
+    if (!gain && s_native_initgain && s_native_agc) {
+        uint32_t reg = REG32(NATIVE_INITGAIN_REG);
+        REG32(NATIVE_INITGAIN_REG) = (reg & ~NATIVE_INITGAIN_MASK) |
+                                     ((uint32_t)s_native_initgain_vendor << 2);
+    }
+    s_native_initgain = gain;
+    if (gain) {
+        /* Keep the captured vendor value; apply only the override. */
+        uint32_t reg = REG32(NATIVE_INITGAIN_REG);
+        uint8_t g = gain > s_native_initgain_vendor ? s_native_initgain_vendor : gain;
+        if (s_native_agc)
+            REG32(NATIVE_INITGAIN_REG) = (reg & ~NATIVE_INITGAIN_MASK) | ((uint32_t)g << 2);
+    }
+    return ESP_OK;
+}
+
 esp_err_t rf_request_native_agc_boot(bool enable)
 {
     nvs_handle_t handle;
@@ -623,6 +695,7 @@ esp_err_t rf_start(void)
     esp_err_t err = init_nvs();
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
+    s_native_initgain = native_initgain_load();
     s_pll_track = pll_track_boot_requested();
 
     /* esp_netif_init + default event loop are required by esp_wifi_init().
@@ -742,6 +815,7 @@ esp_err_t rf_start(void)
         /* Release, never choose: the vendor loop owns RF/BB/fine gain. */
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
+        native_initgain_apply();
     } else {
         phy_force_rx_gain(true, 52);
     }
@@ -1086,6 +1160,7 @@ esp_err_t rf_set_channel(size_t index)
          * retune paths may touch digital/baseband scaling (#121 section 8). */
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
+        native_initgain_apply();
     } else {
         phy_disable_agc();
         phy_rfagc_disable();

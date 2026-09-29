@@ -44,10 +44,16 @@ static afc2_result_t run(const standard_t *st, double cfo_khz, int polarity,
     static uint8_t buf[4092];
     double phase = urand() * 2 * M_PI;
     double active = 50.0;
+    const double audio_phase[2] = {urand() * 2 * M_PI, urand() * 2 * M_PI};
     for (unsigned n = 0; n < sizeof(buf); ++n) {
         double t_us = fmod(n / 40.0 + offset_us, st->line_us);
         if (n % 400u == 0) active = urand() * 100.0; /* 10 us picture blocks */
-        double f_khz = cfo_khz + polarity * KHZ_PER_IRE * cvbs_ire(st, t_us, active);
+        /* RTC6705-class VTX audio subcarriers: 6.0 / 6.5 MHz at -25 dBc,
+         * i.e. ~0.7 MHz peak carrier deviation each (datasheet VTAA). */
+        double audio_khz = 700.0 * sin(2 * M_PI * 6.0e6 * n / FS_HZ + audio_phase[0]) +
+                           700.0 * sin(2 * M_PI * 6.5e6 * n / FS_HZ + audio_phase[1]);
+        double f_khz = cfo_khz + audio_khz +
+                       polarity * KHZ_PER_IRE * cvbs_ire(st, t_us, active);
         phase += 2 * M_PI * f_khz * 1e3 / FS_HZ;
         double i = radius * cos(phase) + noise * gauss();
         double q = radius * sin(phase) + noise * gauss();

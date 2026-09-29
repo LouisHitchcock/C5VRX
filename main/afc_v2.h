@@ -40,7 +40,7 @@
 #define AFC2_SAMPLE_RATE_KHZ   40000
 #define AFC2_KHZ_PER_CODE_X100 15625  /* 156.25 kHz */
 #define AFC2_MIN_POWER         2u     /* exclude the four origin cells */
-#define AFC2_SMOOTH            24u    /* 0.6 us boxcar for sync detection */
+#define AFC2_SMOOTH            26u    /* total delay of the cascaded smoother (0.65 us) */
 #define AFC2_SYNC_MIN          140u   /* 3.5 us */
 #define AFC2_SYNC_MAX          220u   /* 5.5 us */
 #define AFC2_TIP_GUARD         20u    /* 0.5 us */
@@ -95,21 +95,35 @@ static inline int afc2_codes_to_khz(int64_t sum_codes, uint32_t n)
 #define AFC2_RING 512u
 #define AFC2_AT(ring, i) ((int32_t)(ring)[(i) & (AFC2_RING - 1u)])
 
+/* Two cascaded boxcars. Analog FPV transmitters (RTC6705 class) add FM audio
+ * subcarriers at 6.0 and 6.5 MHz (-25..-30 dBc, ~0.4-0.7 MHz peak carrier
+ * deviation each) that no filter removes before this point. 20 samples are
+ * exactly 3 periods of 6.0 MHz (null) and 6 samples are 0.975 periods of
+ * 6.5 MHz (-31 dB); together 26 samples (0.65 us) of delay. */
+#define AFC2_BOX1 20u
+#define AFC2_BOX2 6u
+
 typedef struct {
     int32_t sum;
     unsigned count;
-    int16_t delta[AFC2_SMOOTH];
-    bool valid[AFC2_SMOOTH];
+    int16_t delta[AFC2_BOX1];
+    bool valid[AFC2_BOX1];
+    int32_t sum2;
+    int16_t stage1[AFC2_BOX2];
 } afc2_smoother_t;
 
 static inline int afc2_smooth_push(afc2_smoother_t *m, size_t k, int d)
 {
-    unsigned slot = (unsigned)(k % AFC2_SMOOTH);
+    unsigned slot = (unsigned)(k % AFC2_BOX1);
     if (m->valid[slot]) { m->sum -= m->delta[slot]; --m->count; }
     m->valid[slot] = d != INT16_MIN;
     m->delta[slot] = (int16_t)(m->valid[slot] ? d : 0);
     if (m->valid[slot]) { m->sum += d; ++m->count; }
-    int v = m->count ? (int)(m->sum * 2 / (int32_t)m->count) : 0;
+    int v1 = m->count ? (int)(m->sum * 2 / (int32_t)m->count) : 0;
+    unsigned slot2 = (unsigned)(k % AFC2_BOX2);
+    m->sum2 += v1 - m->stage1[slot2];
+    m->stage1[slot2] = (int16_t)v1;
+    int v = (int)(m->sum2 / (int32_t)AFC2_BOX2);
     return v > 127 ? 127 : v < -127 ? -127 : v;
 }
 
@@ -204,7 +218,7 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
     int32_t lo = INT32_MAX, hi = INT32_MIN;
     for (size_t k = 1; k < n; ++k) {
         int v = afc2_smooth_push(&m, k, afc2_delta(s[k - 1], s[k], lut));
-        if (k >= AFC2_SMOOTH && m.count * 2u >= AFC2_SMOOTH) {
+        if (k >= AFC2_SMOOTH && m.count * 2u >= AFC2_BOX1) {
             if (v < lo) lo = v;
             if (v > hi) hi = v;
         }

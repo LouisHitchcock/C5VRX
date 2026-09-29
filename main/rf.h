@@ -100,6 +100,11 @@ esp_err_t rf_request_native_agc_boot(bool enable);
 /* #121 section 9 lab A/B: keep PHY PLL/RXCAL tracking running next boot. */
 esp_err_t rf_request_pll_track_boot(bool enable);
 bool rf_pll_track_active(void);
+/* #121 native AGC start gain (0x600A7094[8:2]): 0 = vendor value, else
+ * 40..vendor. Persisted; applied at boot, on retune and immediately. */
+esp_err_t rf_set_native_initgain(uint8_t gain);
+uint8_t rf_native_initgain(void);
+uint8_t rf_native_initgain_vendor(void);
 void rf_dump_agc_regs(void);
 void rf_poll_agc_live(void);
 /* LAB (#121): 'P' select next candidate AGC field, 'M'/'J' step it up/down,
