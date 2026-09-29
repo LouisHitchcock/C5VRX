@@ -173,6 +173,8 @@ jobs:
           python3 tools/p8env_sweep.py --self-test
           gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_afc_state.c -o /tmp/test_afc_state
           /tmp/test_afc_state
+          gcc -std=c11 -Wall -Wextra -Werror -D_DEFAULT_SOURCE -Imain tools/test_afc_v2.c -lm -o /tmp/test_afc_v2
+          /tmp/test_afc_v2
 
   build:
     name: Build Production Firmware (ESP32-C5)

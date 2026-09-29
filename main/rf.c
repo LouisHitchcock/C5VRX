@@ -474,8 +474,20 @@ typedef struct {
  * 7010/7014[31:23] and 7044[7:0]); packet detections re-arm a packet AGC. */
 /* Rounds 1-3 on hardware were invalidated: the receiver had been moved to an
  * adjacent channel (BOOT short-click) and saw no carrier. All candidates are
- * retested together on the correct channel. */
+ * retested together on the correct channel.
+ *
+ * The first three entries come from documented semantics rather than guesses.
+ * ESPARGOS esp-sdr (C5/C6/C61 manual gain) names 0x600A7094[8:2] the AGC
+ * initial gain and 0x600A713C[24:18] the AGC gain threshold. The pinned C5
+ * AGC max-gain setup routine writes max-1 (82) into both, which matches the
+ * native restarts jumping back to 82. esp-sdr also disables RF saturation
+ * intervention for stable gain; on C5 that is the rfagc block, whose only
+ * register write in phy_rfagc_disable() is 0x600A705C = 0 (a width-0 entry
+ * below toggles the whole word between 0 and its boot value). */
 static const agc_lab_field_t s_agc_lab_fields[] = {
+    {"7094_8_2_initgain", 0x600A7094u, 2u, 7u, 8u, false},
+    {"713C_24_18_thresh", 0x600A713Cu, 18u, 7u, 8u, false},
+    {"705C_rfsat_word",   0x600A705Cu, 0u, 0u, 0u, false},
     {"7128_31_24", 0x600A7128u, 24u, 8u, 2u, true},
     {"7034_30_24", 0x600A7034u, 24u, 7u, 1u, false},
     {"7158_6_0",   0x600A7158u, 0u,  7u, 1u, false},
@@ -493,11 +505,13 @@ static unsigned s_agc_lab_selected;
 
 static uint32_t agc_lab_get(const agc_lab_field_t *f)
 {
+    if (!f->width) return REG32(f->reg);
     return (REG32(f->reg) >> f->shift) & ((1u << f->width) - 1u);
 }
 
 static int agc_lab_value(const agc_lab_field_t *f, uint32_t raw)
 {
+    if (!f->width) return raw ? 1 : 0; /* whole-word toggle: 1 = vendor value */
     if (f->is_signed && (raw & (1u << (f->width - 1u))))
         return (int)raw - (int)(1u << f->width);
     return (int)raw;
@@ -518,6 +532,10 @@ void rf_lab_agc_field(char action)
         for (unsigned i = 0; i < AGC_LAB_FIELD_COUNT; ++i) {
             if (!s_agc_lab_captured[i]) continue;
             const agc_lab_field_t *f = &s_agc_lab_fields[i];
+            if (!f->width) {
+                REG32(f->reg) = s_agc_lab_boot[i];
+                continue;
+            }
             uint32_t mask = ((1u << f->width) - 1u) << f->shift;
             REG32(f->reg) = (REG32(f->reg) & ~mask) | (s_agc_lab_boot[i] << f->shift);
         }
@@ -525,6 +543,15 @@ void rf_lab_agc_field(char action)
         unsigned i = s_agc_lab_selected;
         const agc_lab_field_t *f = &s_agc_lab_fields[i];
         agc_lab_capture(i);
+        if (!f->width) {
+            /* 'J' = intervention off (word 0), 'M' = restore vendor word. */
+            REG32(f->reg) = action == 'J' ? 0u : s_agc_lab_boot[i];
+            action = 0;
+        }
+    }
+    if (action == 'M' || action == 'J') {
+        unsigned i = s_agc_lab_selected;
+        const agc_lab_field_t *f = &s_agc_lab_fields[i];
         int lo = f->is_signed ? -(1 << (f->width - 1u)) : 0;
         int hi = f->is_signed ? (1 << (f->width - 1u)) - 1 : (int)((1u << f->width) - 1u);
         int v = agc_lab_value(f, agc_lab_get(f)) +

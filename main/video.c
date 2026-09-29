@@ -45,6 +45,7 @@
 #include "phase8_gain_lut.h"
 #include "phase8_envelope.h"
 #include "afc_state.h"
+#include "afc_v2.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -1299,6 +1300,12 @@ static volatile int s_last_fusion_stability = 0;
 static volatile uint32_t s_last_fusion_fast_samples = 0;
 
 static volatile int s_cfo_khz = 0;              /* Carrier Frequency Offset in kHz */
+/* #115 AFC V2 reference levels (measurement only; AFC does not use them until
+ * the VTX-specific centre level is characterised on hardware). IIR over
+ * control windows that contained at least one burst-confirmed sync. */
+static volatile int s_afc2_sync_khz, s_afc2_porch_khz;
+static volatile int s_afc2_polarity, s_afc2_standard, s_afc2_burst_x10;
+static volatile uint32_t s_afc2_lines;
 static volatile bool s_channel_scan_active;
 static volatile unsigned s_channel_scan_progress;
 
@@ -2034,6 +2041,8 @@ static void p8env_capture_report(void)
            "gain_reg_changes=%lu fw_gain_epochs=%lu gain=%u agc=%u profile=%u demod=%s "
            "ngain=%u ngain_min=%u ngain_max=%u ngain_sw_per_ms_x10=%lu "
            "nagc_restart_per_ms_x10=%lu pll=%u "
+           "afc2_lines=%lu afc2_std=%s afc2_pol=%d afc2_sync_khz=%d afc2_porch_khz=%d "
+           "afc2_burst_x10=%d "
            "probes=%u stale=%u n=%lu pairs=%lu p50=%u p90=%u p95=%u "
            "central_pm=%u origin_pm=%u clip_pm=%u coh_pm=%u hard_pm=%u "
            "hard_central_pm=%u hard_outer_pm=%u central_hard_share_pm=%u class=%s "
@@ -2053,7 +2062,11 @@ static void p8env_capture_report(void)
            live_demod_tag(), ngain.median, ngain.min, ngain.max,
            (unsigned long)ngain.switches_per_ms_x10,
            (unsigned long)ngain.restarts_per_ms_x10,
-           rf_pll_track_active() ? 1u : 0u, probes, stale,
+           rf_pll_track_active() ? 1u : 0u,
+           (unsigned long)s_afc2_lines,
+           s_afc2_standard == 2 ? "PAL" : s_afc2_standard == 1 ? "NTSC" : "NONE",
+           s_afc2_polarity, s_afc2_sync_khz, s_afc2_porch_khz, s_afc2_burst_x10,
+           probes, stale,
            (unsigned long)acc.samples, (unsigned long)acc.pairs,
            e.p50, e.p90, e.p95, e.central_pm, e.origin_pm, e.clip_pm,
            e.coherence_pm, e.hard_pm, e.hard_given_central_pm,
@@ -4513,6 +4526,25 @@ static void analog_agc_task(void *arg)
         s_last_iq_cross_permille = metrics.iq_cross_permille;
         s_last_winding_permille = metrics.winding_permille;
         s_last_strong_winding_permille = metrics.strong_winding_permille;
+
+        /* #115: burst-free blanking reference, measured only from windows
+         * without a settle period or gain/PHY transition. */
+        if (settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count) {
+            afc2_result_t afc2 = afc2_measure(s_control_sample_buf,
+                                              sizeof(s_control_sample_buf),
+                                              c5vrx_phase8_gain_lut);
+            if (afc2.lines && afc2.standard) {
+                bool first = s_afc2_lines == 0u;
+                s_afc2_sync_khz = first ? afc2.sync_khz :
+                                  (s_afc2_sync_khz * 7 + afc2.sync_khz) / 8;
+                s_afc2_porch_khz = first ? afc2.porch_khz :
+                                   (s_afc2_porch_khz * 7 + afc2.porch_khz) / 8;
+                s_afc2_polarity = afc2.polarity;
+                s_afc2_standard = afc2.standard;
+                s_afc2_burst_x10 = afc2.burst_x10;
+                s_afc2_lines += afc2.lines;
+            }
+        }
 
         /* The undocumented reads are observation-only and rate-limited. AUTO
          * uses them only when they return physically plausible values. */
