@@ -1,9 +1,10 @@
 # Native AGC V2: Phase8 image quality, AFC reference, range (#121, #115, #118)
 
-Status: research and measurement tooling. No production control change yet.
-Native hardware AGC stays the only gain owner (#121). Production RF behaviour
-is identical to `main` apart from releasing FFT scale again after a channel
-change in native mode.
+Status: research, measurement tooling and opt-in controls. Default
+behaviour is unchanged: native hardware AGC stays the only gain owner (#121),
+AFC stays OFF, the start-gain override stays at the vendor value and the
+demodulator stays Phase8. Production RF behaviour differs from `main` only by
+releasing FFT scale again after a channel change in native mode.
 
 ## Native AGC register semantics
 
@@ -73,17 +74,57 @@ AGC target level.**
   instantaneous frequency only on the sync tip and on the back porch after the
   colour burst. Sync is detected on the demodulated frequency, independent of
   FM polarity, bracketed by matching porches and confirmed by the colour burst,
-  which also reports PAL/NTSC. The result is in P8ENV (`afc2_*`). AFC does not
-  act on it until the VTX's centre level is characterised (#115 section 9).
-  Test: `tools/test_afc_v2.c`, 48 synthetic PAL/NTSC cases through the real
+  which also reports PAL/NTSC. Smoothing is a 20+6 sample cascade that nulls
+  the VTX audio subcarriers (6.0 / 6.5 MHz). Reported in P8ENV (`afc2_*`).
+  Test: `tools/test_afc_v2.c`, 48 synthetic PAL/NTSC cases (both polarities,
+  colour burst, random picture blocks, audio subcarriers) through the real
   quantiser.
+- **V2 correction**: `main/afc_v2_ctrl.h`. AUTO AFC (default OFF, acquisition
+  only) now corrects only from that reference: 16 burst-confirmed estimates,
+  same polarity/standard, MAD <= 80 kHz, 50 kHz deadband, steps <= 250 kHz,
+  at most 4 corrections per acquisition. The porch is the default centre
+  reference; #115 section 9 still requires confirming the centre level and
+  the sign on hardware before AUTO AFC is recommended. Test:
+  `tools/test_afc_v2_ctrl.c`.
+
+## VTX facts that matter here (RTC6705 datasheet)
+
+Almost every analog FPV VTX uses the Richwave RTC6705: 1 Vpp video input and
+FM audio subcarriers at **6.0 and 6.5 MHz** at -25..-30 dBc (modulation index
+~0.06-0.11, i.e. roughly 0.4-0.7 MHz peak carrier deviation each; 12 kHz audio
+pre-emphasis). A normal FPV receiver low-pass filters the demodulated video,
+removing them. C5VRX puts the demodulated frequency straight on the 20 MS/s
+DAC, which attenuates 6.5 MHz only ~16 %, so a tone of roughly 10 IRE at
+6-6.5 MHz is probably present in the CVBS output as fine static patterns. This
+is unconfirmed on this VTX: the short `Q` captures were too noisy to resolve it.
+A full-window capture (`z` + `tools/analyze_q4_window.py`) settles it. If
+confirmed, the fix is analog: a 6.0/6.5 MHz ceramic sound trap (the part TVs
+use) or an LC notch at the DAC output. A single RC pole cannot separate 6.5
+MHz from 4.43 MHz chroma.
+
+## Lab tools in this PR (all read-only unless stated)
+
+| Key | Function |
+|---|---|
+| `E` | P8ENV row: channel, Q4 envelope, native AGC state/switch/restart rate, start gain, AFC V2 reference |
+| `h` | fast poll of the native AGC state bytes (histogram, switch rate) |
+| `Q` / `z` | raw Q4: four 64-sample runs / one contiguous 4092-sample window |
+| `T` | AGC register dump (`0x600A7000..71FC`, `0x600A8000..807C`) |
+| `P` `M` `J` `B` | *writes*: select / step / restore candidate AGC fields (reversible, reboot restores) |
+| `w` | *writes, persisted*: native AGC start gain vendor -> 74 -> 66 -> vendor |
+| `u` | *persisted, reboots*: Golden (Phase5) <-> Phase8 demodulator A/B |
+| `i` | *persisted, reboots*: PLL-tracking A/B (only in a lab build with `CONFIG_ESP_PHY_DISABLE_PLL_TRACK=n`) |
+| `N` | *persisted, reboots*: native AGC <-> firmware gain |
 
 ## Next bench session (script, not exploration)
 
 1. Verify `ch=A1`, carrier present (coherence > 0) before anything else.
-2. Range check against `main` at a fixed distance.
-3. Target-level candidates, 3 readings per step, VTX close: `7094` initial
-   gain, `713C` threshold, `705C` RF saturation off, `8028` bytes, `8020`,
-   `801C`. Success = larger P50 without clipping and fewer restarts.
-4. PLL tracking A/B for the white-screen / stuck-low state (separate lab build
-   with `CONFIG_ESP_PHY_DISABLE_PLL_TRACK=n`, toggled with `i`).
+2. Start gain A/B: hold each of vendor / 74 / 66 for about 30 s, operator
+   answers "blue / not blue, noisy / clean" per setting (no timing race).
+3. Range: same spot at the edge, Phase8 vs Golden (`u`) and start gain vendor
+   vs best candidate; compare with `main` if doubts remain.
+4. Two `z` windows with the VTX on: confirm or reject the 6.0/6.5 MHz audio
+   tones and measure AGC steps per line.
+5. AFC V2 on hardware: step the offset (`,` / `.`) and check `afc2_porch_khz`
+   follows 1:1 with the expected sign; only then try AUTO AFC.
+6. PLL tracking A/B for the white-screen / stuck-low state (lab build).
