@@ -177,6 +177,12 @@ def analyze(rows):
         report["native_gain_reg_changes"] = sum(r.get("gain_reg_changes", 0) for r in native)
         if blocked or any(r.get("fw_gain_epochs", 0) for r in native):
             report["warnings"].append("native capture saw firmware gain activity; rows are tainted")
+    no_carrier = [r for r in rows if r.get("hard_pm", 0) >= 500 and r.get("coh_pm", 1000) < 50]
+    if no_carrier:
+        chans = sorted({str(r.get("ch", "?")) for r in no_carrier})
+        report["warnings"].append(
+            f"{len(no_carrier)} rows show no carrier (hard>=500pm, coh<50pm) on channel(s) "
+            f"{','.join(chans)}: check VTX power and receiver channel before trusting them")
     for key in FAULT_KEYS:
         values = [r[key] for r in rows if isinstance(r.get(key), int)]
         if values and max(values) != min(values):

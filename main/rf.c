@@ -51,6 +51,10 @@ static bool s_analog_bw40 = true;
 #define NATIVE_AGC_NVS_KEY       "native_agc"
 #define RX_AGC_CTRL_REG          0x600A7030u
 static bool s_native_agc;
+/* #121 section 9 lab A/B: PHY PLL/RXCAL tracking stays stopped unless this
+ * boot was explicitly requested with NVS c5vrx/pll_track = 1. */
+#define PLL_TRACK_NVS_KEY "pll_track"
+static bool s_pll_track;
 static volatile uint32_t s_native_agc_blocked_writes;
 
 /* MAC TX queue hardware registers (IDF-pinned: ESP32-C5, IDF 6.0.x).
@@ -335,6 +339,33 @@ static bool native_agc_boot_requested(void)
     return value != 0u;
 }
 
+static bool pll_track_boot_requested(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+        return false;
+    if (nvs_get_u8(handle, PLL_TRACK_NVS_KEY, &value) != ESP_OK) value = 0;
+    nvs_close(handle);
+    return value == 1u;
+}
+
+esp_err_t rf_request_pll_track_boot(bool enable)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, PLL_TRACK_NVS_KEY, enable ? 1u : 0u);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+bool rf_pll_track_active(void)
+{
+    return s_pll_track;
+}
+
 esp_err_t rf_request_native_agc_boot(bool enable)
 {
     nvs_handle_t handle;
@@ -372,11 +403,12 @@ void rf_dump_agc_regs(void)
     printf("\n");
 }
 
-/* Live native gain index (#121 section 7). Bench evidence: the low byte of
- * 0x600A706C (mirrored with more re-acquisition detail in 0x600A7078) holds
- * 82-83 with no carrier and ~32-41 with a close VTX, and only moves while a
- * carrier is present. Its field semantics beyond "native gain state" are not
- * decoded; treat it as telemetry, never as a control input. */
+/* Native AGC state telemetry (#121 section 7). 0x600A706C[15:8] is the
+ * signed signal RSSI read by the vendor phy_get_sigrssi(). Its low byte and
+ * 0x600A7078[7:0] are undecoded AGC state: on hardware they hold 82-83 with
+ * no carrier, sit in the 30s-60s with a carrier, and 7078 repeatedly jumps
+ * back to >=80 (native re-acquisition from the top) while a carrier is
+ * present. Telemetry only, never a control input. */
 #define AGC_LIVE_REG_A 0x600A706Cu
 #define AGC_LIVE_REG_B 0x600A7078u
 #define AGC_POLL_SAMPLES 4000u
@@ -386,14 +418,18 @@ void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
     static uint16_t hist[256];
     if (!out || !samples) return;
     memset(hist, 0, sizeof(hist));
-    uint32_t switches = 0;
+    uint32_t switches = 0, restarts = 0;
     uint8_t last = (uint8_t)REG32(AGC_LIVE_REG_A);
+    uint8_t last_b = (uint8_t)REG32(AGC_LIVE_REG_B);
     int64_t start = esp_timer_get_time();
     for (unsigned n = 0; n < samples; ++n) {
         uint8_t v = (uint8_t)REG32(AGC_LIVE_REG_A);
+        uint8_t b = (uint8_t)REG32(AGC_LIVE_REG_B);
         ++hist[v];
         switches += v != last;
+        restarts += b >= 80u && last_b < 80u;
         last = v;
+        last_b = b;
         esp_rom_delay_us(2);
     }
     int64_t elapsed = esp_timer_get_time() - start;
@@ -402,6 +438,9 @@ void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
     out->switches = switches;
     out->switches_per_ms_x10 = elapsed > 0 ?
         (uint32_t)((uint64_t)switches * 10000u / (uint64_t)elapsed) : 0u;
+    out->restarts = restarts;
+    out->restarts_per_ms_x10 = elapsed > 0 ?
+        (uint32_t)((uint64_t)restarts * 10000u / (uint64_t)elapsed) : 0u;
     unsigned cumulative = 0;
     bool have_min = false, have_median = false;
     for (unsigned v = 0; v < 256u; ++v) {
@@ -414,6 +453,94 @@ void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
             have_median = true;
         }
     }
+}
+
+/* LAB (#121 section 6A): fields the vendor AGC init (phy_agc_reg_init_new)
+ * programs that may hold the native target level, thresholds or hysteresis.
+ * Each field is stepped reversibly from its captured boot value; 'restore'
+ * writes every captured value back, and a reboot re-runs vendor init.
+ * Fields are raw bit ranges: their semantics are exactly what this tests. */
+typedef struct {
+    const char *name;
+    uint32_t reg;
+    uint8_t shift, width, step;
+    bool is_signed;
+} agc_lab_field_t;
+
+/* Round 1 (7128[31:24], 7034[30:24], 7158[6:0], 71B0[27:21], plus the
+ * saturation bytes of 7064/7114) moved neither the Q4 target nor the switch
+ * rate on hardware. Round 2: packet-detect count (phy_rx_pkdet_num_set writes
+ * 0x808 to 7068) and the rx-sense detection threshold (phy_rx_sense_set writes
+ * 7010/7014[31:23] and 7044[7:0]); packet detections re-arm a packet AGC. */
+/* Rounds 1-3 on hardware were invalidated: the receiver had been moved to an
+ * adjacent channel (BOOT short-click) and saw no carrier. All candidates are
+ * retested together on the correct channel. */
+static const agc_lab_field_t s_agc_lab_fields[] = {
+    {"7128_31_24", 0x600A7128u, 24u, 8u, 2u, true},
+    {"7034_30_24", 0x600A7034u, 24u, 7u, 1u, false},
+    {"7158_6_0",   0x600A7158u, 0u,  7u, 1u, false},
+    {"71B0_27_21", 0x600A71B0u, 21u, 7u, 1u, false},
+    {"7068_7_0",   0x600A7068u, 0u,  8u, 2u, false},
+    {"7068_15_8",  0x600A7068u, 8u,  8u, 2u, false},
+    {"7010_31_23", 0x600A7010u, 23u, 9u, 4u, true},
+    {"7014_31_23", 0x600A7014u, 23u, 9u, 4u, true},
+    {"7044_7_0",   0x600A7044u, 0u,  8u, 4u, true},
+};
+#define AGC_LAB_FIELD_COUNT (sizeof(s_agc_lab_fields) / sizeof(s_agc_lab_fields[0]))
+static uint32_t s_agc_lab_boot[AGC_LAB_FIELD_COUNT];
+static bool s_agc_lab_captured[AGC_LAB_FIELD_COUNT];
+static unsigned s_agc_lab_selected;
+
+static uint32_t agc_lab_get(const agc_lab_field_t *f)
+{
+    return (REG32(f->reg) >> f->shift) & ((1u << f->width) - 1u);
+}
+
+static int agc_lab_value(const agc_lab_field_t *f, uint32_t raw)
+{
+    if (f->is_signed && (raw & (1u << (f->width - 1u))))
+        return (int)raw - (int)(1u << f->width);
+    return (int)raw;
+}
+
+static void agc_lab_capture(unsigned i)
+{
+    if (s_agc_lab_captured[i]) return;
+    s_agc_lab_boot[i] = agc_lab_get(&s_agc_lab_fields[i]);
+    s_agc_lab_captured[i] = true;
+}
+
+void rf_lab_agc_field(char action)
+{
+    if (action == 'P') {
+        s_agc_lab_selected = (s_agc_lab_selected + 1u) % AGC_LAB_FIELD_COUNT;
+    } else if (action == 'B') {
+        for (unsigned i = 0; i < AGC_LAB_FIELD_COUNT; ++i) {
+            if (!s_agc_lab_captured[i]) continue;
+            const agc_lab_field_t *f = &s_agc_lab_fields[i];
+            uint32_t mask = ((1u << f->width) - 1u) << f->shift;
+            REG32(f->reg) = (REG32(f->reg) & ~mask) | (s_agc_lab_boot[i] << f->shift);
+        }
+    } else if (action == 'M' || action == 'J') {
+        unsigned i = s_agc_lab_selected;
+        const agc_lab_field_t *f = &s_agc_lab_fields[i];
+        agc_lab_capture(i);
+        int lo = f->is_signed ? -(1 << (f->width - 1u)) : 0;
+        int hi = f->is_signed ? (1 << (f->width - 1u)) - 1 : (int)((1u << f->width) - 1u);
+        int v = agc_lab_value(f, agc_lab_get(f)) +
+                (action == 'M' ? f->step : -(int)f->step);
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+        uint32_t mask = ((1u << f->width) - 1u) << f->shift;
+        uint32_t raw = (uint32_t)v & ((1u << f->width) - 1u);
+        REG32(f->reg) = (REG32(f->reg) & ~mask) | (raw << f->shift);
+    }
+    const agc_lab_field_t *f = &s_agc_lab_fields[s_agc_lab_selected];
+    agc_lab_capture(s_agc_lab_selected);
+    printf("AGCFIELD sel=%s value=%d boot=%d reg=0x%08lx\n", f->name,
+           agc_lab_value(f, agc_lab_get(f)),
+           agc_lab_value(f, s_agc_lab_boot[s_agc_lab_selected]),
+           (unsigned long)REG32(f->reg));
 }
 
 void rf_poll_agc_live(void)
@@ -455,6 +582,7 @@ esp_err_t rf_start(void)
     esp_err_t err = init_nvs();
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
+    s_pll_track = pll_track_boot_requested();
 
     /* esp_netif_init + default event loop are required by esp_wifi_init().
      * Tolerant of ESP_ERR_INVALID_STATE (already initialized by IDF). */
@@ -582,17 +710,22 @@ esp_err_t rf_start(void)
      * C5VRX freezes receiver ownership. */
     arc_capture_vendor_state();
 
-    /* Disable PHY PLL / RXCAL tracking timer if compiled in, so it never
-     * recalibrates RF / RX hardware during continuous analog video reception.
-     * With CONFIG_ESP_PHY_DISABLE_PLL_TRACK=y, the tracking timer is omitted entirely. */
+    /* Stop the PHY PLL / RXCAL tracking timer so it never recalibrates RF /
+     * RX hardware during continuous analog video reception. A lab boot may
+     * keep it running to A/B the native-AGC stuck-low state (#121 sec. 9). */
 #if !CONFIG_ESP_PHY_DISABLE_PLL_TRACK
-    extern void phy_track_pll_deinit(void);
-    phy_track_pll_deinit();
+    if (!s_pll_track) {
+        extern void phy_track_pll_deinit(void);
+        phy_track_pll_deinit();
+    }
+#else
+    s_pll_track = false;
 #endif
 
-    ESP_EARLY_LOGW(TAG, "RF ready: 5865 MHz / ch%u / BW40 / gain=%s / sta_disconnected_pm=0 / pll_track=disabled",
+    ESP_EARLY_LOGW(TAG, "RF ready: 5865 MHz / ch%u / BW40 / gain=%s / sta_disconnected_pm=0 / pll_track=%s",
                    RF_CHANNEL_NUMBER,
-                   s_native_agc ? "NATIVE_HW_AGC(zero firmware writes)" : "forced(52)");
+                   s_native_agc ? "NATIVE_HW_AGC(zero firmware writes)" : "forced(52)",
+                   s_pll_track ? "ENABLED(lab)" : "disabled");
     return ESP_OK;
 }
 

@@ -97,14 +97,22 @@ typedef struct {
 } rf_native_agc_state_t;
 
 esp_err_t rf_request_native_agc_boot(bool enable);
+/* #121 section 9 lab A/B: keep PHY PLL/RXCAL tracking running next boot. */
+esp_err_t rf_request_pll_track_boot(bool enable);
+bool rf_pll_track_active(void);
 void rf_dump_agc_regs(void);
 void rf_poll_agc_live(void);
+/* LAB (#121): 'P' select next candidate AGC field, 'M'/'J' step it up/down,
+ * 'B' restore all captured vendor values. Prints the selected field. */
+void rf_lab_agc_field(char action);
 
 /* Read-only fast poll of the live native gain index (0x600A706C[7:0]). */
 typedef struct {
     uint8_t median, min, max;
     uint32_t switches;
     uint32_t switches_per_ms_x10;
+    uint32_t restarts;            /* 7078 re-entries into >=80 (re-acquisition) */
+    uint32_t restarts_per_ms_x10;
     uint32_t elapsed_us;
 } rf_native_gain_stats_t;
 void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out);

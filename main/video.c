@@ -2030,9 +2030,10 @@ static void p8env_capture_report(void)
     const p8env_summary_t e = p8env_summarize(&acc, &P8ENV_PROVISIONAL);
     const hw_transport_counters_t t = lab_counter_snapshot();
 
-    printf("P8ENV t_ms=%lld native=%u blocked=%lu gain_reg=0x%08lx agc_reg=0x%08lx "
+    printf("P8ENV t_ms=%lld ch=%s mhz=%u native=%u blocked=%lu gain_reg=0x%08lx agc_reg=0x%08lx "
            "gain_reg_changes=%lu fw_gain_epochs=%lu gain=%u agc=%u profile=%u demod=%s "
            "ngain=%u ngain_min=%u ngain_max=%u ngain_sw_per_ms_x10=%lu "
+           "nagc_restart_per_ms_x10=%lu pll=%u "
            "probes=%u stale=%u n=%lu pairs=%lu p50=%u p90=%u p95=%u "
            "central_pm=%u origin_pm=%u clip_pm=%u coh_pm=%u hard_pm=%u "
            "hard_central_pm=%u hard_outer_pm=%u central_hard_share_pm=%u class=%s "
@@ -2041,6 +2042,7 @@ static void p8env_capture_report(void)
            "sync_q=%d std_valid=%u rx_ovf=%lu tx_empty=%lu gdma_in=%lu gdma_out=%lu "
            "bs_empty=%lu bs_eof=%lu\n",
            (long long)(esp_timer_get_time() / 1000),
+           rf_get_current_channel()->name, (unsigned)rf_get_frequency_mhz(),
            native_after.active ? 1u : 0u,
            (unsigned long)native_after.blocked_writes,
            (unsigned long)native_after.gain_status_reg,
@@ -2049,7 +2051,9 @@ static void p8env_capture_report(void)
            (unsigned long)(s_gain_transition_count - gain_epoch),
            s_current_gain, (unsigned)s_agc_mode, (unsigned)s_rx_profile,
            live_demod_tag(), ngain.median, ngain.min, ngain.max,
-           (unsigned long)ngain.switches_per_ms_x10, probes, stale,
+           (unsigned long)ngain.switches_per_ms_x10,
+           (unsigned long)ngain.restarts_per_ms_x10,
+           rf_pll_track_active() ? 1u : 0u, probes, stale,
            (unsigned long)acc.samples, (unsigned long)acc.pairs,
            e.p50, e.p90, e.p95, e.central_pm, e.origin_pm, e.clip_pm,
            e.coherence_pm, e.hard_pm, e.hard_given_central_pm,
@@ -5124,12 +5128,28 @@ static void console_diag_task(void *arg)
                     p8env_capture_report();
                 } else if (c == 'N') {
                     lab_toggle_native_agc_boot();
+                } else if (c == 'i') {
+                    bool enable = !rf_pll_track_active();
+                    esp_err_t pll_err = rf_request_pll_track_boot(enable);
+                    printf("C5VRX_PLL_TRACK_ARMED next_boot=%s err=%s action=reboot\n",
+                           enable ? "enabled" : "disabled", esp_err_to_name(pll_err));
+                    if (pll_err == ESP_OK) {
+                        fflush(stdout);
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                        esp_restart();
+                    }
                 } else if (c == 'T') {
                     rf_dump_agc_regs();
                 } else if (c == 'Q') {
                     lab_dump_raw_probe();
                 } else if (c == 'h') {
                     rf_poll_agc_live();
+                } else if (c == 'P' || c == 'M' || c == 'J' || c == 'B') {
+                    rf_lab_agc_field((char)c);
+                    if (c != 'P') {
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        p8env_capture_report();
+                    }
                 } else if (c == 'g') {
                     lab_start_gain_sweep();
                 } else if (c == 'F') {
