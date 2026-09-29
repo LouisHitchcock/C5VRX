@@ -1217,6 +1217,18 @@ static const char *demod_mode_name(void)
     return "GOLDEN";
 }
 
+/* Telemetry tag for the demodulator actually loaded in the BitScrambler.
+ * The Phase8 build selects its program at compile time while s_demod_mode
+ * still holds the GOLDEN enum, so logs must not report the enum (#121). */
+static const char *live_demod_tag(void)
+{
+#if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
+    return "PHASE8";
+#else
+    return s_demod_mode == DEMOD_MODE_TRAJECTORY_V2 ? "TRAJ_V2" : "GOLDEN";
+#endif
+}
+
 static void apply_rf_bandwidth(bool bw40)
 {
     s_last_phy_write_us = esp_timer_get_time();
@@ -1897,7 +1909,7 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            "winding_pm=%d strong_winding_pm=%d sync_q=%d sync_width=%u "
            "fusion_ctx=%d fusion_q=%d fusion_conf=%d fusion_lowiq_pm=%d "
            "fusion_lag2_pm=%d fusion_lag4_pm=%d fusion_consensus_pm=%d fusion_slope_x100=%d "
-           "traj_uncert_pm=%d pll_slip_pm=%d pll_hold_pm=%d demod=%u "
+           "traj_uncert_pm=%d pll_slip_pm=%d pll_hold_pm=%d demod=%s "
            "fusion_risk=%d fusion_fade=%d fusion_recovery=%d fusion_stability=%d fusion_fast_n=%lu "
            "tx_quiet=%u fft_forced=%u fft=%d filter_mode=%u adc_sel=%u filter_reg=0x%08lx "
            "adc_reg=0x%08lx source_mux=0x%08lx rf_stage=%u rf_code=%u bb_code=%u fine=%u "
@@ -1921,7 +1933,7 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            s_last_fusion_low_confidence_pm, s_last_fusion_lag2_pm,
            s_last_fusion_lag4_pm, s_last_fusion_consensus_pm, s_last_fusion_slope_x100,
            s_last_trajectory_uncertainty_pm, s_last_pll_lite_slip_pm,
-           s_last_pll_lite_hold_pm, (unsigned)s_demod_mode,
+           s_last_pll_lite_hold_pm, live_demod_tag(),
            s_last_fusion_risk, s_last_fusion_fade, s_last_fusion_recovery,
            s_last_fusion_stability, (unsigned long)s_last_fusion_fast_samples,
            s_lab_tx_quiet ? 1u : 0u,
@@ -2003,11 +2015,14 @@ static void p8env_capture_report(void)
         vTaskDelay(1);
     }
     rf_get_native_agc_state(&native_after);
+    rf_native_gain_stats_t ngain;
+    rf_native_gain_stats(2000u, &ngain);
     const p8env_summary_t e = p8env_summarize(&acc, &P8ENV_PROVISIONAL);
     const hw_transport_counters_t t = lab_counter_snapshot();
 
     printf("P8ENV t_ms=%lld native=%u blocked=%lu gain_reg=0x%08lx agc_reg=0x%08lx "
-           "gain_reg_changes=%lu fw_gain_epochs=%lu gain=%u agc=%u profile=%u demod=%u "
+           "gain_reg_changes=%lu fw_gain_epochs=%lu gain=%u agc=%u profile=%u demod=%s "
+           "ngain=%u ngain_min=%u ngain_max=%u ngain_sw_per_ms_x10=%lu "
            "probes=%u stale=%u n=%lu pairs=%lu p50=%u p90=%u p95=%u "
            "central_pm=%u origin_pm=%u clip_pm=%u coh_pm=%u hard_pm=%u "
            "hard_central_pm=%u hard_outer_pm=%u central_hard_share_pm=%u class=%s "
@@ -2023,7 +2038,8 @@ static void p8env_capture_report(void)
            (unsigned long)gain_reg_changes,
            (unsigned long)(s_gain_transition_count - gain_epoch),
            s_current_gain, (unsigned)s_agc_mode, (unsigned)s_rx_profile,
-           (unsigned)s_demod_mode, probes, stale,
+           live_demod_tag(), ngain.median, ngain.min, ngain.max,
+           (unsigned long)ngain.switches_per_ms_x10, probes, stale,
            (unsigned long)acc.samples, (unsigned long)acc.pairs,
            e.p50, e.p90, e.p95, e.central_pm, e.origin_pm, e.clip_pm,
            e.coherence_pm, e.hard_pm, e.hard_given_central_pm,
@@ -5098,6 +5114,8 @@ static void console_diag_task(void *arg)
                     rf_dump_agc_regs();
                 } else if (c == 'Q') {
                     lab_dump_raw_probe();
+                } else if (c == 'h') {
+                    rf_poll_agc_live();
                 } else if (c == 'g') {
                     lab_start_gain_sweep();
                 } else if (c == 'F') {

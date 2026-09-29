@@ -15,6 +15,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
+#include "esp_timer.h"
 
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -367,6 +369,83 @@ void rf_dump_agc_regs(void)
         if ((addr & 0x1Fu) == 0u) printf("\nAGCREGS 0x%08lx:", (unsigned long)addr);
         printf(" %08lx", (unsigned long)REG32(addr));
     }
+    printf("\n");
+}
+
+/* Live native gain index (#121 section 7). Bench evidence: the low byte of
+ * 0x600A706C (mirrored with more re-acquisition detail in 0x600A7078) holds
+ * 82-83 with no carrier and ~32-41 with a close VTX, and only moves while a
+ * carrier is present. Its field semantics beyond "native gain state" are not
+ * decoded; treat it as telemetry, never as a control input. */
+#define AGC_LIVE_REG_A 0x600A706Cu
+#define AGC_LIVE_REG_B 0x600A7078u
+#define AGC_POLL_SAMPLES 4000u
+
+void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
+{
+    static uint16_t hist[256];
+    if (!out || !samples) return;
+    memset(hist, 0, sizeof(hist));
+    uint32_t switches = 0;
+    uint8_t last = (uint8_t)REG32(AGC_LIVE_REG_A);
+    int64_t start = esp_timer_get_time();
+    for (unsigned n = 0; n < samples; ++n) {
+        uint8_t v = (uint8_t)REG32(AGC_LIVE_REG_A);
+        ++hist[v];
+        switches += v != last;
+        last = v;
+        esp_rom_delay_us(2);
+    }
+    int64_t elapsed = esp_timer_get_time() - start;
+    *out = (rf_native_gain_stats_t){0};
+    out->elapsed_us = (uint32_t)elapsed;
+    out->switches = switches;
+    out->switches_per_ms_x10 = elapsed > 0 ?
+        (uint32_t)((uint64_t)switches * 10000u / (uint64_t)elapsed) : 0u;
+    unsigned cumulative = 0;
+    bool have_min = false, have_median = false;
+    for (unsigned v = 0; v < 256u; ++v) {
+        if (!hist[v]) continue;
+        if (!have_min) { out->min = (uint8_t)v; have_min = true; }
+        out->max = (uint8_t)v;
+        cumulative += hist[v];
+        if (!have_median && cumulative * 2u >= samples) {
+            out->median = (uint8_t)v;
+            have_median = true;
+        }
+    }
+}
+
+void rf_poll_agc_live(void)
+{
+    static uint16_t hist_a[256], hist_b[256];
+    memset(hist_a, 0, sizeof(hist_a));
+    memset(hist_b, 0, sizeof(hist_b));
+    uint32_t switches_a = 0, switches_b = 0;
+    uint8_t last_a = (uint8_t)REG32(AGC_LIVE_REG_A);
+    uint8_t last_b = (uint8_t)REG32(AGC_LIVE_REG_B);
+    int64_t start = esp_timer_get_time();
+    for (unsigned n = 0; n < AGC_POLL_SAMPLES; ++n) {
+        uint8_t a = (uint8_t)REG32(AGC_LIVE_REG_A);
+        uint8_t b = (uint8_t)REG32(AGC_LIVE_REG_B);
+        ++hist_a[a];
+        ++hist_b[b];
+        switches_a += a != last_a;
+        switches_b += b != last_b;
+        last_a = a;
+        last_b = b;
+        esp_rom_delay_us(2);
+    }
+    int64_t elapsed_us = esp_timer_get_time() - start;
+    printf("AGCPOLL n=%u elapsed_us=%lld switches_a=%lu switches_b=%lu\n",
+           AGC_POLL_SAMPLES, (long long)elapsed_us,
+           (unsigned long)switches_a, (unsigned long)switches_b);
+    printf("AGCPOLL hist_a(706C[7:0]):");
+    for (unsigned v = 0; v < 256u; ++v)
+        if (hist_a[v]) printf(" %u:%u", v, hist_a[v]);
+    printf("\nAGCPOLL hist_b(7078[7:0]):");
+    for (unsigned v = 0; v < 256u; ++v)
+        if (hist_b[v]) printf(" %u:%u", v, hist_b[v]);
     printf("\n");
 }
 
@@ -829,7 +908,10 @@ esp_err_t rf_set_channel(size_t index)
     /* Public/undocumented retune paths can touch PHY receive state. Re-assert
      * the currently selected analog bandwidth after every channel change. */
     if (s_native_agc) {
+        /* Restore native-owned state symmetrically with rf_start(): vendor
+         * retune paths may touch digital/baseband scaling (#121 section 8). */
         phy_force_rx_gain(false, 0);
+        phy_fft_scale_force(false, 0);
     } else {
         phy_disable_agc();
         phy_rfagc_disable();

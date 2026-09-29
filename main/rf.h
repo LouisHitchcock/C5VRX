@@ -98,6 +98,16 @@ typedef struct {
 
 esp_err_t rf_request_native_agc_boot(bool enable);
 void rf_dump_agc_regs(void);
+void rf_poll_agc_live(void);
+
+/* Read-only fast poll of the live native gain index (0x600A706C[7:0]). */
+typedef struct {
+    uint8_t median, min, max;
+    uint32_t switches;
+    uint32_t switches_per_ms_x10;
+    uint32_t elapsed_us;
+} rf_native_gain_stats_t;
+void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out);
 bool rf_native_agc_active(void);
 void rf_get_native_agc_state(rf_native_agc_state_t *state);
 
