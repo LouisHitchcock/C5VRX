@@ -4,7 +4,10 @@
 capture  Interactive attenuation sweep. Type a step label (e.g. the
          attenuator setting in dB) and press Enter; the script sends 'E'
          to the receiver --per-step times and tags the resulting P8ENV rows.
-         An empty line repeats the previous label; 'q' ends the sweep.
+         It then asks for the operator's picture rating (g=good, n=noisy,
+         b=bad, x=no picture), because sync_q/std_valid proved unreliable
+         as picture indicators on hardware. An empty label repeats the
+         previous one; 'q' ends the sweep.
 
 analyze  Summarize one or more logs per step and test the hypothesis
          "attenuation -> central-cell occupancy -> Phase8 hard-delta tail".
@@ -21,7 +24,9 @@ import sys
 import time
 
 ROW_RE = re.compile(r"\bP8ENV\s+(.*)$")
-STEP_RE = re.compile(r"\bP8ENV_STEP\s+label=(\S+)")
+STEP_RE = re.compile(r"\bP8ENV_STEP\s+label=(\S+)(?:\s+picture=(\w+))?")
+PICTURE_OK = {"good": True, "noisy": True, "bad": False, "none": False}
+PICTURE_KEYS = {"g": "good", "n": "noisy", "b": "bad", "x": "none"}
 KV_RE = re.compile(r"(\w+)=(\S+)")
 FAULT_KEYS = ("rx_ovf", "tx_empty", "gdma_in", "gdma_out", "bs_empty", "bs_eof")
 SUPPORT_RHO = 0.6
@@ -46,10 +51,13 @@ def parse_row(text):
 def parse_log(lines):
     label = "untagged"
     rows = []
+    pictures = {}
     for line in lines:
         step = STEP_RE.search(line)
         if step:
             label = step.group(1)
+            if step.group(2):
+                pictures[label] = step.group(2)
             continue
         match = ROW_RE.search(line)
         if match:
@@ -57,6 +65,9 @@ def parse_log(lines):
             if "central_pm" in row and "hard_pm" in row:
                 row["step"] = label
                 rows.append(row)
+    for row in rows:
+        if row["step"] in pictures:
+            row["picture"] = pictures[row["step"]]
     return rows
 
 
@@ -90,6 +101,9 @@ def median(rows, key):
 
 
 def healthy_video(row):
+    """Operator rating wins; sync flags are only a fallback for old logs."""
+    if "picture" in row:
+        return PICTURE_OK.get(row["picture"], False)
     return row.get("std_valid") == 1 and row.get("sync_q", 0) >= 60
 
 
@@ -123,6 +137,10 @@ def analyze(rows):
             "video_ok": sum(1 for r in group if healthy_video(r)),
             "class": max(classes, key=classes.get),
             "gain_regs": len({r.get("gain_reg") for r in group}),
+            "picture": group[0].get("picture", "-"),
+            "ngain": median(group, "ngain"),
+            "ngain_sw_ms": (median(group, "ngain_sw_per_ms_x10") / 10.0
+                            if median(group, "ngain_sw_per_ms_x10") is not None else None),
         })
 
     rho = spearman([r["central_pm"] for r in rows], [r["hard_pm"] for r in rows])
@@ -176,8 +194,9 @@ def fmt(value):
 
 def print_report(report):
     print(f"rows={report['rows']}")
-    cols = ("label", "n", "class", "p50", "p95", "central_pm", "origin_pm", "clip_pm",
-            "hard_pm", "hard_central_pm", "hard_outer_pm", "sync_q", "video_ok", "gain_regs")
+    cols = ("label", "n", "picture", "class", "p50", "p95", "central_pm", "origin_pm",
+            "clip_pm", "hard_pm", "hard_central_pm", "hard_outer_pm", "ngain", "ngain_sw_ms",
+            "video_ok")
     print(" ".join(f"{c:>15}" for c in cols))
     for step in report["steps"]:
         print(" ".join(f"{fmt(step[c]):>15}" for c in cols))
@@ -211,7 +230,7 @@ def capture(args):
             label = text or label
             if not label:
                 continue
-            log.write(f"P8ENV_STEP label={label}\n")
+            rows_before = []
             for _ in range(args.per_step):
                 ser.reset_input_buffer()
                 ser.write(b"E")
@@ -220,14 +239,20 @@ def capture(args):
                     line = ser.readline().decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
-                    log.write(line + "\n")
+                    rows_before.append(line)
                     if line.startswith("P8ENV "):
                         row = parse_row(line[6:])
                         print(f"  {label}: class={row.get('class')} central={row.get('central_pm')} "
                               f"hard={row.get('hard_pm')} p50={row.get('p50')} sync_q={row.get('sync_q')}")
                         break
-                log.flush()
                 time.sleep(args.interval)
+            rating = ""
+            while rating not in PICTURE_KEYS:
+                rating = input("picture? g=good n=noisy b=bad x=none: ").strip().lower()
+            log.write(f"P8ENV_STEP label={label} picture={PICTURE_KEYS[rating]}\n")
+            for line in rows_before:
+                log.write(line + "\n")
+            log.flush()
     ser.close()
 
 
@@ -259,6 +284,11 @@ def self_test():
 
     inverse = [dict(r, central_pm=i * 10, hard_pm=60 - i * 10) for i, r in enumerate(rows)]
     assert analyze(inverse)["verdict"] == "DISPROVES_ORIGIN_COLLAPSE"
+    rated = parse_log(SELF_TEST_LOG.replace("P8ENV_STEP label=35", "P8ENV_STEP label=35 picture=noisy")
+                      .replace("P8ENV_STEP label=20", "P8ENV_STEP label=20 picture=bad").splitlines())
+    rated_report = analyze(rated)
+    assert [s["picture"] for s in rated_report["steps"]] == ["-", "bad", "noisy"]
+    assert rated_report["first_video_loss_step"] == "20", rated_report["first_video_loss_step"]
     tainted = analyze(parse_log(SELF_TEST_LOG.replace("blocked=0 gain_reg=0x3f", "blocked=3 gain_reg=0x3f").splitlines()))
     assert any("tainted" in w for w in tainted["warnings"])
     assert analyze([])["verdict"] == "NO_DATA"
