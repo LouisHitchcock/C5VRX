@@ -46,6 +46,7 @@
 #include "phase8_envelope.h"
 #include "afc_state.h"
 #include "afc_v2.h"
+#include "afc_v2_ctrl.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -4414,6 +4415,9 @@ static void analog_agc_task(void *arg)
     int drift_counter = 0;
     int lost_counter = 0;
     afc_state_t afc_state = {0};
+    /* #115 AFC V2: AUTO AFC corrects only from the burst-free reference. */
+    afc2_ctrl_t afc2_ctrl = {0};
+    bool afc2_own_write = false;
     int bw_deep_fade_ticks = 0;
     int bw_recovery_ticks = 0;
     int overload_counter = 0;
@@ -4616,6 +4620,15 @@ static void analog_agc_task(void *arg)
             afc2_result_t afc2 = afc2_measure(s_control_sample_buf,
                                               sizeof(s_control_sample_buf),
                                               c5vrx_phase8_gain_lut);
+            (void)afc2_ctrl_sync(&afc2_ctrl,
+                                 afc_context((unsigned)s_afc_mode,
+                                             (unsigned)rf_get_channel_index(),
+                                             s_profile_generation, s_current_bw40,
+                                             rf_get_frequency_offset_khz(),
+                                             rf_get_arc_generation()),
+                                 afc2_own_write);
+            afc2_own_write = false;
+            afc2_ctrl_observe(&afc2_ctrl, &afc2);
             if (afc2.lines && afc2.standard) {
                 bool first = s_afc2_lines == 0u;
                 s_afc2_sync_khz = first ? afc2.sync_khz :
@@ -5145,10 +5158,15 @@ profile_post_gain:
              * lost and the controller returns to SEARCH/LEARN. */
             bool eligible = s_agc_state != AGC_STATE_TRACK &&
                             q_phase >= 75 && p_median >= 18 && settle_ticks == 0;
-            if (afc_tick(&afc_state, eligible)) {
+            /* #115: corrections come only from the burst-free blanking
+             * reference (afc_v2_ctrl.h); the scene-biased WBFM slope in
+             * afc_state is kept for display only. */
+            int32_t afc2_step = 0;
+            if (afc2_ctrl_decide(&afc2_ctrl, eligible, &afc2_step)) {
                 int cur_offset = rf_get_frequency_offset_khz();
-                /* The offset change resets the AFC context next tick. */
-                apply_frequency_offset_khz_tracked(cur_offset + afc_state.filtered_khz);
+                /* The offset change resets both AFC contexts next tick. */
+                apply_frequency_offset_khz_tracked(cur_offset + (int)afc2_step);
+                afc2_own_write = true;
                 settle_ticks = 2;
             }
         } else if (s_afc_mode == AFC_MODE_OFF && rf_get_frequency_offset_khz() != 0) {

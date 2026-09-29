@@ -721,15 +721,16 @@ check("AFC state hygiene: context-owned state, transition-invalidated CFO (#115)
       '#include "afc_state.h"' in video_c and
       "afc_sync_context(&afc_state" in video_c and
       "afc_invalidate(&afc_state)" in video_c and
-      "afc_tick(&afc_state, eligible)" in video_c and
+      "afc2_ctrl_decide(&afc2_ctrl, eligible, &afc2_step)" in video_c and
       "if (prev_power >= 8) {" in video_c and
       "afc_ticks" not in video_c)
 check("AFC V2 reference is measurement-only and transition-gated (#115)",
       '#include "afc_v2.h"' in video_c and
       "afc2_measure(s_control_sample_buf" in video_c and
       "settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count" in video_c and
-      "apply_frequency_offset_khz_tracked(cur_offset + afc_state.filtered_khz)" in video_c and
-      "s_afc2_porch_khz)" not in video_c.split("static void analog_agc_task", 1)[1].split("apply_frequency_offset_khz_tracked(cur_offset", 1)[0][-400:])
+      "apply_frequency_offset_khz_tracked(cur_offset + (int)afc2_step)" in video_c and
+      "cur_offset + afc_state.filtered_khz" not in video_c and
+      "cur_offset + s_cfo_khz" not in video_c)
 check("RSSI probe owns every AGC/BW/AFC write during its measurement",
       "s_rssi_probe_active = true;" in video_c and
       "if (s_rssi_probe_active) continue;" in video_c and
