@@ -143,6 +143,9 @@ jobs:
           test -n "${first_asset}"
           test -s "/tmp/c5vrx-pages-test/${first_asset}"
 
+      - name: Install host analysis dependencies
+        run: python -m pip install --quiet numpy
+
       - name: Run host range / demod tests
         shell: bash
         run: |
@@ -178,9 +181,9 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -D_DEFAULT_SOURCE -Imain tools/test_afc_v2_ctrl.c -lm -o /tmp/test_afc_v2_ctrl
           /tmp/test_afc_v2_ctrl
           python3 tools/analyze_agc_words.py --self-test
+          python3 tools/test_native_agc_phy_audit.py
           gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_agc_offset.c -o /tmp/test_agc_offset
           /tmp/test_agc_offset
-          pip install --quiet numpy
           python3 tools/sim_phase8_false_colour.py --self-test
           python3 tools/test_phase8_video.py
           python3 tools/analyze_q4_window.py --self-test
@@ -210,6 +213,25 @@ jobs:
         run: |
           . /opt/esp/idf/export.sh
           idf.py build
+
+      - name: Audit final native AGC bindings
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          python tools/analyze_native_agc_phy.py \
+            "$IDF_PATH/components/esp_phy/lib/esp32c5/libphy.a" \
+            --elf build/c5vrx3.elf --disassembly > build/native-agc-phy-audit.json
+
+      - name: Upload PHY research evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: c5vrx3-phy-research
+          path: |
+            build/c5vrx3.elf
+            build/c5vrx3.map
+            build/native-agc-phy-audit.json
+            sdkconfig
+          if-no-files-found: error
 
       - name: Prepare Release Artifacts
         shell: bash

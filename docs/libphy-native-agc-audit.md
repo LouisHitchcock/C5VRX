@@ -174,8 +174,10 @@ continuous AGC target in dB. PR #122's later live offset check found unchanged
 P50 and hunting: do not promote that self-calibrator or combine it with this
 experiment. Its CPU updates can obscure the causal result.
 
-Recommended priority: **watchdog/reset causality experiment**, then native
-acquisition-policy timing tests, with target-level work remaining separate.
+Original audit priority was the watchdog/reset causality experiment. The later
+carrier-present readback below invalidates that priority for this live baseline:
+reset is already disabled. Continue with final-ELF binding evidence and native
+AGC level/retrigger characterization, keeping target and timing trials separate.
 Do not modify a vendor binary until a specific behavior-changing patch has
 been physically demonstrated and source-level hooks are shown insufficient.
 
@@ -218,3 +220,97 @@ Consequently disabling this particular reset bit offers no change to this
 live baseline and cannot explain away the observed reacquisitions. This
 does not rule out other reset/packet-abort/retrigger paths. Vendor remains
 active; no picture improvement or calibrated timing reduction is claimed.
+
+
+## Follow-up: how to change the actual analog receive policy
+
+### 1. Find the implementation that actually runs
+
+IDF v6.0.2's
+[`esp32c5.rom.eco3.ld`](https://github.com/espressif/esp-idf/blob/v6.0.2/components/esp_rom/esp32c5/ld/esp32c5.rom.eco3.ld)
+exports `phy_enable_agc` at `0x400012E4`, `phy_agc_max_gain_set` at
+`0x40001318`, `phy_wifi_agc_sat_gain` at `0x40001358`,
+`phy_rx_sense_set` at `0x4000136C`, and `bb_agc_reg_update` at `0x40001680`.
+These declarations do not prove which version the firmware binds. They do
+explain why rewriting an archive member can miss the active path.
+
+The audit tool now accepts a final firmware ELF:
+
+```sh
+python tools/analyze_native_agc_phy.py "$IDF_PATH/components/esp_phy/lib/esp32c5/libphy.a" \
+  --elf build/c5vrx3.elf --disassembly > build/native-agc-phy-audit.json
+```
+
+It records the ELF hash, symbol addresses/sections and visible direct call
+sites. ROM-range bindings are marked separately from linked code. Indirect
+calls and ROM-internal execution remain outside this evidence; absence of a
+visible call is not proof a function is unused. Production CI runs this audit
+and stores the ELF, map, sdkconfig and JSON in a separate
+`c5vrx3-phy-research` artifact. This makes the next patch placement reviewable
+against the exact built firmware instead of only an archive.
+
+### 2. Patch policy after calibration, preserve native gain ownership
+
+The preferred change is a source-owned, explicitly selected analog policy
+applied after vendor receive initialization. Retune/wake must restore that
+policy from calibrated vendor values. First validate the existing `rf_start()`
+and retune hooks; use a cross-object linker wrapper only if actual call-site
+coverage and overwrites show it is needed. Keep the full vendor initializer
+and its RF calibration; replace only a measured policy field.
+
+A hardware gain FSM is not a C function in `libphy.a` that can simply be
+rewritten as an FM gain loop. The exposed routines program policy registers.
+Changing the library can change those writes; it cannot by itself replace an
+unexposed silicon state machine. No native continuous-FM mode has been found.
+
+The next useful target is **native level/retrigger policy**: distinguish a
+stable low IQ radius (coarse quantization grain) from time-localized gain
+transients. Collect full IQ/gain/FSM captures in the dedicated AGC-meter image,
+with known fixed RF level and confirmed channel, before picking new constants.
+The normal video's heap occupies the dump SRAM banks, so do not re-enable
+raw capture in the normal image. Existing register polls are not a substitute
+for synchronized per-sample gain metadata.
+
+Two further exact binary facts constrain candidates:
+
+- `phy_wifi_agc_sat_gain(a0)` at `phy_reg.o .iram1+0x92C` writes the **whole
+  same 32-bit argument** to `0x600A7064` and `0x600A7114`. The binary does
+  not establish four independent dB thresholds. Avoid using this broad setter
+  to guess a target/hysteresis adjustment.
+- `phy_rx_pkdet_num_set()` writes `0x600A7068 = 0x808`, clears
+  `0x600A0C38[2:0]`, sets bit 29 there, and calls the analog I2C masked-write
+  routine with `(103, 1, 29, 6, 4, 4)`. It affects more than one digital
+  counter. Calling it as a harmless standalone acquisition-timing reset is
+  not justified.
+
+A successful candidate must increase usable IQ precision or reduce corrupted
+sample occupancy while native gain still responds to stronger/weaker RF.
+Lower switch counts alone can mean stalled gain. Existing short `7034=5`
+measurements do not establish a win: the newer picture comparison reported no
+visible improvement and restored vendor settings. Do not promote that profile
+as the grain fix.
+
+### 3. MAC abort controls are narrower than an analog-mode switch
+
+IDF v6.0.2 pins Wi-Fi archives to
+[`bb69e7e609c9a9a909ddd1ed175f36df2bd13801`](https://github.com/espressif/esp32-wifi-lib/tree/bb69e7e609c9a9a909ddd1ed175f36df2bd13801).
+C5 `libpp.a` SHA-256:
+`df7d4d05a7e1664ecd9d07c1274220cfbe0d5bf93c30c87e3556815c928f3aa9`.
+`libcore.a` SHA-256:
+`dbb623ca7147a272b91c45a65545af691308bb37403c6356083be457f397c187`.
+Both archives were disassembled with GNU RISC-V `objdump -dr`.
+
+| `libpp.a` routine | Confirmed field | Limit |
+| --- | --- | --- |
+| `hal_mac_rx_enable` / `disable` | `0x600A4080[31]` | Turning MAC reception off may stop required acquisition |
+| `hal_mac_rx_set_abort_frames_from_transbss` | `0x600A4080[17]` | Named BSS-specific abort, not proven general continuous-FM abort |
+| `pwr_hal_set_beacon_filter_abort_enable` / `disable` | `0x600A42B4[3]` | Named beacon-filter abort, no proven coupling to observed grain |
+| `pwr_hal_set_beacon_filter_abort_length` | `0x600A42B4[15:4]` | Not an established native-AGC acquisition timer |
+
+These controls do not justify disabling all packet logic. Other retrigger paths
+may exist; the investigation has not decoded a global analog receive flag.
+No new watchdog, packet-abort, forced-gain or AGC-disable patch is enabled by
+this follow-up. The implemented change is reproducible final-link evidence,
+plus correction of the CI dependency ordering that had prevented the latest
+PR firmware from building (`analyze_agc_words.py` imported NumPy before CI
+installed it).
