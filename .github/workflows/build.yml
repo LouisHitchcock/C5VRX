@@ -177,6 +177,9 @@ jobs:
           /tmp/test_afc_v2
           gcc -std=c11 -Wall -Wextra -Werror -D_DEFAULT_SOURCE -Imain tools/test_afc_v2_ctrl.c -lm -o /tmp/test_afc_v2_ctrl
           /tmp/test_afc_v2_ctrl
+          gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_agc_policy.c -o /tmp/test_agc_policy
+          /tmp/test_agc_policy
+          python3 tools/agc_ab.py --self-test
           pip install --quiet numpy
           python3 tools/sim_phase8_false_colour.py --self-test
           python3 tools/test_phase8_video.py

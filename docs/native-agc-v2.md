@@ -241,3 +241,48 @@ Remaining #121 hardware work is still finding and validating native target,
 hysteresis and retrigger controls, then measuring annulus/near-far recovery.
 The failed target-register sweeps do not justify promoting guessed writes.
 No CPU gain controller or guessed native policy patch is enabled here.
+
+## AGC policy profiles (`main/agc_policy.h`)
+
+The target register for the native Q4 radius is still unknown (not in the
+disassembly notes, not in ESPARGOS esp-sdr), so the profiles use only the
+controls that are known: start gain `7094[8:2]`, RF saturation intervention
+`705C`, and the force bit. Each profile is selectable live and persisted
+(NVS `c5vrx/agc_prof`); NATIVE stays the default.
+
+| Serial | Profile | Writes | Aims at |
+|---|---|---|---|
+| `1` | NATIVE | none | production reference |
+| `2` | INIT | start gain only (RAM, not NVS) | restart swings: start = operating point + 6, re-evaluated each 1 s with 4-index hysteresis; 1 s without carrier restores the vendor start |
+| `3` | TUNED | INIT + `705C = 0` | as INIT, plus no RF-saturation re-trigger (esp-sdr does this for stable gain) |
+| `4` | HOLD | force bit | both root causes: pin at the native operating point after 0.5 s of carrier, then step one index per >= 0.3 s until uncentered P50 is 12..30 (P95 <= 64, clip < 20 pm); severe clip steps -2 within 0.1 s; 0.3 s without carrier releases the pin so native AGC climbs back to high gain |
+
+`y` cycles. Retunes re-assert start gain and `705C` and drop any pin; a
+context change (channel, BW, offset) restarts the profile. P8ENV reports
+`agc_prof`, `agc_hold` (pinned index or -1), `agc_init`, `agc_rfsat_off` and
+`agc_writes`; the RF menu page shows the profile.
+
+**HOLD is an explicit, opt-in exception to #121's "zero CPU gain writes".**
+It is justified by the bench result that a pinned gain gives a steady Q4
+circle with zero phase jumps, while native AGC keeps restarting mid-line and
+parks at P50 ~5-7. It never predicts gain from a dB model (index-to-dB is not
+linear); it steps and measures. `rf_set_rx_gain()` still refuses every other
+firmware gain write in native mode; the pin goes through
+`rf_native_policy_apply()` only.
+
+Not yet validated on hardware: whether the state byte `706C[7:0]` is in the
+same index space as the force index (HOLD corrects any offset by closed-loop
+servoing), whether native AGC can rise above a lowered start gain (INIT then
+raises the start as the operating point climbs), and whether `705C = 0`
+risks overload on a very strong VTX.
+
+Test (VTX on a fixed channel and distance; ~2 min per round):
+
+```sh
+python tools/agc_ab.py capture --port COM10 --log agc_ab.log   # blind rating
+python tools/agc_ab.py analyze agc_ab.log
+```
+
+Repeat near, medium and at the range edge. Promote a profile only if it wins
+the blind picture votes at all distances without transport faults.
+`tools/test_agc_policy.c` covers the policy logic on the host.

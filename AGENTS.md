@@ -63,7 +63,10 @@ requirements by themselves**.
   mode never call `phy_disable_agc()` / `phy_rfagc_disable()` and never force
   RX gain; every firmware gain write must stay refused at `rf_set_rx_gain()`.
   Firmware gain controllers (Direct Gain V3 etc.) run only after `N` stores an
-  explicit NVS `c5vrx/native_agc = 0`.
+  explicit NVS `c5vrx/native_agc = 0`. The one exception is the opt-in AGC
+  policy profile HOLD (`main/agc_policy.h`, docs/native-agc-v2.md), which pins
+  the native operating point through `rf_native_policy_apply()`; NATIVE
+  (zero writes) remains the default.
 - The normal live source is MODEM_DIAG Q4/I4 captured by PARLIO RX; active
   MAC-owned dump SRAM is a diagnostic writer, not a readable live source.
 - Do not turn a physical SRAM or DMA block boundary into a DSP reset.

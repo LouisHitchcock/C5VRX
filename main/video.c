@@ -47,6 +47,7 @@
 #include "afc_state.h"
 #include "afc_v2.h"
 #include "afc_v2_ctrl.h"
+#include "agc_policy.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -838,6 +839,7 @@ static int video_phase8_observe(const afc2_result_t *r)
 
 typedef struct {
     int p_median;
+    int p95;
     int q_phase;
     int n_clip;
     int n_origin;
@@ -957,10 +959,15 @@ static control_metrics_t analyze_control_window(const uint8_t *sample, size_t by
     }
 
     unsigned cumulative = 0;
+    bool have_median = false;
     for (unsigned p = 0; p <= 128u; ++p) {
         cumulative += hist[p];
-        if (cumulative >= (bytes + 1u) / 2u) {
+        if (!have_median && cumulative >= (bytes + 1u) / 2u) {
             m.p_median = (int)p;
+            have_median = true;
+        }
+        if (cumulative * 20u >= bytes * 19u) {
+            m.p95 = (int)p;
             break;
         }
     }
@@ -1336,6 +1343,10 @@ static volatile uint8_t s_shadow_gain = 62u;    /* Controller recommended gain *
 static volatile int s_last_p_median = 25;
 static volatile int s_last_q_phase = 0;
 static volatile int s_signal_strength = 0;
+static volatile uint8_t s_rx_gain_index;
+/* agc_policy.h: owned by the control task; the console only posts requests. */
+static agc_policy_t s_agc_policy;
+static volatile int s_agc_profile_request = -1;
 static volatile int s_last_n_clip = 0;
 static volatile int s_last_n_origin = 0;
 static volatile int s_last_clip_permille = 0;
@@ -1731,18 +1742,82 @@ static void direct_gain_v3_observer_task(void *arg)
 }
 #endif
 
+/* Gain index at which the meter reads full scale. Provisional: bench showed
+ * the native AGC in the 30s-60s with a carrier; needs a distance sweep. */
+#define SIGNAL_GAIN_FULL_SCALE 30
+
+/* Gain index the receiver is applying right now: the native AGC's own choice
+ * (s_current_gain is frozen in native mode because every write is refused),
+ * otherwise the firmware-forced gain. */
+static uint8_t rx_gain_index_in_use(void)
+{
+    uint8_t pinned;
+    if (rf_native_policy_forced(&pinned)) return pinned;
+    return rf_native_agc_active() ? rf_native_gain_index() : s_current_gain;
+}
+
+static int rx_gain_index_max(void)
+{
+    return rf_native_agc_active() ? rf_get_arc_gain_table()->max_index
+                                  : profile_gain_max();
+}
+
+/* RF input level 0..100, like an analog FPV receiver's RSSI. Post-gain Q4
+ * amplitude is useless here (the AGC normalises it), so the level is read
+ * from the gain the receiver needed: max gain = 0, full-scale gain = 100.
+ * Energy without a coherent FM carrier (Wi-Fi, noise) reads 0. */
 static int signal_strength_score(const control_metrics_t *m, uint8_t gain)
 {
     if (m->q_phase < 18 || m->origin_permille > 850) return 0;
-    int coherence = (m->q_phase - 18) * 100 / 62;
-    int power = (m->p_median - 6) * 100 / 28;
-    int max_gain = profile_gain_max();
-    int gain_headroom = (max_gain - (int)gain) * 100 /
-                        (max_gain > 2 ? max_gain - 2 : 1);
-    if (coherence < 0) coherence = 0; else if (coherence > 100) coherence = 100;
-    if (power < 0) power = 0; else if (power > 100) power = 100;
-    if (gain_headroom < 0) gain_headroom = 0; else if (gain_headroom > 100) gain_headroom = 100;
-    return (coherence * 2 + power + gain_headroom) / 4;
+    int max_gain = rx_gain_index_max();
+    int span = max_gain - SIGNAL_GAIN_FULL_SCALE;
+    if (span < 1) span = 1;
+    int level = (max_gain - (int)gain) * 100 / span;
+    /* Any carrier is at least one bar; 0 is reserved for no carrier. */
+    if (level < 1) level = 1; else if (level > 100) level = 100;
+    return level;
+}
+
+static void agc_policy_restart(agc_profile_t profile)
+{
+    uint8_t max_idx = rf_get_arc_gain_table()->max_index;
+    agc_policy_reset(&s_agc_policy, profile, 2u, max_idx);
+    const agcp_cmd_t *c = &s_agc_policy.cmd;
+    rf_native_policy_apply(c->initgain, c->rfsat_off, c->force, c->force_idx);
+    s_last_phy_write_us = esp_timer_get_time();
+}
+
+/* One 50 ms native-mode policy step. valid = settled window of the current
+ * receive context; a context change (channel, BW, offset...) restarts the
+ * profile so a pin never survives onto another channel. */
+static void agc_policy_step(const control_metrics_t *m, bool valid, bool context_changed)
+{
+    int request = s_agc_profile_request;
+    if (request >= 0) {
+        s_agc_profile_request = -1;
+        agc_policy_restart((agc_profile_t)request);
+        printf("C5VRX_AGC_PROFILE profile=%s saved=%s\n",
+               agc_profile_name(s_agc_policy.profile),
+               esp_err_to_name(rf_agc_profile_save((uint8_t)s_agc_policy.profile)));
+        return;
+    }
+    if (context_changed && s_agc_policy.profile != AGC_PROFILE_NATIVE) {
+        agc_policy_restart(s_agc_policy.profile);
+        return;
+    }
+    agcp_obs_t obs = {
+        .valid = valid,
+        .carrier = m->q_phase >= 18 && m->origin_permille <= 850,
+        .native_idx = s_rx_gain_index,
+        .p50 = (uint8_t)(m->p_median > 255 ? 255 : m->p_median),
+        .p95 = (uint8_t)(m->p95 > 255 ? 255 : m->p95),
+        .clip_pm = (uint16_t)m->clip_permille,
+    };
+    bool changed;
+    agcp_cmd_t c = agc_policy_tick(&s_agc_policy, &obs, &changed);
+    if (!changed) return;
+    rf_native_policy_apply(c.initgain, c.rfsat_off, c.force, c.force_idx);
+    s_last_phy_write_us = esp_timer_get_time();
 }
 
 static void settings_save(void)
@@ -1984,7 +2059,7 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
     rf_get_phy_snapshot(&phy);
 
     printf("C5VRX_LAB_ROW kind=%s gain=%u gain_reg=0x%08lx bw=%u afc=%u offset_khz=%d "
-           "agc=%u state=%u profile=%u p=%d q=%d clip_pm=%d origin_pm=%d strength=%d "
+           "agc=%u state=%u profile=%u p=%d q=%d clip_pm=%d origin_pm=%d strength=%d rx_gain=%u "
            "nf_valid=%u nf_dbm=%d rssi_valid=%u rssi_dbm=%d "
            "dc_i_x100=%d dc_q_x100=%d iq_skew_pm=%d iq_cross_pm=%d "
            "winding_pm=%d strong_winding_pm=%d sync_q=%d sync_width=%u "
@@ -2003,7 +2078,7 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            rf_get_frequency_offset_khz(), (unsigned)s_agc_mode, (unsigned)s_agc_state,
            (unsigned)s_rx_profile,
            s_last_p_median, s_last_q_phase, s_last_clip_permille,
-           s_last_origin_permille, s_signal_strength,
+           s_last_origin_permille, s_signal_strength, (unsigned)s_rx_gain_index,
            s_noise_floor_valid ? 1u : 0u, s_last_noise_floor_dbm,
            s_phy_rssi_valid ? 1u : 0u, s_last_phy_rssi_dbm,
            s_last_dc_i_x100, s_last_dc_q_x100,
@@ -2112,7 +2187,7 @@ static void p8env_capture_report(void)
            "hard_central_pm=%u hard_outer_pm=%u central_hard_share_pm=%u class=%s "
            "radius_pm=%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u "
            "delta_pm=%u/%u/%u/%u/%u/%u/%u/%u/%u "
-           "sync_q=%d std_valid=%u rx_ovf=%lu tx_empty=%lu gdma_in=%lu gdma_out=%lu "
+           "strength=%d rx_gain=%u agc_prof=%s agc_hold=%d agc_init=%u agc_rfsat_off=%u agc_writes=%lu sync_q=%d std_valid=%u rx_ovf=%lu tx_empty=%lu gdma_in=%lu gdma_out=%lu "
            "bs_empty=%lu bs_eof=%lu\n",
            (long long)(esp_timer_get_time() / 1000),
            rf_get_current_channel()->name, (unsigned)rf_get_frequency_mhz(),
@@ -2142,6 +2217,11 @@ static void p8env_capture_report(void)
            e.delta_pm[0], e.delta_pm[1], e.delta_pm[2], e.delta_pm[3],
            e.delta_pm[4], e.delta_pm[5], e.delta_pm[6], e.delta_pm[7],
            e.delta_pm[8],
+           s_signal_strength, (unsigned)s_rx_gain_index,
+           agc_profile_name(s_agc_policy.profile),
+           s_agc_policy.cmd.force ? (int)s_agc_policy.cmd.force_idx : -1,
+           (unsigned)rf_native_initgain(), s_agc_policy.cmd.rfsat_off ? 1u : 0u,
+           (unsigned long)rf_native_policy_writes(),
            s_last_sync_quality, s_detected_video_std_valid ? 1u : 0u,
            (unsigned long)t.parl_rx_wovf_count,
            (unsigned long)t.parl_tx_rempty_count,
@@ -3781,7 +3861,7 @@ static void menu_draw_shell(void)
     menu_ui_text(ch->name, 96, 0, UI_WHITE);
     snprintf(buf, sizeof(buf), "%uM", ch->freq_mhz);
     menu_ui_text(buf, 128, 0, UI_MUTED);
-    snprintf(buf, sizeof(buf), "G%u", s_current_gain);
+    snprintf(buf, sizeof(buf), "G%u", s_rx_gain_index);
     menu_ui_text(buf, 208, 0, UI_WHITE);
     menu_ui_text(agc_state_name(), 244, 0, UI_MUTED);
     menu_ui_signal_bars(320, 0, s_signal_strength);
@@ -3850,7 +3930,7 @@ static void menu_draw_channel_page(void)
     snprintf(buf, sizeof(buf), s_channel_scan_active ? "%u%%" : "S%u",
              s_channel_scan_active ? s_channel_scan_progress : (unsigned)s_signal_strength);
     menu_ui_text(buf, 264, 47, UI_WHITE);
-    snprintf(buf, sizeof(buf), "G%u", s_current_gain);
+    snprintf(buf, sizeof(buf), "G%u", s_rx_gain_index);
     menu_ui_text_right(buf, 376, 47, UI_WHITE);
 }
 
@@ -3861,7 +3941,10 @@ static void menu_draw_rf_page(void)
      * The firmware-gain fallback exists only behind the serial 'N' command. */
     bool native = rf_native_agc_active();
     menu_draw_page_title("RF FRONTEND", native ? "DEFAULT" : "SERIAL FALLBACK");
-    menu_ui_value_box(100, 22, 276, "GAIN", native ? "NATIVE HW AGC" : "FIRMWARE (SERIAL N)");
+    char gain_label[24];
+    snprintf(gain_label, sizeof(gain_label), "NATIVE AGC %s",
+             agc_profile_name(s_agc_policy.profile));
+    menu_ui_value_box(100, 22, 276, "GAIN", native ? gain_label : "FIRMWARE (SERIAL N)");
     menu_ui_value_box(100, 34, 130, "BANDWIDTH", rf_bw_mode_name());
     snprintf(buf, sizeof(buf), "S%u", (unsigned)s_signal_strength);
     menu_ui_value_box(238, 34, 138, "SIGNAL", buf);
@@ -4264,7 +4347,9 @@ static void channel_auto_search(void)
             analyze_control_window(s_control_sample_buf,
                                    sizeof(s_control_sample_buf),
                                    scan_ring_offset);
-        int quality = signal_strength_score(&metrics, 52u);
+        /* Native AGC refuses the G52 write above, so rate the gain it chose. */
+        int quality = signal_strength_score(&metrics, rf_native_agc_active() ?
+                                            rf_native_gain_index() : 52u);
         fusion_observation_t scan_fusion = fusion_make_observation(
             metrics.p_median, metrics.q_phase, metrics.clip_permille,
             metrics.origin_permille, metrics.winding_permille,
@@ -4712,7 +4797,8 @@ static void analog_agc_task(void *arg)
             s_phy_rssi_valid = false;
         }
 
-        int instant_strength = signal_strength_score(&metrics, s_current_gain);
+        s_rx_gain_index = rx_gain_index_in_use();
+        int instant_strength = signal_strength_score(&metrics, s_rx_gain_index);
         s_signal_strength = (s_signal_strength * 3 + instant_strength + 2) / 4;
 
         if (menu_was_active) {
@@ -4800,6 +4886,9 @@ static void analog_agc_task(void *arg)
         s_last_fusion_fast_samples = fusion_tm.samples;
 
         if (rf_native_agc_active()) {
+            agc_policy_step(&metrics,
+                settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count &&
+                sampled_rf_context == afc_ctx, afc_context_changed);
             /* Native is a separate receive-control path: no firmware gain
              * controller owns its lock state. Burst evidence gates AFC. */
             bool was_native_locked = native_locked;
@@ -5362,6 +5451,16 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
+                } else if (c == 'y' || (c >= '1' && c <= '4')) {
+                    /* AGC profile: 'y' cycles, '1'..'4' = NATIVE/INIT/TUNED/HOLD.
+                     * Applied by the control task, persisted in NVS. */
+                    if (!rf_native_agc_active()) {
+                        printf("C5VRX_AGC_PROFILE refused=firmware_gain_mode\n");
+                    } else {
+                        s_agc_profile_request = c == 'y' ?
+                            (int)((s_agc_policy.profile + 1) % AGC_PROFILE_COUNT) :
+                            c - '1';
+                    }
                 } else if (c == 'h') {
                     rf_poll_agc_live();
                 } else if (c == 'P' || c == 'M' || c == 'J' || c == 'B') {
@@ -5693,6 +5792,7 @@ static void console_diag_task(void *arg)
                     printf("  'R':         Run RSSI & Inverse-Q4 Oracle Probe (G15..G81 sweep)\n");
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
                     printf("  'D'/'I'/'Y': Direct Gain V3 test / Direct Gain V1 / ARC V3\n");
+                    printf("  'y' / '1'..'4': AGC profile cycle / NATIVE, INIT, TUNED, HOLD (persisted)\n");
 #else
                     printf("  'D'/'I'/'Y': Direct Gain V2 / Direct Gain V1 / ARC V3\n");
 #endif
@@ -5754,6 +5854,11 @@ esp_err_t video_start(void)
                  "'E' = P8ENV row, 'N' = reboot to firmware gain fallback",
                  (unsigned long)native.gain_status_reg,
                  (unsigned long)native.agc_ctrl_reg);
+        uint8_t stored = rf_agc_profile_load();
+        agc_policy_restart(stored < AGC_PROFILE_COUNT ? (agc_profile_t)stored
+                                                      : AGC_PROFILE_NATIVE);
+        ESP_LOGW(TAG, "AGC profile %s ('y' cycles, '1'..'4' select)",
+                 agc_profile_name(s_agc_policy.profile));
     }
 
     /* Zero the ring before starting. Flush to DMA-visible SRAM. */

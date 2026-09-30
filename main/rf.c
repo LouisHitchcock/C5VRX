@@ -64,6 +64,16 @@ static bool s_native_agc;
 #define NATIVE_INITGAIN_MIN     40u
 static uint8_t s_native_initgain;
 static uint8_t s_native_initgain_vendor;
+/* agc_policy.h runtime state (RAM only, so a policy that follows the operating
+ * point never wears flash). initgain 0 = persisted override or vendor. */
+#define NATIVE_RFSAT_REG        0x600A705Cu
+static uint8_t s_policy_initgain;
+static bool s_policy_rfsat_off;
+static bool s_policy_rfsat_saved;
+static uint32_t s_policy_rfsat_vendor;
+static bool s_policy_force;
+static uint8_t s_policy_force_idx;
+static volatile uint32_t s_policy_writes;
 
 /* #121 section 9 lab A/B: PHY PLL/RXCAL tracking stays stopped unless this
  * boot was explicitly requested with NVS c5vrx/pll_track = 1. */
@@ -398,8 +408,8 @@ static void native_initgain_apply(void)
     /* A retune need not rewrite this field. Never mistake our override for
      * the vendor default or progressively lower the restore ceiling. */
     if (!s_native_initgain_vendor) s_native_initgain_vendor = observed;
-    if (!s_native_agc || !s_native_initgain) return;
-    uint8_t g = s_native_initgain;
+    uint8_t g = s_policy_initgain ? s_policy_initgain : s_native_initgain;
+    if (!s_native_agc || !g) return;
     /* Never above the vendor start (the calibrated maximum - 1). */
     if (g > s_native_initgain_vendor) g = s_native_initgain_vendor;
     REG32(NATIVE_INITGAIN_REG) = (reg & ~NATIVE_INITGAIN_MASK) | ((uint32_t)g << 2);
@@ -413,6 +423,74 @@ uint8_t rf_native_initgain(void)
 uint8_t rf_native_initgain_vendor(void)
 {
     return s_native_initgain_vendor;
+}
+
+/* Re-assert every agc_policy.h setting. Called after boot/retune because
+ * vendor retune paths rewrite start gain and release forced gain. */
+static void native_policy_reapply(void)
+{
+    if (!s_native_agc) return;
+    uint32_t reg = REG32(NATIVE_INITGAIN_REG);
+    uint8_t g = s_policy_initgain ? s_policy_initgain : s_native_initgain;
+    if (!g) g = s_native_initgain_vendor;
+    if (g > s_native_initgain_vendor) g = s_native_initgain_vendor;
+    if (g) REG32(NATIVE_INITGAIN_REG) = (reg & ~NATIVE_INITGAIN_MASK) | ((uint32_t)g << 2);
+
+    if (!s_policy_rfsat_saved) {
+        s_policy_rfsat_vendor = REG32(NATIVE_RFSAT_REG);
+        s_policy_rfsat_saved = true;
+    }
+    REG32(NATIVE_RFSAT_REG) = s_policy_rfsat_off ? 0u : s_policy_rfsat_vendor;
+
+    extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
+    phy_force_rx_gain(s_policy_force, s_policy_force ? s_policy_force_idx : 0u);
+}
+
+void rf_native_policy_apply(uint8_t initgain, bool rfsat_off, bool force, uint8_t force_idx)
+{
+    if (!s_native_agc) return;
+    if (force_idx > s_arc_gain_table.max_index) force_idx = s_arc_gain_table.max_index;
+    s_policy_initgain = initgain;
+    s_policy_rfsat_off = rfsat_off;
+    s_policy_force = force;
+    s_policy_force_idx = force_idx;
+    ++s_policy_writes;
+    native_policy_reapply();
+}
+
+bool rf_native_policy_forced(uint8_t *idx)
+{
+    if (idx) *idx = s_policy_force_idx;
+    return s_native_agc && s_policy_force;
+}
+
+uint32_t rf_native_policy_writes(void)
+{
+    return s_policy_writes;
+}
+
+#define AGC_PROFILE_NVS_KEY "agc_prof"
+
+uint8_t rf_agc_profile_load(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+        return 0;
+    if (nvs_get_u8(handle, AGC_PROFILE_NVS_KEY, &value) != ESP_OK) value = 0;
+    nvs_close(handle);
+    return value;
+}
+
+esp_err_t rf_agc_profile_save(uint8_t profile)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, AGC_PROFILE_NVS_KEY, profile);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
 }
 
 esp_err_t rf_set_native_initgain(uint8_t gain)
@@ -534,6 +612,28 @@ void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out)
             have_median = true;
         }
     }
+}
+
+/* Median of the native AGC state byte over ~0.4 ms. With a carrier it sits
+ * lower the stronger the input, so the signal meter uses it as the gain the
+ * hardware actually applied. Re-entries at the start gain are outliers the
+ * median rejects. Read-only; own histogram so the console task's
+ * rf_native_gain_stats() can run concurrently. */
+uint8_t rf_native_gain_index(void)
+{
+    enum { SAMPLES = 128u };
+    uint8_t hist[128] = {0};
+    for (unsigned n = 0; n < SAMPLES; ++n) {
+        uint8_t v = (uint8_t)REG32(AGC_LIVE_REG_A);
+        if (hist[v & 0x7Fu] < 255u) ++hist[v & 0x7Fu];
+        esp_rom_delay_us(2);
+    }
+    unsigned cumulative = 0;
+    for (unsigned v = 0; v < 128u; ++v) {
+        cumulative += hist[v];
+        if (cumulative * 2u >= SAMPLES) return (uint8_t)v;
+    }
+    return 127u;
 }
 
 /* LAB (#121 section 6A): fields the vendor AGC init (phy_agc_reg_init_new)
@@ -820,6 +920,7 @@ esp_err_t rf_start(void)
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
+        native_policy_reapply();   /* also captures the vendor 705C value */
     } else {
         phy_force_rx_gain(true, 52);
     }
@@ -1165,6 +1266,9 @@ esp_err_t rf_set_channel(size_t index)
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
+        /* A pin belongs to the old channel; the policy re-acquires. */
+        s_policy_force = false;
+        native_policy_reapply();
     } else {
         phy_disable_agc();
         phy_rfagc_disable();
