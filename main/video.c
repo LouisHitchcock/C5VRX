@@ -4555,6 +4555,11 @@ static void analog_agc_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(50));
 
+        if (rf_analog_agc_service()) {
+            s_last_phy_write_us = esp_timer_get_time();
+            ++s_receive_generation;
+        }
+
         /* The RSSI oracle owns gain/BW/AFC for this interval. Manual AGC
          * alone would still allow the AUTO gearbox and AFC below to write. */
         if (s_rssi_probe_active) continue;
@@ -5440,6 +5445,10 @@ static void console_diag_task(void *arg)
                     rf_dump_agc_regs();
                     rf_native_acq_report();
                     rf_native_wdg_report("query");
+                    rf_analog_agc_report("query");
+                } else if (c == '[' || c == ']' || c == '%') {
+                    rf_analog_agc_request(c == '[' ? 1u : c == ']' ? 2u : 0u);
+                    printf("C5VRX_ANALOG_AGC queued=%c auto_restore_s=20 ram_only=1\n", c);
                 } else if (c == '&') {
                     esp_err_t wdg_err = rf_native_wdg_toggle();
                     printf("C5VRX_WDG_LAB err=%s ram_only=1 reboot_restores=1\n",
@@ -5844,6 +5853,7 @@ static void console_diag_task(void *arg)
                     printf("  '@':         Raw capture requires the separate AGC-meter image\n");
                     printf("  '{' / '}':   Native acquisition field next / vendor, persist + reboot\n");
                     printf("  '*':         Native 7034 field maximum 127, persist + reboot\n");
+                    printf("  '['/']'/'%%': Analog BB-policy +32/-32/restore (20 s trial, native/coarse, vendor or 127 timing)\n");
                     printf("  '&':         RAM-only BB watchdog reset block / restore (native AGC stays on)\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");

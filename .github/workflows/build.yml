@@ -182,6 +182,9 @@ jobs:
           /tmp/test_afc_v2_ctrl
           python3 tools/analyze_agc_words.py --self-test
           python3 tools/test_native_agc_phy_audit.py
+          gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_native_analog_agc.c -o /tmp/test_native_analog_agc
+          /tmp/test_native_analog_agc
+          python3 tools/test_native_analog_agc_rf.py
           gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_agc_offset.c -o /tmp/test_agc_offset
           /tmp/test_agc_offset
           python3 tools/sim_phase8_false_colour.py --self-test

@@ -11,6 +11,8 @@
  */
 
 #include "rf.h"
+#include "native_analog_agc.h"
+#include "freertos/FreeRTOS.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,6 +53,10 @@ static bool s_analog_bw40 = true;
 #define NATIVE_AGC_NVS_KEY       "native_agc"
 #define RX_AGC_CTRL_REG          0x600A7030u
 static bool s_native_agc;
+static bool analog_agc_cancel(void);
+static void analog_agc_transition_begin(void);
+static void analog_agc_transition_end(void);
+static unsigned s_analog_rf_transitions;
 /* #121 native AGC start gain. 0x600A7094[8:2] is the gain each native
  * acquisition starts from (vendor: max-1 = 82, ESPARGOS esp-sdr semantics).
  * The loop re-acquires several times per video line, so every restart
@@ -514,6 +520,7 @@ esp_err_t rf_agc_offset_save(void)
 
 void rf_agc_offset_set(int db)
 {
+    analog_agc_cancel();
     if (db < -12) db = -12;
     if (db > 12) db = 12;
     s_agc_offset_db = (int8_t)db;
@@ -527,6 +534,7 @@ int rf_agc_offset_db(void)
 
 void rf_agc_offset_next_field(void)
 {
+    analog_agc_cancel();
     s_agc_offset_field = (uint8_t)((s_agc_offset_field + 1u) % AGC_OFFSET_FIELDS);
     s_agc_offset_db = 0;
     agc_offset_apply();
@@ -539,6 +547,7 @@ const char *rf_agc_offset_field_name(void)
 
 void rf_set_bb_agc(bool enable)
 {
+    analog_agc_cancel();
     if (!s_native_agc) return;
     extern void phy_disable_agc(void);
     extern void phy_enable_agc(void);
@@ -554,6 +563,7 @@ bool rf_bb_agc_enabled(void)
 
 void rf_set_fine_iq(bool fine)
 {
+    analog_agc_cancel();
     if (fine == s_iq_fine) return;
     const uint8_t *diag = fine ? s_iq_diag_fine : s_iq_diag;
     for (unsigned lane = 0u; lane < 8u; ++lane) {
@@ -813,6 +823,7 @@ uint8_t rf_native_initgain_vendor(void)
 
 esp_err_t rf_set_native_initgain(uint8_t gain)
 {
+    analog_agc_cancel();
     if (gain && gain < NATIVE_INITGAIN_MIN) return ESP_ERR_INVALID_ARG;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -1034,6 +1045,7 @@ static void agc_lab_capture(unsigned i)
 
 void rf_lab_agc_field(char action)
 {
+    analog_agc_cancel();
     if (action == 'P') {
         s_agc_lab_selected = (s_agc_lab_selected + 1u) % AGC_LAB_FIELD_COUNT;
     } else if (action == 'B') {
@@ -1109,6 +1121,126 @@ void rf_poll_agc_live(void)
     for (unsigned v = 0; v < 256u; ++v)
         if (hist_b[v]) printf(" %u:%u", v, hist_b[v]);
     printf("\n");
+}
+
+/* Explicit analog policy trial, owned by the slow control task. The source
+ * shim applies after PHY calibration, irrespective of archive/ROM binding.
+ * These are raw BB-policy candidates; no continuous-FM mode is asserted. */
+#define ANALOG_AGC_REG 0x600A8020u
+static native_analog_agc_t s_analog_agc;
+static portMUX_TYPE s_analog_agc_lock = portMUX_INITIALIZER_UNLOCKED;
+static int s_analog_agc_request;
+
+static bool analog_agc_eligible(void)
+{
+    return !__atomic_load_n(&s_analog_rf_transitions, __ATOMIC_ACQUIRE) &&
+           s_native_agc && !s_bb_agc_off && !s_iq_fine &&
+           !s_agc_tune && !s_native_initgain &&
+           (s_native_acq_profile == 0u || s_native_acq_profile == NATIVE_ACQ_COUNT - 1u) &&
+           !rf_agc_offset_db() && !s_native_wdg_blocked &&
+           rf_native_initgain() == rf_native_initgain_vendor() &&
+           !(REG32(RX_AGC_CTRL_REG) & (1u << 29)) &&
+           !(REG32(0x600A702Cu) & (1u << 23)) &&
+           ((REG32(0x600A7034u) >> 24) & 0x7fu) == (s_native_acq_profile ? 127u : 10u) &&
+           (REG32(0x600A7158u) & 0x7fu) == 13u &&
+           ((REG32(0x600A71B0u) >> 21) & 0x7fu) == 30u;
+}
+
+void rf_analog_agc_request(unsigned profile)
+{
+    if (profile <= 2u)
+        __atomic_store_n(&s_analog_agc_request, (int)profile + 1, __ATOMIC_RELEASE);
+}
+
+void rf_analog_agc_report(const char *reason)
+{
+    portENTER_CRITICAL(&s_analog_agc_lock);
+    native_analog_agc_t state = s_analog_agc;
+    uint32_t word = REG32(ANALOG_AGC_REG);
+    portEXIT_CRITICAL(&s_analog_agc_lock);
+    printf("AGC_ANALOG reason=%s active=%u profile=%u reg=0x%08lx "
+           "baseline=%lu applied=%lu deadline_us=%lld native=%u ch=%s mhz=%u\n",
+           reason, state.active ? 1u : 0u, state.profile, (unsigned long)word,
+           (unsigned long)state.baseline, (unsigned long)state.applied,
+           (long long)state.deadline_us, s_native_agc ? 1u : 0u,
+           rf_get_current_channel()->name, rf_get_frequency_mhz());
+}
+
+static bool analog_agc_cancel(void)
+{
+    __atomic_store_n(&s_analog_agc_request, 0, __ATOMIC_RELEASE);
+    portENTER_CRITICAL(&s_analog_agc_lock);
+    bool active = s_analog_agc.active;
+    const char *reason = "cancel";
+    uint32_t word;
+    if (active && native_analog_agc_end(&s_analog_agc, REG32(ANALOG_AGC_REG), &word)) {
+        REG32(ANALOG_AGC_REG) = word;
+        __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    }
+    if (active && (REG32(ANALOG_AGC_REG) & ANALOG_AGC_MASK) != s_analog_agc.baseline)
+        reason = "cancel_field_changed_or_restore_failed";
+    portEXIT_CRITICAL(&s_analog_agc_lock);
+    if (active) rf_analog_agc_report(reason);
+    return active;
+}
+
+static void analog_agc_transition_begin(void)
+{
+    __atomic_add_fetch(&s_analog_rf_transitions, 1u, __ATOMIC_ACQ_REL);
+    (void)analog_agc_cancel();
+}
+
+static void analog_agc_transition_end(void)
+{
+    __atomic_sub_fetch(&s_analog_rf_transitions, 1u, __ATOMIC_ACQ_REL);
+}
+
+bool rf_analog_agc_service(void)
+{
+    const int request = __atomic_exchange_n(&s_analog_agc_request, 0, __ATOMIC_ACQ_REL);
+    if (request == 1) return analog_agc_cancel();
+    const int64_t now = esp_timer_get_time();
+    const char *reason = NULL;
+    portENTER_CRITICAL(&s_analog_agc_lock);
+    const bool active = s_analog_agc.active;
+    if (!active && !request) {
+        portEXIT_CRITICAL(&s_analog_agc_lock);
+        return false; /* Default path performs no PHY reads or writes. */
+    }
+    bool changed = false;
+    uint32_t word = REG32(ANALOG_AGC_REG), write;
+    if (native_analog_agc_poll(&s_analog_agc, word, now, analog_agc_eligible(), &write)) {
+        REG32(ANALOG_AGC_REG) = write;
+        __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+        changed = true;
+        reason = (REG32(ANALOG_AGC_REG) & ANALOG_AGC_MASK) == s_analog_agc.baseline ?
+                 "restored" : "restore_readback_failed";
+    } else if (active && !s_analog_agc.active) {
+        changed = true;
+        reason = "overwritten";
+    }
+    if (request > 1) {
+        word = REG32(ANALOG_AGC_REG);
+        if (native_analog_agc_begin(&s_analog_agc, (unsigned)(request - 1), word,
+                                    now, analog_agc_eligible(), &write)) {
+            changed = true;
+            REG32(ANALOG_AGC_REG) = write;
+            __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+            if ((REG32(ANALOG_AGC_REG) & ANALOG_AGC_MASK) == s_analog_agc.applied)
+                reason = "started";
+            else {
+                /* Failed/overwritten readback: retire without repeated writes. */
+                if (native_analog_agc_end(&s_analog_agc, REG32(ANALOG_AGC_REG), &write)) {
+                    REG32(ANALOG_AGC_REG) = write;
+                    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                }
+                reason = "readback_failed";
+            }
+        } else reason = "rejected_need_coarse_native_supported_baseline";
+    }
+    portEXIT_CRITICAL(&s_analog_agc_lock);
+    if (reason) rf_analog_agc_report(reason);
+    return changed;
 }
 
 esp_err_t rf_start(void)
@@ -1373,9 +1505,11 @@ static bool plan_wifi5_center(uint16_t freq_mhz, uint8_t *channel, uint16_t *cen
 
 void rf_set_analog_bandwidth(bool bw40)
 {
+    analog_agc_transition_begin();
     native_wdg_restore();
     s_analog_bw40 = bw40;
     phy_wifi_fbw_sel(bw40 ? 1u : 0u);
+    analog_agc_transition_end();
 }
 
 bool rf_get_analog_bandwidth(void)
@@ -1528,6 +1662,7 @@ int rf_get_frequency_offset_khz(void)
 
 void rf_set_frequency_offset_khz(int offset_khz)
 {
+    analog_agc_transition_begin();
     native_wdg_restore();
     /* Strict clamping: +/- 1500 kHz (+/- 1.5 MHz) maximum.
      * Adjacent FPV channels are at least 19-20 MHz apart. Clamping strictly
@@ -1539,6 +1674,7 @@ void rf_set_frequency_offset_khz(int offset_khz)
     s_current_offset_khz = offset_khz;
     phy_chip_set_chan_offset(offset_khz);
     if (!s_native_agc) phy_force_rx_gain(true, s_current_gain_val);
+    analog_agc_transition_end();
 }
 
 void rf_step_frequency_offset_khz(int delta_khz)
@@ -1555,6 +1691,7 @@ esp_err_t rf_set_channel(size_t index)
     fpv_band_t new_band = (fpv_band_t)(index / 8u);
     uint8_t new_idx = (uint8_t)(index % 8u);
     uint16_t requested_mhz = s_fpv_channels[new_band][new_idx].freq_mhz;
+    analog_agc_cancel();
     native_wdg_restore();
 
     uint8_t wifi_channel = 0;
@@ -1567,8 +1704,10 @@ esp_err_t rf_set_channel(size_t index)
 
     /* Always establish a supported/public RF center first. Exact-overlap FPV
      * channels (e.g. A1/A2/...) need no undocumented frequency call at all. */
+    analog_agc_transition_begin();
     esp_err_t err = esp_wifi_set_channel(wifi_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
+        analog_agc_transition_end();
         return err;
     }
 
@@ -1619,6 +1758,7 @@ esp_err_t rf_set_channel(size_t index)
     s_current_freq_mhz = requested_mhz;
     s_current_offset_khz = 0;
 
+    analog_agc_transition_end();
     return ESP_OK;
 }
 

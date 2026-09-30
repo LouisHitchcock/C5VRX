@@ -148,6 +148,11 @@ void rf_native_acq_report(void);
  * Reboot or retune restores vendor. Status is raw, not an event count. */
 esp_err_t rf_native_wdg_toggle(void);
 void rf_native_wdg_report(const char *reason);
+/* Explicit RAM-only 20 s BB-policy trial: 0 cancel, 1 raw +32, 2 raw -32.
+ * Native gain owns RX throughout. Raw field semantics remain unvalidated. */
+void rf_analog_agc_request(unsigned profile);
+bool rf_analog_agc_service(void);
+void rf_analog_agc_report(const char *reason);
 /* LAB: baseband packet AGC on/off with the RF AGC left on (native only). */
 void rf_set_bb_agc(bool enable);
 bool rf_bb_agc_enabled(void);
