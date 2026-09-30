@@ -5466,9 +5466,11 @@ static void console_diag_task(void *arg)
                         vTaskDelay(pdMS_TO_TICKS(120));
                         esp_restart();
                     }
-                } else if (c == '{' || c == '}') {
-                    esp_err_t acq_err = rf_native_acq_arm(c == '{');
+                } else if (c == '{' || c == '}' || c == '*') {
+                    esp_err_t acq_err = c == '*' ? rf_native_acq_arm_max() :
+                                                  rf_native_acq_arm(c == '{');
                     printf("C5VRX_NATIVE_ACQ_ARMED action=%s err=%s\n",
+                           c == '*' ? "7034_max_127" :
                            c == '{' ? "next_profile" : "vendor", esp_err_to_name(acq_err));
                     if (acq_err == ESP_OK) {
                         fflush(stdout);
@@ -5841,6 +5843,7 @@ static void console_diag_task(void *arg)
                     printf("  '!':         Experimental coarse-IQ rail HOLD/RESEED (persist + reboot)\n");
                     printf("  '@':         Raw capture requires the separate AGC-meter image\n");
                     printf("  '{' / '}':   Native acquisition field next / vendor, persist + reboot\n");
+                    printf("  '*':         Native 7034 field maximum 127, persist + reboot\n");
                     printf("  '&':         RAM-only BB watchdog reset block / restore (native AGC stays on)\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");

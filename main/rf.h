@@ -142,6 +142,7 @@ uint8_t rf_agc_tune_index(void);
 esp_err_t rf_agc_tune_select_next(void);
 /* Native AGC acquisition lab: one policy field per boot, no forced gain. */
 esp_err_t rf_native_acq_arm(bool next);
+esp_err_t rf_native_acq_arm_max(void);
 void rf_native_acq_report(void);
 /* RAM-only lab switch: suppress BB watchdog resets, never disable AGC.
  * Reboot or retune restores vendor. Status is raw, not an event count. */

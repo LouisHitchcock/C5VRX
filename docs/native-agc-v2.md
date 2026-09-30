@@ -527,6 +527,7 @@ The native acquisition profiles change one seven-bit field per boot:
 | 1 / 2 / 3 | `7034[30:24]` = 5 / 2 / 1 | 5 gave ~1.8 us; 2 and 1 unmeasured |
 | 4 / 5 / 6 | `7158[6:0]` = 6 / 2 / 1 | 6 gave ~2.1 us; 2 and 1 unmeasured |
 | 7 / 8 / 9 | `71B0[27:21]` = 15 / 5 / 1 | 15 gave ~2.4 us; 5 and 1 unmeasured |
+| 10 | `7034[30:24]` = 127 | maximum encoded value; timing unmeasured |
 
 These are acquisition-policy candidates, not proven time constants. Smaller
 values are a hypothesis for faster acquisition; no value is labelled 0.1 us.
@@ -668,3 +669,15 @@ usable carrier, so carrier-present picture assessment remains pending.
 Value 1 is the lowest nonzero setting in this field, **not a demonstrated
 maximum hardware acquisition speed**; no 0.1 us timing is claimed. Other
 AGC policy fields remain vendor, and `}` restores profile 0.
+
+### Maximum 7034 candidate
+
+The user requested the highest setting after selecting 1. Appended native
+profile 10 is `7034_127`, the maximum value of the seven-bit `[30:24]`
+field. Appending preserves all previous NVS indices. Serial `*` selects it
+directly, clears older sweep/start-gain/offset overrides and reboots. Native
+AGC remains enabled; `}` restores vendor. The update compiled successfully
+with ESP-IDF v6.0.2 (normal image 0x11c8a0 bytes), and all 214 repository
+architecture checks passed. Initial COM10 flash attempt timed out; readback
+and picture assessment are pending. Maximum encoded value must not be
+called maximum speed: the field's time/control units remain unknown.

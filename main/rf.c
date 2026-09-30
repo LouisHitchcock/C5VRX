@@ -318,6 +318,7 @@ static const agc_tune_t s_native_acq_profiles[] = {
     {"71B0_15",    0x600A71B0u, 21u, 7u, 15u},
     {"71B0_5",     0x600A71B0u, 21u, 7u,  5u},
     {"71B0_1",     0x600A71B0u, 21u, 7u,  1u},
+    {"7034_127",   0x600A7034u, 24u, 7u, 127u},
 };
 #define NATIVE_ACQ_COUNT (sizeof(s_native_acq_profiles) / sizeof(s_native_acq_profiles[0]))
 static uint8_t s_native_acq_profile;
@@ -357,10 +358,10 @@ void rf_native_acq_report(void)
 /* Store a complete, one-shot boot measurement request in one transaction.
  * Reset older sweep/start-gain overrides to make each field comparison useful.
  * The selected native profile remains active for a live picture comparison. */
-esp_err_t rf_native_acq_arm(bool next)
+static esp_err_t native_acq_arm_value(uint8_t value)
 {
     if (!s_native_agc) return ESP_ERR_INVALID_STATE;
-    uint8_t value = next ? (uint8_t)((s_native_acq_profile + 1u) % NATIVE_ACQ_COUNT) : 0;
+    if (value >= NATIVE_ACQ_COUNT) return ESP_ERR_INVALID_ARG;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
@@ -376,6 +377,16 @@ esp_err_t rf_native_acq_arm(bool next)
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;
+}
+esp_err_t rf_native_acq_arm(bool next)
+{
+    return native_acq_arm_value(next ?
+        (uint8_t)((s_native_acq_profile + 1u) % NATIVE_ACQ_COUNT) : 0u);
+}
+esp_err_t rf_native_acq_arm_max(void)
+{
+    /* Appended profile preserves every existing persisted index. */
+    return native_acq_arm_value((uint8_t)(NATIVE_ACQ_COUNT - 1u));
 }
 static uint8_t s_agc_offset_field;
 /* Pinned C5 libphy audit: phy_bb_wdt_rst_enable() owns only 7C40[31].
