@@ -314,3 +314,64 @@ this follow-up. The implemented change is reproducible final-link evidence,
 plus correction of the CI dependency ordering that had prevented the latest
 PR firmware from building (`analyze_agc_words.py` imported NumPy before CI
 installed it).
+
+
+## Opt-in analog BB policy patch (2026-09-30)
+
+The normal video image now has a **RAM-only 20-second native-policy trial**.
+It programs `0x600A8020[9:0]` once, from the pinned vendor value 384 to
+416 (`[`) or 352 (`]`). This extends the existing raw-field lab into a
+bounded, repeatable comparison. These are raw +/-32 candidates: the field is
+written by `bb_agc_reg_update`, but its exact width, units, direction and
+role in amplitude target/hysteresis/retrigger remain unvalidated. Neither
+candidate is advertised as an analog continuous-AGC mode or a proven noise fix.
+No other BB level/timing field is changed in this trial.
+
+Use the normal P8 FULL/coarse-IQ image and native AGC, with vendor tune, start
+gain and offset settings. Timing may be vendor (`}`) or the newer user-selected
+127 (`*`); keep the SAME timing for every baseline/candidate comparison. Other
+timing profiles are refused. The patch leaves the new 127 default untouched.
+Select FULL with `d` if needed, and confirm channel/carrier first.
+Manual raw-field edits must be reset/rebooted as well. Then:
+
+| Serial command | Action |
+| --- | --- |
+| `T` | Read PHY, acquisition, watchdog and `AGC_ANALOG` state |
+| `[` | Request raw +32 trial (384 -> 416) |
+| `]` | Request raw -32 trial (384 -> 352) |
+| `%` | Cancel and restore the owned field immediately on the next control tick |
+| `p` | Existing read-only PHY/Q4 snapshot for baseline/candidate comparison |
+
+The request runs in the existing 50 ms control task after calibration; it
+never enters the realtime IQ pipeline. The normal inactive path performs no
+new PHY MMIO. It requires native AGC, coarse IQ, BB AGC on, forced-gain off,
+vendor or 127 acquisition, vendor tune/start-gain and zero offset. A non-vendor 8020 baseline
+is refused. Repeated start requests during an active trial are refused and do
+not extend its deadline. No NVS policy is saved; reboot returns vendor.
+
+The trial restores on the first control tick at/after its 20-second deadline,
+on `%`, and before channel/frequency/bandwidth, BB-AGC, IQ-lane, offset,
+start-gain or raw-field changes. The deadline relies on the control task being
+scheduled; it is not a hardware timer guarantee during a stalled task. Polling
+detects vendor overwrite and changed native flags; it retires the experiment
+without repeatedly reapplying its setting. Restoration changes only the owned
+field when it still matches the trial; other bits use current register values.
+Starts are also refused during vendor retunes, and retunes clear queued trials.
+Policy changes made by the control task invalidate AFC receive history and
+start a settling interval. Readback failures are reported explicitly.
+
+There are no force-gain calls, AGC-disable calls, packet/watchdog changes,
+gain-feedback controller, sample holds or output filtering in the patch.
+RF saturation policy remains untouched. Software tests check default no-MMIO,
+field ownership, both candidates, zero tracking writes, automatic/manual/context
+rollback, forced/fine refusal and preserving a vendor overwrite. They do not
+establish silicon semantics, native RF-step response or video improvement.
+
+Compare A -> +32 -> A -> -32 -> A at matched VTX power/attenuation and channel,
+keeping demodulator/DAC transfer fixed. Log IQ radius/rail occupancy/coherence
+and visible grain/glitches. Step attenuation both directions within each trial;
+reject a candidate that stops responding, loses weak signals or adds artifacts.
+Any promising setting still needs full IQ/gain/FSM validation with a dedicated
+meter image before it becomes a persistent/default analog policy. The trial
+is intentionally one field rather than guessed simultaneous target/hysteresis/
+attack/release writes.
