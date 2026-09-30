@@ -654,3 +654,17 @@ VIDEO32, so the perceived cleanliness cannot be attributed solely to hold.
 An unguarded VIDEO32 comparison and bounded-duration rejection would be
 needed to separate those effects. Do not enable this guard by default or
 claim a noise fix. Hardware runtime observation is not sample-gapless proof.
+
+### Lowest nonzero 7034 candidate selected
+
+At the user's request to try the fastest available candidate, normal live
+profile 3 (`7034_1`) was selected. Intermediate profiles 5 and 2 were used
+only to reach the persisted index; no new picture assessment of 2 is claimed.
+USB console recovery required a hardware reset, after which `T` confirmed
+`0x600A7034 = 0x810187a4` (`[30:24] = 1`), profile 3, A1/5865 MHz.
+`E` confirmed native AGC, P8 FULL, coarse IQ, offset disabled, and zero
+reported RX/TX/GDMA errors. The initial snapshot had strength 0 and no
+usable carrier, so carrier-present picture assessment remains pending.
+Value 1 is the lowest nonzero setting in this field, **not a demonstrated
+maximum hardware acquisition speed**; no 0.1 us timing is claimed. Other
+AGC policy fields remain vendor, and `}` restores profile 0.
