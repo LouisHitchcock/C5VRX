@@ -1,5 +1,4 @@
-idf_component_register(
-    SRCS
+set(c5vrx_sources
         "main.c"
         "bs_relative_worker_probe.c"
         "bs_relative_middle_probe.c"
@@ -15,6 +14,12 @@ idf_component_register(
         "direct_gain_v2.c"
         "direct_gain_v3.c"
         "menu_raster.c"
+)
+if(CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY)
+    set(c5vrx_sources "agc_capture_main.c" "rf.c" "arc_phy.c" "phy_phase_tap_probe.c")
+endif()
+idf_component_register(
+    SRCS ${c5vrx_sources}
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi

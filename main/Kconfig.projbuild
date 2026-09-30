@@ -1,4 +1,12 @@
 menu "C5VRX diagnostic probes"
+    config C5VRX_NATIVE_AGC_CAPTURE_ONLY
+        bool "Build standalone native AGC meter (no video output)"
+        default n
+        help
+            Reserve both modem dump SRAM banks before heap initialization.
+            Excludes the video pipeline so static data fits below the banks.
+            Flash the normal firmware again for live picture comparison.
+
     config C5VRX_PHY_PHASE_TAP_PROBE
         bool "Capture bounded MODEM_DIAG lane traces at boot, then start video"
         default n

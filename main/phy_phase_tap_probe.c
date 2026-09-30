@@ -330,10 +330,12 @@ static uint32_t IRAM_ATTR agc_words_freeze(void)
         /* 8192 words at ~80 MS/s = 102 us; wait 150 us so the ring wraps. */
         const uint32_t t0 = get_cycle_count();
         while (get_cycle_count() - t0 < 150u * 240u) { }
+        /* Disabling ENABLE clears the pointer on this C5. Read immediately
+         * before stopping, as in the earlier hardware-proven probe. Its few
+         * bus-cycle uncertainty is not a calibrated phase alignment. */
+        const uint32_t stop_ptr = REG32(DUMP_PTR_MODE) & (DUMP_WORDS - 1u);
         REG32(DUMP_CTRL) = ctrl;
         io_fence();
-        /* Read the pointer after stopping, not while the ring still advances. */
-        const uint32_t stop_ptr = REG32(DUMP_PTR_MODE) & (DUMP_WORDS - 1u);
         REG32(HP_SRAM_USAGE) = saved_sram_usage;
         io_fence();
         if ((saved_mstatus & 0x8u) != 0u)
@@ -345,6 +347,9 @@ static void agc_words_run(unsigned windows)
 {
     const uint32_t saved_ctrl = REG32(DUMP_CTRL);
     for (unsigned n = 0; n < windows; ++n) {
+        /* Drain USB output before temporarily disconnecting both HP banks. */
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(20));
         const uint32_t stop_ptr = agc_words_freeze();
         printf("AGC_WORDS BEGIN window=%u words=%u stop_ptr=%" PRIu32 "\n",
                n, DUMP_WORDS, stop_ptr);
@@ -354,8 +359,13 @@ static void agc_words_run(unsigned windows)
             for (unsigned i = 0; i < 256u; ++i)
                 printf("%08" PRIx32, dump_sram[c * 256u + i]);
             printf("\n");
+            /* Boot-only export: let USB drain each 2 KiB line. This never
+             * paces RF sampling or the production video path. */
+            fflush(stdout);
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
         printf("AGC_WORDS END window=%u\n", n);
+        fflush(stdout);
         /* Separate the windows in time so they see different restarts. */
         vTaskDelay(pdMS_TO_TICKS(2));
     }
@@ -365,6 +375,9 @@ static void agc_words_run(unsigned windows)
 
 esp_err_t phy_agc_capture_arm(void)
 {
+#if !CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (!rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
     nvs_handle_t handle;
     esp_err_t err = nvs_open("c5vrx", NVS_READWRITE, &handle);
@@ -377,6 +390,11 @@ esp_err_t phy_agc_capture_arm(void)
 
 bool phy_agc_capture_boot_run(void)
 {
+#if !CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY
+    /* Live BSS/heap occupies the modem's two dump banks. Never grant them
+     * to the MAC in a normal image, even when stale NVS requests capture. */
+    return false;
+#endif
     nvs_handle_t handle;
     uint8_t armed = 0;
     if (nvs_open("c5vrx", NVS_READWRITE, &handle) != ESP_OK) return false;

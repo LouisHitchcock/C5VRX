@@ -574,3 +574,52 @@ Post-flash `E` telemetry confirmed A1/5865 MHz, `native=1`,
 carrier was established. This confirms firmware operation, not a noise
 improvement. Carrier-present timing comparisons and AGC GUARD validation
 remain pending.
+
+### Capture memory failure and standalone meter
+
+The first carrier-present normal-build capture crashed in `esp_vfs_write`
+after the dump overwrote live BSS. Saving only the printed 32 KiB window
+also failed: the interrupt stack above that window was corrupted. The
+legacy `c5vrx2/main/rf_dump.c` explicitly records that `MAC_DUMP_ALLOC`
+disconnects **both** 64 KiB banks, through 0x40850000, from the CPU. A
+temporary heap/RTC backup is not a valid replacement for reserving those
+banks, especially when executing stacks and driver buffers live there.
+Those temporary backup attempts were discarded.
+
+Raw AGC capture is now refused in normal builds (`@` returns
+`ESP_ERR_NOT_SUPPORTED`). `{` / `}` still select native profiles and reboot
+for live picture comparison, but no longer request a raw dump. A separate
+`CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY` image excludes video and reserves
+0x4082ffc0..0x40850040 before heap initialization, checks static BSS ends
+below that region, and sanitizes stale dump ownership before Wi-Fi starts.
+It deliberately produces no analog video. Restore the normal image for
+picture comparison; NVS retains the selected profile.
+
+```sh
+idf.py -B build_agc_meter -D SDKCONFIG=sdkconfig.agc-meter \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.agc-meter.defaults' build
+python tools/flash.py COM10 --build-dir build_agc_meter
+python tools/agc_transition.py capture --timing vendor --log vendor.log
+python tools/agc_transition.py capture --timing next --log 7034-5.log
+python tools/flash.py COM10
+```
+
+Both images compile with ESP-IDF v6.0.2. Normal image: 0x11c350 bytes;
+meter before the export pacing adjustment: 0xd4300 bytes. The meter was
+flashed and ran capture without panic. Initial USB export lost a chunk;
+strict parsing rejected the session rather than silently accepting it.
+Export now flushes and yields between chunks, entirely after sampling.
+Disable clears the hardware stop pointer, so it is read immediately before
+disable again; a few bus cycles of boundary uncertainty remain. No precise
+gain-to-phase calibration or noise improvement is established by these
+transport checks. Carrier-present profile comparison remains pending.
+
+The user requested direct live assessment instead of further meter work.
+Normal firmware was restored and its flash hashes verified. Native profile
+1 (`7034_5`) was selected with `{`, without capture, and the receiver was
+returned from saved A3 to A1/5865 MHz. Live `T` readback confirmed
+`0x600A7034 = 0x850187a4`, i.e. `[30:24] = 5`. `E` confirmed
+`native=1`, `fw_gain_epochs=0`, `demod=PHASE8_FULL`, `agc_off_en=0`,
+and no reported RX/TX/GDMA errors. VTX was requested on only after this
+verification. Picture improvement and actual step-duration reduction are
+still unproven. `}` restores vendor in the normal firmware without a dump.

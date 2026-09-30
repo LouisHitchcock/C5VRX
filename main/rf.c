@@ -365,7 +365,11 @@ esp_err_t rf_native_acq_arm(bool next)
     esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
     err = nvs_set_u8(handle, "agc_acq", value);
+#if CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY
     if (err == ESP_OK) err = nvs_set_u8(handle, "agc_capture", 1u);
+#else
+    if (err == ESP_OK) err = nvs_set_u8(handle, "agc_capture", 0u);
+#endif
     if (err == ESP_OK) err = nvs_set_u8(handle, AGC_TUNE_NVS_KEY, 0u);
     if (err == ESP_OK) err = nvs_set_u8(handle, NATIVE_INITGAIN_NVS_KEY, 0u);
     if (err == ESP_OK) err = nvs_set_u8(handle, AGC_OFFSET_NVS_DB, 0u);

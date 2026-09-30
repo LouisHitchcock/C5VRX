@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flash C5VRX-3 firmware to ESP32-C5 board."""
 import sys
+import argparse
 import subprocess
 from pathlib import Path
 import serial.tools.list_ports
@@ -23,11 +24,16 @@ def find_esp_port():
 
 
 def main():
-    port = sys.argv[1] if len(sys.argv) > 1 else find_esp_port()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("port", nargs="?", default=None)
+    parser.add_argument("--build-dir", default=str(BUILD))
+    args = parser.parse_args()
+    port = args.port or find_esp_port()
+    build = Path(args.build_dir).resolve()
 
-    bootloader = BUILD / "bootloader/bootloader.bin"
-    ptable = BUILD / "partition_table/partition-table.bin"
-    app = BUILD / "c5vrx3.bin"
+    bootloader = build / "bootloader/bootloader.bin"
+    ptable = build / "partition_table/partition-table.bin"
+    app = build / "c5vrx3.bin"
 
     for f in (bootloader, ptable, app):
         if not f.exists():
@@ -35,7 +41,7 @@ def main():
             sys.exit(1)
 
     print(f"=======================================================")
-    print(f" FLASHING C5VRX-3 (Seamless32K Phase5 Production)")
+    print(f" FLASHING C5VRX-3 ({build.name})")
     print(f" Port: {port}")
     print(f" App:  {app}")
     print(f"=======================================================")
