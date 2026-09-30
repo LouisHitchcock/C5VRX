@@ -378,6 +378,63 @@ esp_err_t rf_native_acq_arm(bool next)
     return err;
 }
 static uint8_t s_agc_offset_field;
+/* Pinned C5 libphy audit: phy_bb_wdt_rst_enable() owns only 7C40[31].
+ * No watchdog interrupt/status-clear/config write is part of this test. */
+#define BB_WDG_CFG_REG  0x600A7C3Cu
+#define BB_WDG_CTRL_REG 0x600A7C40u
+#define BB_WDG_STATUS_REG 0x600A7C08u
+#define BB_WDG_RESET_BIT (1u << 31)
+static bool s_native_wdg_blocked;
+static uint32_t s_native_wdg_vendor_bit;
+
+void rf_native_wdg_report(const char *reason)
+{
+    uint32_t ctrl = REG32(BB_WDG_CTRL_REG);
+    printf("AGC_WDG reason=%s native=%u requested_block=%u reset_en=%u "
+           "cfg=0x%08lx ctrl=0x%08lx status=0x%08lx "
+           "agc_ctrl=0x%08lx comp_ctrl=0x%08lx gain_state=0x%08lx\n",
+           reason, s_native_agc ? 1u : 0u, s_native_wdg_blocked ? 1u : 0u,
+           (ctrl & BB_WDG_RESET_BIT) ? 1u : 0u,
+           (unsigned long)REG32(BB_WDG_CFG_REG), (unsigned long)ctrl,
+           (unsigned long)REG32(BB_WDG_STATUS_REG),
+           (unsigned long)REG32(RX_AGC_CTRL_REG),
+           (unsigned long)REG32(0x600A702Cu),
+           (unsigned long)REG32(0x600A7078u));
+}
+
+static void native_wdg_restore(void)
+{
+    if (!s_native_wdg_blocked) return;
+    REG32(BB_WDG_CTRL_REG) = (REG32(BB_WDG_CTRL_REG) & ~BB_WDG_RESET_BIT) |
+                            s_native_wdg_vendor_bit;
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    s_native_wdg_blocked = false;
+    rf_native_wdg_report("restore");
+}
+
+esp_err_t rf_native_wdg_toggle(void)
+{
+    if (s_native_wdg_blocked) { native_wdg_restore(); return ESP_OK; }
+    /* Keep the first causality comparison free of gain/timing overrides. */
+    if (!s_native_agc || s_native_acq_profile || s_agc_tune ||
+        s_native_initgain || rf_agc_offset_db() || rf_fine_iq_active() ||
+        (REG32(RX_AGC_CTRL_REG) & (1u << 29)) ||
+        (REG32(0x600A702Cu) & (1u << 23))) return ESP_ERR_INVALID_STATE;
+    uint32_t ctrl = REG32(BB_WDG_CTRL_REG);
+    s_native_wdg_vendor_bit = ctrl & BB_WDG_RESET_BIT;
+    rf_native_wdg_report("before");
+    if (!s_native_wdg_vendor_bit) return ESP_ERR_NOT_SUPPORTED;
+    REG32(BB_WDG_CTRL_REG) = ctrl & ~BB_WDG_RESET_BIT;
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    s_native_wdg_blocked = true;
+    rf_native_wdg_report("block_reset");
+    if (REG32(BB_WDG_CTRL_REG) & BB_WDG_RESET_BIT) {
+        native_wdg_restore();
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 static int8_t s_agc_offset_db;
 static int8_t s_agc_offset_vendor[AGC_OFFSET_FIELDS];
 static bool s_agc_offset_vendor_ok[AGC_OFFSET_FIELDS];
@@ -1293,6 +1350,7 @@ static bool plan_wifi5_center(uint16_t freq_mhz, uint8_t *channel, uint16_t *cen
 
 void rf_set_analog_bandwidth(bool bw40)
 {
+    native_wdg_restore();
     s_analog_bw40 = bw40;
     phy_wifi_fbw_sel(bw40 ? 1u : 0u);
 }
@@ -1447,6 +1505,7 @@ int rf_get_frequency_offset_khz(void)
 
 void rf_set_frequency_offset_khz(int offset_khz)
 {
+    native_wdg_restore();
     /* Strict clamping: +/- 1500 kHz (+/- 1.5 MHz) maximum.
      * Adjacent FPV channels are at least 19-20 MHz apart. Clamping strictly
      * to +/- 1.5 MHz guarantees 100% that tuning is locked to the selected
@@ -1473,6 +1532,7 @@ esp_err_t rf_set_channel(size_t index)
     fpv_band_t new_band = (fpv_band_t)(index / 8u);
     uint8_t new_idx = (uint8_t)(index % 8u);
     uint16_t requested_mhz = s_fpv_channels[new_band][new_idx].freq_mhz;
+    native_wdg_restore();
 
     uint8_t wifi_channel = 0;
     uint16_t wifi_center_mhz = 0;

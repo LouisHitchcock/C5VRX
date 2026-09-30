@@ -143,6 +143,10 @@ esp_err_t rf_agc_tune_select_next(void);
 /* Native AGC acquisition lab: one policy field per boot, no forced gain. */
 esp_err_t rf_native_acq_arm(bool next);
 void rf_native_acq_report(void);
+/* RAM-only lab switch: suppress BB watchdog resets, never disable AGC.
+ * Reboot or retune restores vendor. Status is raw, not an event count. */
+esp_err_t rf_native_wdg_toggle(void);
+void rf_native_wdg_report(const char *reason);
 /* LAB: baseband packet AGC on/off with the RF AGC left on (native only). */
 void rf_set_bb_agc(bool enable);
 bool rf_bb_agc_enabled(void);

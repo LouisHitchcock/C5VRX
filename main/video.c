@@ -5438,6 +5438,12 @@ static void console_diag_task(void *arg)
                     }
                 } else if (c == 'T') {
                     rf_dump_agc_regs();
+                    rf_native_acq_report();
+                    rf_native_wdg_report("query");
+                } else if (c == '&') {
+                    esp_err_t wdg_err = rf_native_wdg_toggle();
+                    printf("C5VRX_WDG_LAB err=%s ram_only=1 reboot_restores=1\n",
+                           esp_err_to_name(wdg_err));
                 } else if (c == 'Q') {
                     lab_dump_raw_probe();
                 } else if (c == 'z') {
@@ -5833,8 +5839,9 @@ static void console_diag_task(void *arg)
                     printf("  'X':         Cycle RX profile (V2/V1/ARC V3)\n");
                     printf("  'u'/'d':     Golden <-> Phase8 VIDEO32 / original Phase8 FULL (persist + reboot)\n  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  '!':         Experimental coarse-IQ rail HOLD/RESEED (persist + reboot)\n");
-                    printf("  '@':         One-shot full IQ/gain/state boot capture (reboot; video resumes)\n");
-                    printf("  '{' / '}':   Native acquisition field next / vendor, capture + reboot\n");
+                    printf("  '@':         Raw capture requires the separate AGC-meter image\n");
+                    printf("  '{' / '}':   Native acquisition field next / vendor, persist + reboot\n");
+                    printf("  '&':         RAM-only BB watchdog reset block / restore (native AGC stays on)\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");
                     printf("  '+' / '-':   Manual gain step (+/-2)\n");

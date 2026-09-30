@@ -178,3 +178,31 @@ Recommended priority: **watchdog/reset causality experiment**, then native
 acquisition-policy timing tests, with target-level work remaining separate.
 Do not modify a vendor binary until a specific behavior-changing patch has
 been physically demonstrated and source-level hooks are shown insufficient.
+
+## Implemented live switch and first C5 readback
+
+The normal video firmware now implements serial `&` as a RAM-only toggle
+of `7C40[31]`. It refuses entry unless native AGC is enabled, packet AGC
+is enabled, forced-gain bits are clear, coarse IQ is selected, and the older
+timing/start-gain/offset overrides are absent. It saves/restores only the
+reset bit, never enables an interrupt, never clears status and never changes
+the watchdog timer fields. Reboot, channel/frequency retune and bandwidth
+change restore vendor behavior. `T` prints `AGC_ACQ` and `AGC_WDG` readback.
+If the reset bit is already zero, the toggle returns `ESP_ERR_NOT_SUPPORTED`
+instead of pretending to apply a change.
+
+ESP-IDF v6.0.2 compiled the normal image (0x11c7d0 bytes); all 214 repository
+architecture checks passed. The COM10 flash hashes were verified. Before
+any toggle, A1/no-carrier telemetry showed native AGC, vendor acquisition,
+P8 FULL, offset disabled, and:
+
+```text
+cfg=0x801800aa ctrl=0x00000000 status=0x2520a032 reset_en=0
+agc_ctrl=0xc3c5a6d5 comp_ctrl=0x324053e2
+```
+
+Thus **the live baseline reset bit was already disabled** despite the
+archive initializer setting it. This reinforces the audit's warning about
+actual vendor/ROM paths and later configuration. Carrier-present readback
+is still needed; no watchdog change or noise improvement is claimed. Raw
+status remains undecoded and must not be called a timeout/event counter.
