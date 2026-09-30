@@ -94,7 +94,7 @@ check("IQ_RATE_HZ == 40000000",
 
 check("AGC uses one complete 4092-byte descriptor",
       bool(re.search(r"CONTROL_SAMPLE_BYTES\s+4092", all_c)) and
-      "get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES)" in all_c)
+      "copy_completed_rx_window(s_control_sample_buf, sizeof(s_control_sample_buf), &ring_offset)" in all_c)
 check("gain transition hot path has no AGC printf",
       "[AGC:GAIN]" not in all_c)
 check("periodic runtime telemetry disabled",
@@ -132,7 +132,7 @@ check("three-second BOOT recovery cannot be blocked by persisted menu state",
       "s_demod_mode = DEMOD_MODE_GOLDEN_PHASE5;" in all_c and
       "s_output_mode = VIDEO_OUTPUT_6BIT_40;" in all_c and
       "apply_rx_profile(RX_PROFILE_DIRECT_GAIN);" in all_c and
-      "[RECOVERY] GOLDEN + 6BIT@40 + DIRECT GAIN V2 restored" in all_c)
+      "[RECOVERY] PHASE5 + 6BIT@40 + %s restored" in all_c)
 check("experimental BW auto and 4-bit@80 remain opt-in",
       "AUTO EXP" in all_c and "VIDEO_OUTPUT_4BIT_80" in all_c and
       "DAC4_RATE_HZ     80000000u" in all_c)
@@ -328,7 +328,7 @@ check("Trajectory v2 live two-stage address contract is mirrored everywhere",
       "middle_raw >> 7" in read(ROOT / "tools/range_demod_bench.py") and
       "c5vrx_trajectory_v2_token" in read(MAIN / "trajectory_v2_lut.h"))
 check("live demod selectors exclude Trajectory",
-      'return "GOLDEN";' in all_c and
+      'return "PHASE5";' in all_c and
       "cycle_demod_mode" not in all_c and
       "TRAJ_V2" not in read(MAIN / "fm_phase8_video.bsasm"))
 check("stored legacy demod choice migrates safely to Golden",

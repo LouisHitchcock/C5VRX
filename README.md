@@ -170,7 +170,7 @@ The continuous pixel path runs in AHB GDMA, BitScrambler, and PARLIO TX. A backg
 
 ### Demodulator A/B (PR #122)
 
-The VIDEO OUTPUT menu cycles **Golden**, **P8 VIDEO32**, and **P8 FULL** with
+The VIDEO OUTPUT menu cycles **PHASE5 (Golden)**, **PHASE8 FULL**, and **P8 VIDEO32** with
 long press; the selection is saved and takes effect on menu exit. Serial
 `u` toggles Golden / P8 VIDEO32 with a reboot; `d` returns to the original
 P8 FULL. Native hardware AGC owns gain in every mode. Fresh installations

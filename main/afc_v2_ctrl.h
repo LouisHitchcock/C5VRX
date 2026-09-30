@@ -116,17 +116,33 @@ static inline int32_t afc2_ctrl_median(const int32_t *v, unsigned n)
     return n ? (n & 1u ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0;
 }
 
-/* Decide one acquisition step. `eligible` is the caller's gate (AUTO AFC,
- * not TRACK, no settle). Returns true with *step_khz when a write is due. */
-static inline bool afc2_ctrl_decide(afc2_ctrl_t *c, bool eligible, int32_t *step_khz)
+/* The same full-window stability test gates acquisition lock and writes.
+ * A single centred latest estimate cannot lock an unstable history. */
+static inline bool afc2_ctrl_stable(const afc2_ctrl_t *c, int32_t *median)
 {
-    if (!eligible || c->n < AFC2_CTRL_SAMPLES ||
-        c->corrections >= AFC2_CTRL_MAX_CORRECTIONS) return false;
+    if (c->n < AFC2_CTRL_SAMPLES) return false;
     int32_t med = afc2_ctrl_median(c->est, c->n);
     int32_t dev[AFC2_CTRL_SAMPLES];
-    for (unsigned k = 0; k < c->n; ++k) dev[k] = c->est[k] > med ? c->est[k] - med : med - c->est[k];
-    int32_t mad = afc2_ctrl_median(dev, c->n);
-    if (mad > AFC2_CTRL_MAX_MAD_KHZ) return false;
+    for (unsigned k = 0; k < c->n; ++k)
+        dev[k] = c->est[k] > med ? c->est[k] - med : med - c->est[k];
+    if (afc2_ctrl_median(dev, c->n) > AFC2_CTRL_MAX_MAD_KHZ) return false;
+    *median = med;
+    return true;
+}
+
+static inline bool afc2_ctrl_can_lock(const afc2_ctrl_t *c, bool auto_afc)
+{
+    int32_t med;
+    return afc2_ctrl_stable(c, &med) && (!auto_afc ||
+        (med >= -AFC2_CTRL_DEADBAND_KHZ && med <= AFC2_CTRL_DEADBAND_KHZ));
+}
+
+/* Decide one acquisition step. `eligible` carries AUTO/not TRACK/settle. */
+static inline bool afc2_ctrl_decide(afc2_ctrl_t *c, bool eligible, int32_t *step_khz)
+{
+    int32_t med;
+    if (!eligible || c->corrections >= AFC2_CTRL_MAX_CORRECTIONS ||
+        !afc2_ctrl_stable(c, &med)) return false;
     if (med <= AFC2_CTRL_DEADBAND_KHZ && med >= -AFC2_CTRL_DEADBAND_KHZ) return false;
     int32_t step = med > AFC2_CTRL_MAX_STEP_KHZ ? AFC2_CTRL_MAX_STEP_KHZ :
                    med < -AFC2_CTRL_MAX_STEP_KHZ ? -AFC2_CTRL_MAX_STEP_KHZ : med;

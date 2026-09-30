@@ -138,7 +138,7 @@ must also be included in any measured filter response.
 
 ## Review fixes and bounded video candidate
 
-The VIDEO OUTPUT menu now cycles Golden -> P8 VIDEO32 -> P8 FULL with a long
+The VIDEO OUTPUT menu now cycles PHASE5 -> PHASE8 FULL -> P8 VIDEO32 with a long
 press; the choice is persisted and applied when leaving the menu. Serial
 `u` / `d` selects and reboots. Fresh installations still default to P8 FULL;
 existing `demod_golden` choices migrate without changing their meaning.
@@ -187,3 +187,57 @@ frequency endpoints, and uses Cartesian-cell radius bounds before reporting
 envelope candidates. Rotating a noiseless radius-1.2 vector no longer creates
 hundreds of fake AGC events. State fields are labelled as proxies; start-byte
 re-entry uses the configured start (including 66/74), not a hard-coded >=80.
+
+
+## Phase5/Phase8 switching and remaining range work
+
+Golden is the original **Phase5** endpoint discriminator. On VIDEO OUTPUT,
+long press cycles **PHASE5 -> PHASE8 FULL -> P8 VIDEO32**. The first
+two are the reference A/B; VIDEO32 remains an explicitly experimental,
+32-state bounded-transfer candidate. Exit the menu to apply the saved choice.
+Native hardware AGC owns RF gain in all three selections. The recovery
+hold now also restores and persists the actual Golden/Phase5 program, rather
+than only resetting a legacy enum while Phase8 remained selected.
+
+The native sync/standard observer now uses the Phase8 raw-IQ detector in
+`afc_v2.h` rather than Golden's DAC low-code threshold. Accepted burst-bearing
+runs report their measured width and, when two agreeing runs fit inside the
+window, their measured spacing. Standard votes require matching PAL/NTSC burst
+and horizontal spacing; a lone burst earns only partial sync confidence.
+This observer is independent of the selected DAC pedestal/gain.
+
+Acquisition lock and AFC writes share the 16-estimate median/MAD stability
+test. AUTO must additionally be centred; OFF/HOLD can lock a stable receive
+state with a nonzero reference offset, so experimental BW AUTO cannot keep
+switching solely because centering is disabled. Valid TRACK remains sticky.
+Invalid DMA copies also age the native lock, clear stale CFO and discard
+consecutive evidence. All slow IQ consumers use the bounded descriptor copy;
+the returned ring offset belongs to that same copy, preserving endpoint parity.
+The copy deadline sums the actual intervening descriptor lengths, including
+the short tail node, rather than assuming a uniform ring.
+
+For #118, compare exactly the same frozen samples through the three actual
+assembly LUTs, without RF/AGC variations between modes:
+
+```sh
+python3 tools/compare_live_demods.py capture.log
+python3 tools/compare_live_demods.py capture.bin --binary --parity 1
+```
+
+The JSON contains a per-window input hash, endpoint parity, sample count and
+per-mode DAC swing/rail/jump statistics. Separate `z` windows are never joined
+across a capture gap. Raw DAC statistics have different gains/pedestals and
+are not a quality ranking or proof of RF sensitivity. Use a controlled
+attenuation sweep and external CVBS picture/sync rating to establish range.
+The exhaustive regression checks all 65,536 raw pairs and both byte parities.
+
+Register semantics were checked against Espressif's pinned v6.0.2
+[`ahb_dma_struct.h`](https://github.com/espressif/esp-idf/blob/v6.0.2/components/soc/esp32c5/register/soc/ahb_dma_struct.h):
+`in_dscr_bf0` identifies fetched descriptor x; `in_dscr` already points at
+x+1. We therefore retain the previous-buffer selection and validate its
+copy lifetime. This is software snapshot hygiene, not a new proof of gapless RF.
+
+Remaining #121 hardware work is still finding and validating native target,
+hysteresis and retrigger controls, then measuring annulus/near-far recovery.
+The failed target-register sweeps do not justify promoting guessed writes.
+No CPU gain controller or guessed native policy patch is enabled here.

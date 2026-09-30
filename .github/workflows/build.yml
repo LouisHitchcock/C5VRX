@@ -181,6 +181,7 @@ jobs:
           python3 tools/sim_phase8_false_colour.py --self-test
           python3 tools/test_phase8_video.py
           python3 tools/analyze_q4_window.py --self-test
+          python3 tools/compare_live_demods.py --self-test
 
   build:
     name: Build Production Firmware (ESP32-C5)

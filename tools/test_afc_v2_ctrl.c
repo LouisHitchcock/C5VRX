@@ -110,6 +110,31 @@ int main(void)
     /* A new acquisition (e.g. channel change) restores the budget. */
     assert(afc2_ctrl_sync(&c, 999u, false) && c.corrections == 0);
 
+    /* Lock shares the correction stability test. A centred last sample does
+     * not turn a noisy acquisition into a permanent TRACK freeze. */
+    afc2_ctrl_reset(&c, 42u, true);
+    for (unsigned k = 0; k < AFC2_CTRL_SAMPLES; ++k) {
+        afc2_result_t s = est(k + 1 == AFC2_CTRL_SAMPLES ? 0 :
+                             (k & 1u) ? 600 : -300, -2000, -1, 2);
+        afc2_ctrl_observe(&c, &s);
+    }
+    assert(!afc2_ctrl_can_lock(&c, true));
+    assert(!afc2_ctrl_can_lock(&c, false));
+    afc2_ctrl_reset(&c, 43u, true);
+    for (unsigned k = 0; k < AFC2_CTRL_SAMPLES; ++k) {
+        afc2_result_t s = est(k + 1 == AFC2_CTRL_SAMPLES ? 0 : 200, -2000, -1, 2);
+        afc2_ctrl_observe(&c, &s);
+    }
+    assert(!afc2_ctrl_can_lock(&c, true));
+    /* OFF/HOLD freezes a stable receive state without demanding zero CFO. */
+    assert(afc2_ctrl_can_lock(&c, false));
+    afc2_ctrl_reset(&c, 44u, true);
+    for (unsigned k = 0; k < AFC2_CTRL_SAMPLES; ++k) {
+        afc2_result_t s = est(30, -2000, -1, 2);
+        afc2_ctrl_observe(&c, &s);
+        assert(afc2_ctrl_can_lock(&c, true) == (k + 1 == AFC2_CTRL_SAMPLES));
+    }
+
     /* Sync/porch midpoint reference. */
     afc2_ctrl_t m = {0};
     m.ref = AFC2_REF_SYNC_MID;

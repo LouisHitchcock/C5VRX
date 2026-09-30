@@ -59,6 +59,8 @@ typedef struct {
     uint32_t sync_pairs, porch_pairs;
     uint8_t standard;        /* 0 unknown / no burst, 1 NTSC, 2 PAL */
     uint16_t burst_x10;      /* mean burst amplitude in phase codes x10 */
+    uint16_t period_40m;     /* measured accepted-run spacing; 0 without two agreeing runs */
+    uint16_t width_40m;      /* mean accepted sync width, smoothed detector */
 } afc2_result_t;
 
 /* Burst amplitude (codes x10) at one subcarrier over the burst window, using
@@ -286,6 +288,9 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
 
     int64_t sync_sum = 0, porch_sum = 0;
     int burst_sum = 0, burst_n = 0, std_votes = 0;
+    size_t last_start = 0;
+    int last_std = 0;
+    unsigned width_sum = 0, period_sum = 0, periods = 0;
     for (unsigned a = 0; a < acc_n[best]; ++a) {
         /* The boxcar delays edges by about half its length. */
         size_t end = acc_end[best][a], start = end - acc_len[best][a];
@@ -313,8 +318,19 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
             --burst_n; burst_sum -= amp; std_votes -= std_id == 2 ? 1 : -1;
             continue;
         }
+        width_sum += (unsigned)(end - start);
+        if (r.lines && last_std == std_id) {
+            size_t period = start - last_start;
+            bool timing_ok = std_id == 2 ? period >= 2554u && period <= 2568u :
+                                           period >= 2532u && period <= 2550u;
+            if (timing_ok) { period_sum += (unsigned)period; ++periods; }
+        }
+        last_start = start;
+        last_std = std_id;
         ++r.lines;
     }
+    r.width_40m = r.lines ? (uint16_t)(width_sum / r.lines) : 0;
+    r.period_40m = periods ? (uint16_t)(period_sum / periods) : 0;
     if (burst_n) {
         r.burst_x10 = (uint16_t)(burst_sum / burst_n);
         r.standard = std_votes > 0 ? 2u : std_votes < 0 ? 1u : 0u;

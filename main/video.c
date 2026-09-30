@@ -581,37 +581,9 @@ static int patch_descriptors_clear_eof(int dma_ch, bool is_rx)
     return count;
 }
 
-/* Pick a descriptor that RX has already completed, rather than sampling a
- * fixed address that GDMA may be overwriting at the same instant. The control
- * loop now consumes one complete 4092-byte descriptor per 50 ms evaluation. */
-static uint8_t *get_completed_rx_sample_window(size_t bytes)
-{
-    if (s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 2) {
-        return s_raw_ring;
-    }
-
-    uint32_t current_addr = AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val;
-    int current_idx = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count, current_addr);
-    if (current_idx < 0) {
-        return s_raw_ring;
-    }
-
-    for (int back = 1; back < s_rx_dscr_count; ++back) {
-        int idx = (current_idx - back + s_rx_dscr_count) % s_rx_dscr_count;
-        uint8_t *buf = s_rx_dscr_nodes[idx].buffer;
-        uint32_t len = s_rx_dscr_nodes[idx].length;
-        if (buf && len >= bytes &&
-            buf >= s_raw_ring && (buf + bytes) <= (s_raw_ring + sizeof(s_raw_ring))) {
-            return buf;
-        }
-    }
-    return s_raw_ring;
-}
-
-
 /* Capture validity, not merely a pointer to the previous DMA descriptor.
  * Never accept a copy that could have been lapped while this task was preempted. */
-static bool copy_completed_rx_window(uint8_t *dst, size_t bytes)
+static bool copy_completed_rx_window(uint8_t *dst, size_t bytes, size_t *ring_offset)
 {
     if (s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 3) return false;
     int64_t start = esp_timer_get_time();
@@ -626,12 +598,19 @@ static bool copy_completed_rx_window(uint8_t *dst, size_t bytes)
     memcpy(dst, src, bytes);
     int after = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count,
         AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val);
-    uint64_t safe_us = (sizeof(s_raw_ring) - 2u * CONTROL_SAMPLE_BYTES) *
-                       1000000ULL / IQ_RATE_HZ;
+    /* Last descriptor can be shorter than 4092 bytes. Sum the actual nodes
+     * DMA must cross before it can reuse this buffer, starting with zero
+     * remaining time in the descriptor active at the first read. */
+    uint64_t safe_bytes = 0;
+    for (int k = 0; k < s_rx_dscr_count; ++k)
+        if (k != active && k != idx) safe_bytes += s_rx_dscr_nodes[k].length;
+    uint64_t safe_us = safe_bytes * 1000000ULL / IQ_RATE_HZ;
     int advance = after < 0 ? s_rx_dscr_count :
                   (after - active + s_rx_dscr_count) % s_rx_dscr_count;
-    return after >= 0 && after != idx && advance < s_rx_dscr_count - 1 &&
-           (uint64_t)(esp_timer_get_time() - start) < safe_us;
+    bool ok = after >= 0 && after != idx && advance < s_rx_dscr_count - 1 &&
+              (uint64_t)(esp_timer_get_time() - start) < safe_us;
+    if (ok && ring_offset) *ring_offset = (size_t)(src - s_raw_ring);
+    return ok;
 }
 
 /* Exact Phase5 state decode mirrored from the embedded fm.bsasm LUT.  The
@@ -838,6 +817,21 @@ static int video_semantic_observe(const uint8_t *raw, size_t bytes, size_t ring_
     int quality = width_score + best_period_score;
     if (!valid_period) quality = width_score;
     if (quality > 100) quality = 100;
+    s_last_sync_quality = quality;
+    return quality;
+}
+
+/* Native receive diagnostics use raw Phase8 burst/timing evidence at every
+ * DAC mapping. The old Phase5 low-code threshold cannot describe P8 FULL. */
+static int video_phase8_observe(const afc2_result_t *r)
+{
+    s_last_sync_width_20m = (uint16_t)((r->width_40m + 1u) / 2u);
+    int quality = r->lines && r->standard ? 40 : 0;
+    if (r->period_40m && r->standard) {
+        video_standard_vote(r->standard == 2u ? VIDEO_STD_PAL : VIDEO_STD_NTSC,
+                            (uint16_t)((r->period_40m + 1u) / 2u));
+        quality = 100;
+    }
     s_last_sync_quality = quality;
     return quality;
 }
@@ -1088,12 +1082,8 @@ static void fusion_observer_task(void *arg)
         }
 
         uint32_t gain_epoch = s_gain_transition_count;
-        uint8_t *src = get_completed_rx_sample_window(sizeof(sample));
-        size_t ring_offset =
-            (src >= s_raw_ring && src < s_raw_ring + sizeof(s_raw_ring)) ?
-            (size_t)(src - s_raw_ring) : 0u;
-        sync_dma_m2c((void *)src, sizeof(sample));
-        memcpy(sample, src, sizeof(sample));
+        size_t ring_offset;
+        if (!copy_completed_rx_window(sample, sizeof(sample), &ring_offset)) continue;
         if (gain_epoch != s_gain_transition_count) continue;
 
         control_metrics_t metrics =
@@ -1258,10 +1248,10 @@ static live_demod_t s_live_demod = LIVE_PHASE8_FULL;
 static const char *demod_mode_name(void)
 {
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-    return s_live_demod == LIVE_GOLDEN ? "GOLDEN" :
-           s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" : "P8 FULL";
+    return s_live_demod == LIVE_GOLDEN ? "PHASE5" :
+           s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" : "PHASE8 FULL";
 #else
-    return "GOLDEN";
+    return "PHASE5";
 #endif
 }
 
@@ -2195,7 +2185,7 @@ static void lab_dump_full_window(void)
     }
     bool ok = false;
     for (unsigned attempt = 0; attempt < 16u && !ok; ++attempt) {
-        ok = copy_completed_rx_window(copy, CONTROL_SAMPLE_BYTES);
+        ok = copy_completed_rx_window(copy, CONTROL_SAMPLE_BYTES, NULL);
         if (!ok) vTaskDelay(1);
     }
     if (ok) {
@@ -2713,11 +2703,11 @@ static void lab_run_rssi_gain_probe(void)
         int rssi_val = -127;
         bool rssi_ok = rf_try_get_wideband_rssi_dbm(&rssi_val);
 
-        uint8_t *sample_src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
-        size_t ring_offset = (sample_src >= s_raw_ring && sample_src < s_raw_ring + sizeof(s_raw_ring))
-                           ? (size_t)(sample_src - s_raw_ring) : 0u;
-        sync_dma_m2c((void *)sample_src, CONTROL_SAMPLE_BYTES);
-        memcpy(s_control_sample_buf, sample_src, CONTROL_SAMPLE_BYTES);
+        size_t ring_offset;
+        if (!copy_completed_rx_window(s_control_sample_buf, CONTROL_SAMPLE_BYTES, &ring_offset)) {
+            printf(" G%u capture unavailable (DMA busy)\n", g);
+            continue;
+        }
         control_metrics_t m = analyze_control_window(s_control_sample_buf,
                                                      CONTROL_SAMPLE_BYTES, ring_offset);
         centered_q4_metrics_t center = measure_centered_q4(s_control_sample_buf,
@@ -3901,6 +3891,9 @@ static void menu_draw_video_page(void)
 {
     char detected[24];
     bool experimental = s_output_mode == VIDEO_OUTPUT_4BIT_80;
+#if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
+    experimental = experimental || s_live_demod == LIVE_PHASE8_VIDEO;
+#endif
     menu_draw_page_title("VIDEO OUTPUT", experimental ? "EXPERIMENTAL" : "DEFAULT");
     menu_ui_value_box(100, 22, 130, "DAC", output_mode_name());
     menu_ui_value_box(238, 22, 138, "DEMOD", demod_mode_name());
@@ -4264,12 +4257,9 @@ static void channel_auto_search(void)
     for (size_t channel = 0; channel < channel_count; ++channel) {
         if (rf_set_channel(channel) != ESP_OK) continue;
         vTaskDelay(pdMS_TO_TICKS(90));
-        uint8_t *src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
-        size_t scan_ring_offset =
-            (src >= s_raw_ring && src < s_raw_ring + sizeof(s_raw_ring)) ?
-            (size_t)(src - s_raw_ring) : 0u;
-        sync_dma_m2c(src, CONTROL_SAMPLE_BYTES);
-        memcpy(s_control_sample_buf, src, sizeof(s_control_sample_buf));
+        size_t scan_ring_offset;
+        if (!copy_completed_rx_window(s_control_sample_buf, CONTROL_SAMPLE_BYTES, &scan_ring_offset))
+            continue;
         control_metrics_t metrics =
             analyze_control_window(s_control_sample_buf,
                                    sizeof(s_control_sample_buf),
@@ -4337,6 +4327,12 @@ static void open_recovery_menu(void)
     s_menu_boot_btn_enabled = true;
     s_video_std_mode = VIDEO_STD_MODE_AUTO;
     s_demod_mode = DEMOD_MODE_GOLDEN_PHASE5;
+    s_live_demod = LIVE_GOLDEN;
+#if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
+    esp_err_t demod_err = persist_live_demod(LIVE_GOLDEN);
+    if (demod_err != ESP_OK)
+        printf("[RECOVERY] Phase5 persistence failed: %s\n", esp_err_to_name(demod_err));
+#endif
     s_output_mode = VIDEO_OUTPUT_6BIT_40;
     apply_rx_profile(RX_PROFILE_DIRECT_GAIN);
     video_standard_detector_reset();
@@ -4344,13 +4340,8 @@ static void open_recovery_menu(void)
     s_menu_timeout_ticks = 0;
     settings_save();
     video_set_menu_mode(true);
-#if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-    printf("[RECOVERY] PHASE8 HR TEST + 6BIT@40 + DIRECT GAIN V3 TEST restored; menu %s\n",
-#elif CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-    printf("[RECOVERY] GOLDEN + 6BIT@40 + DIRECT GAIN V3 TEST restored; menu %s\n",
-#else
-    printf("[RECOVERY] GOLDEN + 6BIT@40 + DIRECT GAIN V2 restored; menu %s\n",
-#endif
+    printf("[RECOVERY] PHASE5 + 6BIT@40 + %s restored; menu %s\n",
+           rf_native_agc_active() ? "NATIVE HW AGC" : "FIRMWARE GAIN",
            s_menu_active ? "opened" : "unavailable");
 }
 
@@ -4410,8 +4401,8 @@ static void handle_button_long_click(void)
             break;
         case 4: /* VIDEO OUTPUT */
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-            live_demod_t next = s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_VIDEO :
-                               s_live_demod == LIVE_PHASE8_VIDEO ? LIVE_PHASE8_FULL : LIVE_GOLDEN;
+            live_demod_t next = s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_FULL :
+                               s_live_demod == LIVE_PHASE8_FULL ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
             esp_err_t err = persist_live_demod(next);
             if (err == ESP_OK) s_live_demod = next;
             printf("[MENU: DEMOD] %s (applies on exit) err=%s\n",
@@ -4623,12 +4614,21 @@ static void analog_agc_task(void *arg)
             s_current_bw40, rf_get_frequency_offset_khz(), rf_get_arc_generation());
         uint32_t sampled_v2_write_seq = s_direct_gain_v2_write_seq;
         uint8_t sampled_gain = s_current_gain;
-        uint8_t *sample_src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
-        size_t ring_offset = (sample_src >= s_raw_ring && sample_src < s_raw_ring + sizeof(s_raw_ring))
-                           ? (size_t)(sample_src - s_raw_ring) : 0u;
-        if (!copy_completed_rx_window(s_control_sample_buf, sizeof(s_control_sample_buf))) {
+        size_t ring_offset;
+        if (!copy_completed_rx_window(s_control_sample_buf, sizeof(s_control_sample_buf), &ring_offset)) {
             afc2_ctrl_invalidate(&afc2_ctrl);
             afc_invalidate(&afc_state);
+            s_cfo_khz = 0;
+            s_afc2_lines = s_afc2_standard = 0;
+            s_last_sync_quality = 0;
+            if (rf_native_agc_active()) {
+                bool was_locked = native_locked;
+                native_locked = afc2_native_lock(native_locked, false, false, 0,
+                                                &native_lost_windows);
+                if (was_locked && !native_locked)
+                    afc2_ctrl_reset(&afc2_ctrl, afc2_ctrl.context, true);
+                s_agc_state = native_locked ? AGC_STATE_TRACK : AGC_STATE_SEARCH;
+            }
             continue;
         }
         control_metrics_t metrics =
@@ -4675,8 +4675,9 @@ static void analog_agc_task(void *arg)
             afc2_envelope_stationary(s_control_sample_buf, sizeof(s_control_sample_buf));
         /* Firmware epochs do not reveal autonomous AGC transitions. This IQ
          * stationarity gate rejects suspected jumps, not a proof of no writes. */
+        afc2_result_t afc2 = {0};
         if (afc_window_ok) {
-            afc2_result_t afc2 = afc2_measure(s_control_sample_buf,
+            afc2 = afc2_measure(s_control_sample_buf,
                 sizeof(s_control_sample_buf), c5vrx_phase8_gain_lut);
             afc2_ctrl_observe(&afc2_ctrl, &afc2);
             if (afc2.lines && afc2.standard && afc2.porch_pairs) {
@@ -4750,21 +4751,23 @@ static void analog_agc_task(void *arg)
                                          rf_get_frequency_offset_khz(),
                                          rf_get_arc_generation())))
             s_cfo_khz = 0;
-        if (settle_ticks > 0 || sampled_gain_epoch != s_gain_transition_count) {
+        if (!afc_window_ok) {
             afc_invalidate(&afc_state);
         } else if (metrics.cfo_pairs >= (int)(CONTROL_SAMPLE_BYTES / 8u) &&
                    metrics.cfo_dot > 0) {
             afc_observe(&afc_state,
                         (int)(((int64_t)metrics.cfo_cross * 6366LL) / metrics.cfo_dot));
+        } else {
+            afc_invalidate(&afc_state);
         }
         s_cfo_khz = afc_state.filtered_khz;
 
         int sync_quality = 0;
         bool fresh_sync = false;
         if (settle_ticks == 0) {
-            sync_quality = video_semantic_observe(s_control_sample_buf,
-                                                  sizeof(s_control_sample_buf),
-                                                  ring_offset);
+            sync_quality = rf_native_agc_active() ? video_phase8_observe(&afc2) :
+                video_semantic_observe(s_control_sample_buf,
+                                       sizeof(s_control_sample_buf), ring_offset);
             fresh_sync = sync_quality >= 70;
         }
         if (fresh_sync) sync_age_ticks = 0;
@@ -4800,8 +4803,7 @@ static void analog_agc_task(void *arg)
             /* Native is a separate receive-control path: no firmware gain
              * controller owns its lock state. Burst evidence gates AFC. */
             bool was_native_locked = native_locked;
-            bool centred = s_afc2_porch_khz >= -AFC2_CTRL_DEADBAND_KHZ &&
-                           s_afc2_porch_khz <= AFC2_CTRL_DEADBAND_KHZ;
+            bool centred = afc2_ctrl_can_lock(&afc2_ctrl, s_afc_mode == AFC_MODE_AUTO);
             native_locked = afc2_native_lock(native_locked,
                 afc_window_ok && s_afc2_lines && q_phase >= 55,
                 centred, afc2_ctrl.n, &native_lost_windows);
@@ -5706,7 +5708,7 @@ static void console_diag_task(void *arg)
                     printf("  '0':         Reset offset to 0 kHz\n");
                     printf("  'e':         Toggle RX sample edge (POS/NEG)\n");
                     printf("  'v'/'o'/'O': Menu controls\n");
-                    printf("  'd':         Print this diagnostic summary\n");
+                    printf("  'd':         Select Phase8 FULL and reboot\n");
                     printf("=======================================================\n\n");
                 }
             }

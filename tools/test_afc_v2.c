@@ -66,7 +66,7 @@ int main(void)
 {
     const standard_t *standards[2] = {&NTSC, &PAL};
     const double cfos[4] = {0.0, 250.0, -400.0, 900.0};
-    unsigned checks = 0;
+    unsigned checks = 0, timing_checks = 0;
     for (unsigned si = 0; si < 2; ++si)
         for (int pol = -1; pol <= 1; pol += 2)
             for (unsigned ci = 0; ci < 4; ++ci)
@@ -91,8 +91,16 @@ int main(void)
                                si, pol, cfo, off, r.lines, (int)r.porch_khz, (int)r.sync_khz, sync_expect);
                         assert(0);
                     }
+                    assert(r.width_40m >= AFC2_SYNC_MIN && r.width_40m <= AFC2_SYNC_MAX);
+                    if (r.period_40m) {
+                        assert(r.lines >= 2);
+                        assert(fabs(r.period_40m - standards[si]->line_us * 40.0) < 9.0);
+                        ++timing_checks;
+                    }
                     ++checks;
                 }
+
+    assert(timing_checks >= 8);
 
     /* Small native-AGC radius still works once averaged. */
     afc2_result_t small = run(&PAL, 300.0, 1, 2.3, 0.35, 5.0);
@@ -103,7 +111,7 @@ int main(void)
     for (unsigned n = 0; n < sizeof(noise_buf); ++n)
         noise_buf[n] = (uint8_t)(((q4(gauss() * 0.7) & 15) << 4) | (q4(gauss() * 0.7) & 15));
     afc2_result_t none = afc2_measure(noise_buf, sizeof(noise_buf), c5vrx_phase8_gain_lut);
-    assert(none.lines == 0);
+    assert(none.lines == 0 && none.period_40m == 0 && none.width_40m == 0);
 
     /* Settling/transition evidence is conservative IQ gating, not decoded
      * native gain telemetry. Origin collapse and a large envelope jump fail. */
