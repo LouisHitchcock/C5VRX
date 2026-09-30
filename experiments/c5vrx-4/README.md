@@ -67,18 +67,24 @@ C5VRX-3. This is the starting prototype for further development, not evidence
 of additional range. No controlled attenuation comparison or instrumentation
 of the output waveform has been performed.
 
-## First firmware contract
+## Current firmware contract
 
-- IQ: signed coarse I[9:6]/Q[9:6], 40 MS/s, continuous existing 32 KiB DMA ring.
+- IQ: signed I4/Q4, 40 MS/s, continuous existing 32 KiB DMA ring. Direct Gain
+  V5 can select the existing finer lane sets, just as in C5VRX-3.
 - Detector: Phase6 endpoint difference across 75 ns, separate nominal
   resistor-DAC inversion LUT; three bundles consume and emit three bytes.
 - Output: 13.333 MS/s unique codes held `[D,D,D]` at 40 MHz, existing pin order.
-- Native gain ownership is forced for this experimental build without changing
-  the normal build's gain-owner NVS setting. Firmware never selects a gain.
-- Native tracking gate: 1000 us period, 20 us open, acquisition profile 127;
-  suspended across channel, bandwidth and frequency-offset changes.
-- `~` compares paced/continuous native tracking. `T` prints `C5VRX4` timing
-  state before the existing diagnostics. Settings use NVS namespace `c5vrx4`.
+- Direct Gain V5 is enabled and is the default automatic gain owner, using the
+  same controller, observer, emergency sentinel and lane policy as C5VRX-3.
+- Native AGC remains an opt-in per-boot choice via `N` or the RF profile menu.
+  Its `native_agc` key is isolated in `c5vrx4`; existing `c5vrx` settings do not
+  select native in the experiment. Missing or zero key selects firmware gain.
+- Only native mode starts the tracking gate: 1000 us period, 20 us open,
+  acquisition profile 127; suspended across channel, bandwidth and offset
+  changes. V5 mode allocates no gate timer and performs no gate/profile writes.
+- `~` compares paced/continuous native tracking only in native mode; it reports
+  ignored in V5 mode. `T` prints `C5VRX4` gain-owner/timing state before the
+  existing diagnostics. Video settings use NVS namespace `c5vrx4`.
 - Menu rendering remains the original raster transport; video output mode is
   fixed to 6BIT@40 for this experiment.
 
@@ -88,3 +94,18 @@ individual samples. The DAC table uses nominal resistor values, not measured
 board calibration. Wrap at +/-6.667 MHz, video aliasing, hardware FIFO pacing
 and colour/detail response remain unverified. Software Phase5-derived sync
 diagnostics are not a measurement of this detector's actual DAC waveform.
+
+## Direct Gain V5 comparison
+
+The first flashed build used paced native AGC with the V5 controller disabled.
+Therefore the initial less-clean picture cannot isolate the demodulator from
+the gain policy. Version `4.0.0-exp-span75-v5` enables the current main gain
+controller and defaults to firmware ownership. The span75 program and DAC LUT
+are unchanged. Compare with C5VRX-3 using the same RF profile, bandwidth and
+lane policy. This update has not yet been evaluated on hardware; it does not
+establish that native AGC caused all the observed grain.
+
+When rebuilding an existing experiment build directory, set
+`CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT=y` in `idf.py menuconfig`; existing
+sdkconfig values override sdkconfig.defaults. The historical V3 config name
+enables the controller currently presented as Direct Gain V5.

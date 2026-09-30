@@ -8,9 +8,9 @@
 - Target: maximum usable range with at least Golden Phase5 image quality.
 - Phase8, its LUT representation and its two-bundle output geometry may be
   replaced. New hardware is an option to evaluate, not a selected requirement.
-- Native AGC remains a user requirement for the experimental receiver; paced
-  native operation is a comparison candidate. The main build's gain policy
-  must not be mistaken for this experimental design decision.
+- Native AGC was the first prototype's gain policy. After its less-clean image
+  the operator authorized a Direct Gain V5 comparison: V5 is now the default
+  and paced native remains selectable, using a separate experiment NVS key.
 - The operator subsequently authorized an isolated experimental build. The
   existing-board span-75 prototype is implemented for comparison; it is not
   a demonstrated choice for the final long-range architecture.
@@ -55,9 +55,11 @@ rejected it as an adequate final solution.
   weak/strong gain recovery or extended usable range.
 
 See [RESEARCH.md](RESEARCH.md) for calculations, primary references, source
-revisions and corrected assumptions. The prototype uses coarse I4/Q4 lanes,
-native AGC with a 1 ms hold cadence and 20 us acquisition window, and fine-stage
-setting 127. These are experimental starting settings, not measured optima.
+revisions and corrected assumptions. The first prototype used coarse I4/Q4
+lanes, native AGC with a 1 ms cadence and 20 us acquisition window, and setting
+127. The follow-up uses main's Direct Gain V5 by default, including its lane
+policy; native remains optional with the original gate settings. None of these
+choices establishes a measured optimum for the new demodulator.
 No external processor or claimed sensitivity gain is selected yet. See
 [README.md](README.md) for the implementation and build instructions.
 
