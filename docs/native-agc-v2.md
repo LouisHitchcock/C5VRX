@@ -681,3 +681,12 @@ with ESP-IDF v6.0.2 (normal image 0x11c8a0 bytes), and all 214 repository
 architecture checks passed. Initial COM10 flash attempt timed out; readback
 and picture assessment are pending. Maximum encoded value must not be
 called maximum speed: the field's time/control units remain unknown.
+
+After the user put the board back into download mode, the normal image was
+flashed on COM10 and all flash hashes verified. Serial `*` armed maximum
+profile 10 successfully. Live `T` then confirmed `0x600A7034=0xff0187a4`,
+`[30:24]=127`, `name=7034_127`, A1/5865 MHz. `E` confirmed native AGC,
+P8 FULL, offset disabled, coarse IQ and zero reported RX/TX/GDMA errors.
+The readback snapshot had strength 0/no usable carrier; VTX was requested
+on for direct picture assessment. No timing or image improvement is yet
+claimed for the maximum candidate.
