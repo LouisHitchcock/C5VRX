@@ -333,3 +333,11 @@ are few, so small differences are noise.
 
 Sweep candidates apply only in probe builds (`CONFIG_C5VRX_PHY_PHASE_TAP_PROBE`);
 production images always run the vendor AGC plus, when enabled, the offset.
+
+**Live check of the offset (same day, A1).** With the self-calibrating
+offset on `70A0[31:24]` the live P50 stayed at 7 across -4..+12 dB while
+the calibrator hunted and flipped polarity; its clip input (20-28 pm) is
+dominated by the saturated re-acquisitions, not by a high trapped level.
+The sweep's radius differences were noise from three short windows per
+candidate. Conclusion: none of the known level fields moves the live
+settled level; the offset is kept as a lab tool, off by default.
