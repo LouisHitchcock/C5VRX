@@ -338,6 +338,25 @@ production images always run the vendor AGC plus, when enabled, the offset.
 offset on `70A0[31:24]` the live P50 stayed at 7 across -4..+12 dB while
 the calibrator hunted and flipped polarity; its clip input (20-28 pm) is
 dominated by the saturated re-acquisitions, not by a high trapped level.
-The sweep's radius differences were noise from three short windows per
-candidate. Conclusion: none of the known level fields moves the live
-settled level; the offset is kept as a lab tool, off by default.
+The sweep's radius differences were not confirmed by the live check; three
+short windows per candidate are insufficient to establish a level effect.
+Conclusion: the tested `70A0` offset did not measurably move the live settled
+level in this setup; the offset is kept as a lab tool, off by default.
+
+**Range interpretation and pending test (2026-09-30).** The displayed
+`+12 dB` is a +12 change to the signed compensation field relative to its
+vendor value, not a measurement of 12 dB extra RF gain or sensitivity. Its
+effect on sensitivity has not been established. An unchanged level with a
+strong carrier does not rule out a weak-signal benefit: hardware AGC could
+keep the output level constant while a setting affects reception near the
+range edge. This is a hypothesis, not a measured result.
+
+To test it, compare fixed offsets 0 and +12 on the same field, with the
+self-calibrator disabled, the same demodulator, channel, VTX power and RF
+geometry. Alternate the settings at each controlled attenuation step and
+record picture quality plus the attenuation at the same usable-picture
+threshold. Verify the applied register value and repeat the comparison to
+separate a reproducible effect from fading or AGC variability. Reception at
+that threshold with 12 dB more attenuation would demonstrate a 12 dB link
+margin improvement under those conditions; the offset label alone does not.
+No weak-signal range comparison has been performed yet.
