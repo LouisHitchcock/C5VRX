@@ -5864,6 +5864,8 @@ esp_err_t video_start(void)
                  "'E' = P8ENV row, 'N' = reboot to firmware gain fallback",
                  (unsigned long)native.gain_status_reg,
                  (unsigned long)native.agc_ctrl_reg);
+        /* Self-calibrating level offset on by default ('7' toggles). */
+        aoc_reset(&s_aoc, true, rf_agc_offset_db());
     }
 
     /* Zero the ring before starting. Flush to DMA-visible SRAM. */

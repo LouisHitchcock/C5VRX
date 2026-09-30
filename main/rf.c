@@ -338,7 +338,10 @@ static void agc_offset_apply(void)
 static void agc_offset_load(void)
 {
     nvs_handle_t handle;
-    uint8_t field = 0, db = 0;
+    /* Default: 70A0[31:24], the field with the largest measured level effect
+     * in the register sweep (docs/native-agc-v2.md). */
+    uint8_t field = 2, db = 0;
+    s_agc_offset_field = field;
     if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
     (void)nvs_get_u8(handle, AGC_OFFSET_NVS_FIELD, &field);
     (void)nvs_get_u8(handle, AGC_OFFSET_NVS_DB, &db);
