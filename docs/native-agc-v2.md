@@ -289,3 +289,47 @@ the cause behind a CPU control loop and was removed. Start-gain following
 - A per-sample guard with reseed fits two bundles only in the pair-LUT
   architecture (`fm_golden_hard_guard.bsasm` pattern); PHASE8_FULL uses
   counter arithmetic, which cannot share a bundle with a branch.
+
+
+## Native AGC register sweep (2026-09-30, A1, VTX static)
+
+`tools/agc_tune_sweep.py` on the probe build: one field changed per boot,
+three full 80 MS/s dump windows each (`AGC_WORDS`). Vendor reference (same
+setup, earlier boot): 35.8 acquisitions/ms, 13.4 % of time in acquisition,
+3.4 us per acquisition, trapped radius ~135 codes, radius spread 225.
+
+| candidate | acq/ms | acq % | acq us | radius | spread | out +-256 pm |
+|---|---|---|---|---|---|---|
+| 7128[31:24] -40 / -34 / -52 (vendor -46) | 36 / 62 / 52 | 10 / 20 / 18 | 2.4 / 3.4 / 2.3 | 184 / 178 / 146 | 263 / 285 / 313 | 123 / 37 / 167 |
+| 702C[7:0] comp -24 / -36 (vendor -30) | 29 / 20 | 11 / 6 | 2.8 / 2.8 | **140 / 92** | 176 / 226 | 27 / 22 |
+| 70A0[31:24] comp -24 / -36 (vendor -30) | 78 / 33 | 25 / 11 | 3.0 / 3.3 | **156 / 46** | 320 / 381 | 83 / 41 |
+| 7034[30:24] 5 / 20 (vendor 10) | 42 / 68 | 14 / 19 | **1.8** / 3.4 | 170 / 152 | 228 / 357 | 73 / 69 |
+| 71B0[27:21] 15 / 60 (vendor 30) | 68 / 55 | 21 / 16 | 2.4 / 3.1 | 203 / 82 | 285 / 439 | 143 / 40 |
+| 7158[6:0] 6 / 26 (vendor 13) | 39 / 59 | 11 / 23 | 2.1 / 2.8 | 80 / 183 | 217 / 334 | 18 / 249 |
+| 8028 halved | 52 | 11 | 2.5 | 176 | 410 | 106 |
+
+(8028 doubled: no complete capture.) Three 102 us windows per candidate
+are few, so small differences are noise.
+
+- **The rx-compensation fields written by `phy_set_rx_comp_new()`
+  (`702C[7:0]`, `70A0[31:24]`) move the level the native AGC settles on**,
+  consistently in both fields: -36 dB lowers the trapped radius (92 / 46),
+  -24 dB raises it (140 / 156). These are the level offset for
+  `agc_offset.h`; `70A0` has the larger effect. `7128[31:24]` shows no
+  consistent direction.
+- None of the fine-stage candidates makes the trapped gain consistent: the
+  per-acquisition radius spread stays 180-440 codes. `7034 = 5` shortens
+  acquisitions (1.8 us) without narrowing the spread. The varying trapped
+  gain is a property of this AGC; finer IQ (P8 FINE) is the answer to it.
+- The DAC is not a retrigger source: with the carrier present, native AGC
+  state switching is the same with the DAC/PARLIO output electrically quiet
+  (`S`: 14-16/ms active, 17/ms quiet); without a carrier the AGC idles at 83.
+- Baseband packet AGC off (`9`, `7030[29]`) freezes the gain (clean IQ,
+  coherence ~1.0) and the RF saturation block (`705C`) then does nothing,
+  even at 41 % clip: it is an intervention into the packet AGC, not an
+  independent loop.
+- A lower start gain (`7094` 74) looked restart-free in one boot capture
+  but live coherence and switching were unchanged; not a fix.
+
+Sweep candidates apply only in probe builds (`CONFIG_C5VRX_PHY_PHASE_TAP_PROBE`);
+production images always run the vendor AGC plus, when enabled, the offset.

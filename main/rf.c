@@ -249,6 +249,9 @@ static uint8_t agc_tune_load(void)
 static void agc_tune_apply(void)
 {
     const agc_tune_t *t = &s_agc_tunes[s_agc_tune];
+#if !CONFIG_C5VRX_PHY_PHASE_TAP_PROBE
+    return;   /* sweep candidates are lab-only: production runs vendor AGC */
+#endif
     if (!s_native_agc || !t->reg) return;
     uint32_t v = REG32(t->reg);
     s_agc_tune_before = v;
