@@ -136,6 +136,11 @@ esp_err_t rf_agc_profile_save(uint8_t profile);
 /* Median native AGC state byte (706C[7:0]) over ~0.4 ms: the gain index the
  * hardware applied. Telemetry only (signal meter), never a control input. */
 uint8_t rf_native_gain_index(void);
+/* Issue #123 sign-preserving fine IQ lanes (I/Q {9,7,6,5}); false = the
+ * production top four bits. Folds above |x| >= 256 per axis, so only a
+ * pinned, clip-free gain (AGC profile HOLD123) may select it. */
+void rf_set_fine_iq(bool fine);
+bool rf_fine_iq_active(void);
 bool rf_native_agc_active(void);
 void rf_get_native_agc_state(rf_native_agc_state_t *state);
 

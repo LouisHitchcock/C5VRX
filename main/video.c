@@ -1783,6 +1783,7 @@ static void agc_policy_restart(agc_profile_t profile)
     uint8_t max_idx = rf_get_arc_gain_table()->max_index;
     agc_policy_reset(&s_agc_policy, profile, 2u, max_idx);
     const agcp_cmd_t *c = &s_agc_policy.cmd;
+    rf_set_fine_iq(false);
     rf_native_policy_apply(c->initgain, c->rfsat_off, c->force, c->force_idx);
     s_last_phy_write_us = esp_timer_get_time();
 }
@@ -1816,7 +1817,10 @@ static void agc_policy_step(const control_metrics_t *m, bool valid, bool context
     bool changed;
     agcp_cmd_t c = agc_policy_tick(&s_agc_policy, &obs, &changed);
     if (!changed) return;
+    /* Fine lanes only under a pin: coarse before releasing, fine after pinning. */
+    if (!c.fine) rf_set_fine_iq(false);
     rf_native_policy_apply(c.initgain, c.rfsat_off, c.force, c.force_idx);
+    if (c.fine) rf_set_fine_iq(true);
     s_last_phy_write_us = esp_timer_get_time();
 }
 
@@ -2227,12 +2231,13 @@ static void p8env_capture_report(void)
     /* Same row, second call: this printf already takes ~90 arguments on the
      * small console stack. */
     printf(" strength=%d rx_gain=%u agc_prof=%s agc_hold=%d agc_init=%u "
-           "agc_rfsat_off=%u agc_writes=%lu reset=%d\n",
+           "agc_rfsat_off=%u agc_writes=%lu agc_fine=%u reset=%d\n",
            s_signal_strength, (unsigned)s_rx_gain_index,
            agc_profile_name(s_agc_policy.profile),
            s_agc_policy.cmd.force ? (int)s_agc_policy.cmd.force_idx : -1,
            (unsigned)rf_native_initgain(), s_agc_policy.cmd.rfsat_off ? 1u : 0u,
-           (unsigned long)rf_native_policy_writes(), (int)esp_reset_reason());
+           (unsigned long)rf_native_policy_writes(), rf_fine_iq_active() ? 1u : 0u,
+           (int)esp_reset_reason());
 }
 
 /* Read-only raw Q4/I4 dump ('Q'): one completed-descriptor probe, i.e. four
@@ -5455,8 +5460,8 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
-                } else if (c == 'y' || (c >= '1' && c <= '4')) {
-                    /* AGC profile: 'y' cycles, '1'..'4' = NATIVE/INIT/TUNED/HOLD.
+                } else if (c == 'y' || (c >= '1' && c <= '5')) {
+                    /* AGC profile: 'y' cycles, '1'..'5' = NATIVE/INIT/TUNED/HOLD/HOLD123.
                      * Applied by the control task, persisted in NVS. */
                     if (!rf_native_agc_active()) {
                         printf("C5VRX_AGC_PROFILE refused=firmware_gain_mode\n");
@@ -5796,7 +5801,7 @@ static void console_diag_task(void *arg)
                     printf("  'R':         Run RSSI & Inverse-Q4 Oracle Probe (G15..G81 sweep)\n");
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
                     printf("  'D'/'I'/'Y': Direct Gain V3 test / Direct Gain V1 / ARC V3\n");
-                    printf("  'y' / '1'..'4': AGC profile cycle / NATIVE, INIT, TUNED, HOLD (persisted)\n");
+                    printf("  'y' / '1'..'5': AGC profile cycle / NATIVE, INIT, TUNED, HOLD, HOLD123\n");
 #else
                     printf("  'D'/'I'/'Y': Direct Gain V2 / Direct Gain V1 / ARC V3\n");
 #endif
@@ -5861,7 +5866,8 @@ esp_err_t video_start(void)
         /* HOLD is not restored at boot until it is hardware-proven: a hang
          * in HOLD must not become a boot loop. It is still one key away. */
         uint8_t stored = rf_agc_profile_load();
-        agc_policy_restart(stored < AGC_PROFILE_COUNT && stored != AGC_PROFILE_HOLD ?
+        agc_policy_restart(stored < AGC_PROFILE_COUNT && stored != AGC_PROFILE_HOLD &&
+                           stored != AGC_PROFILE_HOLD123 ?
                            (agc_profile_t)stored : AGC_PROFILE_NATIVE);
         ESP_LOGW(TAG, "AGC profile %s ('y' cycles, '1'..'4' select)",
                  agc_profile_name(s_agc_policy.profile));

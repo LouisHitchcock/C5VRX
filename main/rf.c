@@ -126,6 +126,17 @@ static const uint8_t s_iq_diag[8] = {
     6u, 7u, 8u, 9u,     /* DIAG[6:9]  = Q[9:6] */
     16u, 17u, 18u, 19u, /* DIAG[16:19] = I[9:6] */
 };
+/* Issue #123 fine lanes: nibble = {sign bit 9, bits 7, 6, 5}. Inside
+ * |x| < 256 per axis this equals the contiguous [8:5] window: twice the
+ * resolution, same signed-nibble meaning, so the Phase8 LUT is unchanged.
+ * Outside it folds (+288 reads as +32). DIAG[5]/[15] were proven bit-exact
+ * against the RF dump with 6-bit reference alignment (tools/analyze_all_diag.py
+ * passes CAND_123 and I_BUS_4_9). Only the AGC policy HOLD123 selects them. */
+static const uint8_t s_iq_diag_fine[8] = {
+    5u, 6u, 7u, 9u,
+    15u, 16u, 17u, 19u,
+};
+static bool s_iq_fine;
 
 /* Internal vendor symbol -- globally exported by the pinned IDF 6.0.x
  * pp (protocol processing) library for ESP32-C5. */
@@ -182,6 +193,24 @@ static esp_err_t route_modem_iq(void)
     }
     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
     return ESP_OK;
+}
+
+void rf_set_fine_iq(bool fine)
+{
+    if (fine == s_iq_fine) return;
+    const uint8_t *diag = fine ? s_iq_diag_fine : s_iq_diag;
+    for (unsigned lane = 0u; lane < 8u; ++lane) {
+        esp_rom_gpio_connect_out_signal(s_iq_pins[lane],
+                                        MODEM_DIAG0_IDX + diag[lane],
+                                        false, false);
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    s_iq_fine = fine;
+}
+
+bool rf_fine_iq_active(void)
+{
+    return s_iq_fine;
 }
 
 static void rf_enable_continuous_modem(void)
@@ -1266,8 +1295,10 @@ esp_err_t rf_set_channel(size_t index)
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
-        /* A pin belongs to the old channel; the policy re-acquires. */
+        /* A pin belongs to the old channel; the policy re-acquires. Fine
+         * lanes are only safe under a pin, so they go with it. */
         s_policy_force = false;
+        rf_set_fine_iq(false);
         native_policy_reapply();
     } else {
         phy_disable_agc();

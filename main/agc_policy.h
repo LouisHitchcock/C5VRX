@@ -31,6 +31,13 @@
  *          NO_CARRIER -> high-gain survival rule stays intact. This is a slow
  *          CPU gain decision and therefore an explicit, opt-in exception to
  *          the #121 "zero CPU gain writes" rule.
+ *  HOLD123 HOLD plus the issue #123 fine IQ lanes while pinned: nibble =
+ *          {sign, bit 7, 6, 5}, twice the angular resolution inside
+ *          |x| < 256 codes per axis, folding outside. With fine lanes the Q4
+ *          "clip" cells are exactly the edge of that window, so HOLD's
+ *          highest-clip-free-gain rule keeps the ring inside it. Released
+ *          (acquiring, carrier lost) always uses the coarse lanes: native
+ *          AGC restarts overshoot the window (52 pm out on hardware).
  *
  * Gain-index-to-dB is not linear or known, so HOLD never predicts a
  * destination: it steps and measures.
@@ -41,6 +48,7 @@ typedef enum {
     AGC_PROFILE_INIT = 1,
     AGC_PROFILE_TUNED = 2,
     AGC_PROFILE_HOLD = 3,
+    AGC_PROFILE_HOLD123 = 4,
     AGC_PROFILE_COUNT
 } agc_profile_t;
 
@@ -84,6 +92,7 @@ typedef struct {
     bool rfsat_off;
     bool force;
     uint8_t force_idx;
+    bool fine;           /* issue #123 fine IQ lanes */
 } agcp_cmd_t;
 
 typedef struct {
@@ -141,7 +150,8 @@ static inline uint8_t agcp_clamp(int v, int lo, int hi)
 static inline bool agcp_cmd_equal(const agcp_cmd_t *a, const agcp_cmd_t *b)
 {
     return a->initgain == b->initgain && a->rfsat_off == b->rfsat_off &&
-           a->force == b->force && (!a->force || a->force_idx == b->force_idx);
+           a->force == b->force && (!a->force || a->force_idx == b->force_idx) &&
+           a->fine == b->fine;
 }
 
 /* Returns the command to apply; *changed tells whether it differs from the
@@ -185,6 +195,7 @@ static inline agcp_cmd_t agc_policy_tick(agc_policy_t *p, const agcp_obs_t *o,
         if (p->carrier_ticks >= AGCP_ACQUIRE_TICKS && p->ring_n >= AGCP_ACQUIRE_TICKS) {
             p->phase = AGCP_HOLD;
             p->cmd.force = true;
+            p->cmd.fine = p->profile == AGC_PROFILE_HOLD123;
             p->cmd.force_idx = agcp_clamp(agcp_ring_median(p), p->min_idx, p->max_idx);
             p->servo_ticks = 0;
         }
@@ -194,6 +205,7 @@ static inline agcp_cmd_t agc_policy_tick(agc_policy_t *p, const agcp_obs_t *o,
         if (p->loss_ticks >= AGCP_LOSS_TICKS_HOLD) {
             p->phase = AGCP_RELEASED;
             p->cmd.force = false;
+            p->cmd.fine = false;
             agcp_ring_clear(p);
         } else if (o->carrier) {
             ++p->servo_ticks;
@@ -229,6 +241,7 @@ static inline const char *agc_profile_name(agc_profile_t profile)
     case AGC_PROFILE_INIT:  return "INIT";
     case AGC_PROFILE_TUNED: return "TUNED";
     case AGC_PROFILE_HOLD:  return "HOLD";
+    case AGC_PROFILE_HOLD123: return "HOLD123";
     case AGC_PROFILE_NATIVE:
     default:                return "NATIVE";
     }

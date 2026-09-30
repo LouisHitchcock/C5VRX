@@ -137,6 +137,27 @@ int main(void)
     assert(c.force_idx >= 40 && c.force_idx <= 42);
     assert(p.writes - start_writes <= 14);
 
+    /* HOLD123: fine lanes exactly while pinned. */
+    agc_policy_reset(&p, AGC_PROFILE_HOLD123, 2, 83);
+    for (unsigned k = 0; k + 1 < AGCP_ACQUIRE_TICKS; ++k) {
+        c = tick(&p, obs(true, 50, 6, 20, 0), &changed);
+        assert(!c.fine && !c.force);
+    }
+    c = tick(&p, obs(true, 50, 6, 20, 0), &changed);
+    assert(changed && c.force && c.fine);
+    /* A fold at a sudden RF rise shows up as clip at the window edge. */
+    c = tick(&p, obs(true, 0, 10, 60, 300), &changed);
+    c = tick(&p, obs(true, 0, 10, 60, 300), &changed);
+    assert(c.force_idx == 48 && c.fine);
+    for (unsigned k = 0; k < AGCP_LOSS_TICKS_HOLD; ++k)
+        c = tick(&p, obs(false, 0, 2, 6, 0), &changed);
+    assert(!c.force && !c.fine);
+    /* Plain HOLD never selects fine lanes. */
+    agc_policy_reset(&p, AGC_PROFILE_HOLD, 2, 83);
+    for (unsigned k = 0; k < AGCP_ACQUIRE_TICKS; ++k)
+        c = tick(&p, obs(true, 50, 6, 20, 0), &changed);
+    assert(c.force && !c.fine);
+
     /* The pin never leaves the table. */
     agc_policy_reset(&p, AGC_PROFILE_HOLD, 2, 83);
     for (unsigned k = 0; k < AGCP_ACQUIRE_TICKS; ++k)

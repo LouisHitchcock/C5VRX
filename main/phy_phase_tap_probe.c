@@ -149,7 +149,26 @@ static inline uint8_t pack_pass4(uint32_t w)
     return (uint8_t)(((w >> 26) & 0x3fu) | (((w >> 8) & 0x03u) << 6));
 }
 
-static const sweep_pass_t s_sweep_passes[5] = {
+/* Pass 5: CAND_123 -- exactly the issue #123 lanes. Six proven bits give
+ * a strong alignment reference for the two candidates Q[5] and I[5].
+ * Pins 0..3: DIAG[5,6,7,9]    <-> Dump Q[5,6,7,9]  (w bits 5,6,7,9)
+ * Pins 4..7: DIAG[15,16,17,19] <-> Dump I[5,6,7,9] (w bits 15,16,17,19) */
+static inline uint8_t pack_pass5(uint32_t w)
+{
+    return (uint8_t)(((w >> 5) & 0x07u) | (((w >> 9) & 1u) << 3) |
+                     (((w >> 15) & 0x07u) << 4) | (((w >> 19) & 1u) << 7));
+}
+
+/* Pass 6: I_BUS_4_9 -- the I bus aligned on its own proven bits (pass 1 used
+ * only Q[8:9], which cannot lock fast I bits to the right dump word).
+ * Pins 0..5: DIAG[14..19] <-> Dump I[4..9] (w bits 14..19)
+ * Pins 6..7: DIAG[8..9]   <-> Dump Q[8..9] (w bits 8..9) */
+static inline uint8_t pack_pass6(uint32_t w)
+{
+    return (uint8_t)(((w >> 14) & 0x3fu) | (((w >> 8) & 0x03u) << 6));
+}
+
+static const sweep_pass_t s_sweep_passes[7] = {
     {
         .name = "Q_BUS_0_5",
         .lanes = {0, 1, 2, 3, 4, 5, 8, 9},
@@ -174,6 +193,16 @@ static const sweep_pass_t s_sweep_passes[5] = {
         .name = "CTRL_26_31",
         .lanes = {26, 27, 28, 29, 30, 31, 8, 9},
         .pack_fn = pack_pass4,
+    },
+    {
+        .name = "CAND_123",
+        .lanes = {5, 6, 7, 9, 15, 16, 17, 19},
+        .pack_fn = pack_pass5,
+    },
+    {
+        .name = "I_BUS_4_9",
+        .lanes = {14, 15, 16, 17, 18, 19, 8, 9},
+        .pack_fn = pack_pass6,
     },
 };
 
@@ -277,8 +306,8 @@ static void q6_dump_probe_run(void)
 
 static void all_diag_sweep_run(void)
 {
-    printf("DIAG_SWEEP_SESSION BEGIN total_passes=5\n");
-    for (unsigned p = 0; p < 5; ++p) {
+    printf("DIAG_SWEEP_SESSION BEGIN total_passes=7\n");
+    for (unsigned p = 0; p < 7; ++p) {
         const sweep_pass_t *pass = &s_sweep_passes[p];
 
         /* Route lanes for this pass */
@@ -367,7 +396,7 @@ static void all_diag_sweep_run(void)
         }
         printf("DIAG_SWEEP END pass=%u\n", p);
     }
-    printf("DIAG_SWEEP_SESSION COMPLETE passes=5\n");
+    printf("DIAG_SWEEP_SESSION COMPLETE passes=7\n");
 
     /* Also execute baseline Q6 dump format for backwards compatibility */
     q6_dump_probe_run();
