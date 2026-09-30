@@ -623,3 +623,13 @@ returned from saved A3 to A1/5865 MHz. Live `T` readback confirmed
 and no reported RX/TX/GDMA errors. VTX was requested on only after this
 verification. Picture improvement and actual step-duration reduction are
 still unproven. `}` restores vendor in the normal firmware without a dump.
+
+**Live result:** the user reported "nope niks beter" for `7034_5` on
+2026-09-30. No visible grain/noise improvement was observed with native AGC,
+P8 FULL and offset disabled. This session has no valid matched full-word
+timing comparison, so it does not establish the actual gain-step spacing or
+reject every faster-AGC candidate. It does reject promoting `7034_5` based
+on the earlier short acquisition-duration sweep alone. Vendor profile was
+restored immediately with `}`; readback `0x600A7034 = 0x8a0187a4`
+confirms `[30:24] = 10` again. The independent watchdog/reset audit in
+`libphy-native-agc-audit.md` was merged without altering its findings.
