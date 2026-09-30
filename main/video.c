@@ -47,6 +47,7 @@
 #include "afc_state.h"
 #include "afc_v2.h"
 #include "afc_v2_ctrl.h"
+#include "agc_offset.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -1345,6 +1346,10 @@ static volatile int s_last_p_median = 25;
 static volatile int s_last_q_phase = 0;
 static volatile int s_signal_strength = 0;
 static volatile uint8_t s_rx_gain_index;
+/* Self-calibrating native AGC level offset (agc_offset.h). Owned by the
+ * control task; the console posts 1 = toggle, 2 = next candidate field. */
+static agc_offset_cal_t s_aoc;
+static volatile int s_aoc_request;
 static volatile int s_last_n_clip = 0;
 static volatile int s_last_n_origin = 0;
 static volatile int s_last_clip_permille = 0;
@@ -2193,10 +2198,13 @@ static void p8env_capture_report(void)
            (unsigned long)t.bs_eof_overload_count);
     /* Same row, second call: this printf already takes ~90 arguments on the
      * small console stack. */
-    printf(" strength=%d rx_gain=%u iq_fine=%u bb_agc=%u agc_tune=%u reset=%d\n",
+    printf(" strength=%d rx_gain=%u iq_fine=%u bb_agc=%u agc_tune=%u "
+           "agc_off_en=%u agc_off_field=%s agc_off_db=%d agc_off_pol=%d reset=%d\n",
            s_signal_strength, (unsigned)s_rx_gain_index,
            rf_fine_iq_active() ? 1u : 0u, rf_bb_agc_enabled() ? 1u : 0u,
            (unsigned)rf_agc_tune_index(),
+           s_aoc.enabled ? 1u : 0u, rf_agc_offset_field_name(), rf_agc_offset_db(),
+           (int)s_aoc.polarity,
            (int)esp_reset_reason());
 }
 
@@ -4859,6 +4867,27 @@ static void analog_agc_task(void *arg)
         s_last_fusion_fast_samples = fusion_tm.samples;
 
         if (rf_native_agc_active()) {
+            int aoc_req = s_aoc_request;
+            if (aoc_req) {
+                s_aoc_request = 0;
+                bool en = aoc_req == 1 ? !s_aoc.enabled : s_aoc.enabled;
+                if (aoc_req == 2) rf_agc_offset_next_field();
+                aoc_reset(&s_aoc, en, rf_agc_offset_db());
+                printf("C5VRX_AGC_OFFSET enabled=%u field=%s db=%d\n",
+                       en ? 1u : 0u, rf_agc_offset_field_name(), rf_agc_offset_db());
+            }
+            bool aoc_save;
+            uint8_t aoc_p50 = (uint8_t)(p_median > 255 ? 255 : p_median);
+            if (rf_fine_iq_active()) aoc_p50 /= 4u;   /* fine lanes: 2x radius */
+            if (aoc_tick(&s_aoc,
+                         settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count &&
+                         sampled_rf_context == afc_ctx,
+                         q_phase >= 18 && origin_permille <= 850,
+                         aoc_p50, (uint16_t)clip_permille, &aoc_save)) {
+                rf_agc_offset_set(s_aoc.db);
+                s_last_phy_write_us = esp_timer_get_time();
+            }
+            if (aoc_save) (void)rf_agc_offset_save();
             /* Native is a separate receive-control path: no firmware gain
              * controller owns its lock state. Burst evidence gates AFC. */
             bool was_native_locked = native_locked;
@@ -5424,6 +5453,8 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
+                } else if (c == '7' || c == '6') {
+                    s_aoc_request = c == '7' ? 1 : 2;
                 } else if (c == '8') {
                     esp_err_t tune_err = rf_agc_tune_select_next();
                     printf("C5VRX_AGC_TUNE_NEXT err=%s action=reboot\n", esp_err_to_name(tune_err));
@@ -5787,6 +5818,7 @@ static void console_diag_task(void *arg)
                     printf("  'y':         Select Phase8 FINE (issue #123 fine IQ lanes) and reboot\n");
                     printf("  '9':         LAB: baseband packet AGC on/off, RF AGC stays on\n");
                     printf("  '8':         LAB: next native AGC register candidate (persist + reboot)\n");
+                    printf("  '7' / '6':   Self-calibrating native AGC offset on/off / next level field\n");
                     printf("=======================================================\n\n");
                 }
             }

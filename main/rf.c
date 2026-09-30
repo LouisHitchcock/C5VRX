@@ -287,6 +287,101 @@ esp_err_t rf_agc_tune_select_next(void)
     return err;
 }
 
+/* Native AGC level offset: a signed dB field of the vendor AGC, shifted
+ * relative to its vendor value. The hardware AGC keeps every gain decision;
+ * this only moves the level it settles on (agc_offset.h calibrates it).
+ * Candidates from the libphy disassembly; which one is the settling target
+ * is measured by tools/agc_tune_sweep.py. Re-applied at boot and retune. */
+typedef struct { const char *name; uint32_t reg; uint8_t shift; } agc_offset_field_t;
+static const agc_offset_field_t s_agc_offset_fields[] = {
+    {"7128_target", 0x600A7128u, 24u},   /* -46 dB, phy_agc_reg_init_new */
+    {"702C_comp",   0x600A702Cu, 0u},    /* -30/-32 dB, phy_set_rx_comp_new */
+    {"70A0_comp",   0x600A70A0u, 24u},   /* -30/-32 dB, phy_set_rx_comp_new */
+};
+#define AGC_OFFSET_FIELDS (sizeof(s_agc_offset_fields) / sizeof(s_agc_offset_fields[0]))
+#define AGC_OFFSET_NVS_FIELD "agc_off_f"
+#define AGC_OFFSET_NVS_DB    "agc_off_db"
+static uint8_t s_agc_offset_field;
+static int8_t s_agc_offset_db;
+static int8_t s_agc_offset_vendor[AGC_OFFSET_FIELDS];
+static bool s_agc_offset_vendor_ok[AGC_OFFSET_FIELDS];
+
+static void agc_offset_capture_vendor(void)
+{
+    for (unsigned i = 0; i < AGC_OFFSET_FIELDS; ++i) {
+        if (s_agc_offset_vendor_ok[i]) continue;
+        const agc_offset_field_t *f = &s_agc_offset_fields[i];
+        s_agc_offset_vendor[i] = (int8_t)((REG32(f->reg) >> f->shift) & 0xFFu);
+        s_agc_offset_vendor_ok[i] = true;
+    }
+}
+
+static void agc_offset_write(unsigned field, int value)
+{
+    const agc_offset_field_t *f = &s_agc_offset_fields[field];
+    uint32_t mask = 0xFFu << f->shift;
+    REG32(f->reg) = (REG32(f->reg) & ~mask) | (((uint32_t)(uint8_t)(int8_t)value) << f->shift);
+}
+
+static void agc_offset_apply(void)
+{
+    if (!s_native_agc) return;
+    agc_offset_capture_vendor();
+    for (unsigned i = 0; i < AGC_OFFSET_FIELDS; ++i)
+        agc_offset_write(i, s_agc_offset_vendor[i] +
+                            (i == s_agc_offset_field ? s_agc_offset_db : 0));
+}
+
+static void agc_offset_load(void)
+{
+    nvs_handle_t handle;
+    uint8_t field = 0, db = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    (void)nvs_get_u8(handle, AGC_OFFSET_NVS_FIELD, &field);
+    (void)nvs_get_u8(handle, AGC_OFFSET_NVS_DB, &db);
+    nvs_close(handle);
+    s_agc_offset_field = field < AGC_OFFSET_FIELDS ? field : 0u;
+    int v = (int8_t)db;
+    s_agc_offset_db = (int8_t)(v < -12 ? -12 : v > 12 ? 12 : v);
+}
+
+esp_err_t rf_agc_offset_save(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, AGC_OFFSET_NVS_FIELD, s_agc_offset_field);
+    if (err == ESP_OK) err = nvs_set_u8(handle, AGC_OFFSET_NVS_DB, (uint8_t)s_agc_offset_db);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+void rf_agc_offset_set(int db)
+{
+    if (db < -12) db = -12;
+    if (db > 12) db = 12;
+    s_agc_offset_db = (int8_t)db;
+    agc_offset_apply();
+}
+
+int rf_agc_offset_db(void)
+{
+    return s_agc_offset_db;
+}
+
+void rf_agc_offset_next_field(void)
+{
+    s_agc_offset_field = (uint8_t)((s_agc_offset_field + 1u) % AGC_OFFSET_FIELDS);
+    s_agc_offset_db = 0;
+    agc_offset_apply();
+}
+
+const char *rf_agc_offset_field_name(void)
+{
+    return s_agc_offset_fields[s_agc_offset_field].name;
+}
+
 void rf_set_bb_agc(bool enable)
 {
     if (!s_native_agc) return;
@@ -868,6 +963,7 @@ esp_err_t rf_start(void)
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
     s_agc_tune = agc_tune_load();
+    agc_offset_load();
     s_native_initgain = native_initgain_load();
     s_pll_track = pll_track_boot_requested();
 
@@ -990,6 +1086,7 @@ esp_err_t rf_start(void)
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
         agc_tune_apply();
+        agc_offset_apply();
     } else {
         phy_force_rx_gain(true, 52);
     }
@@ -1337,6 +1434,7 @@ esp_err_t rf_set_channel(size_t index)
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
         agc_tune_apply();
+        agc_offset_apply();
     } else {
         phy_disable_agc();
         phy_rfagc_disable();

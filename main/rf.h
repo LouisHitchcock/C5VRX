@@ -129,6 +129,13 @@ uint8_t rf_native_gain_index(void);
  * production top four bits. Folds above |x| >= 256 per axis. Selected by
  * the P8 FINE demodulator only. */
 void rf_set_fine_iq(bool fine);
+/* Native AGC level offset (dB against vendor) on one candidate field;
+ * the hardware AGC still makes every gain decision. See agc_offset.h. */
+void rf_agc_offset_set(int db);
+int rf_agc_offset_db(void);
+esp_err_t rf_agc_offset_save(void);
+void rf_agc_offset_next_field(void);
+const char *rf_agc_offset_field_name(void);
 /* LAB: native AGC policy register candidate (NVS index, 0 = vendor). */
 void rf_agc_tune_report(void);
 uint8_t rf_agc_tune_index(void);
