@@ -60,11 +60,16 @@ typedef enum {
 #define AGCP_SERVO_TICKS         6u   /* at most one normal step per 0.3 s */
 /* Uncentered Q4 power (i*i + q*q), as analyze_control_window() reports.
  * Provisional band; tools/p8env_sweep.py measures the empirical annulus. */
-#define AGCP_P50_LOW            12u
-#define AGCP_P50_HIGH           30u
+#define AGCP_P50_LOW            20u
+#define AGCP_P50_HIGH           36u
 #define AGCP_P95_MAX            64u
-#define AGCP_CLIP_PM            20u
+#define AGCP_CLIP_PM            20u   /* step down at or above this */
+#define AGCP_CLIP_UP_PM          5u   /* step up only below this */
 #define AGCP_CLIP_SEVERE_PM     80u
+/* After a step down for headroom, no step up for 10 s. Without it a VTX that
+ * clips before P50 reaches the band makes HOLD hunt +1/-1 forever, one gain
+ * write mid-picture every 0.3 s (seen on hardware: 48 writes in 40 s). */
+#define AGCP_UP_BLOCK_TICKS    200u
 
 typedef struct {
     bool valid;          /* fresh window, no settle/context change */
@@ -87,7 +92,7 @@ typedef struct {
     uint8_t min_idx, max_idx;
     uint8_t ring[AGCP_RING];
     uint8_t ring_n, ring_pos;
-    uint16_t carrier_ticks, loss_ticks, period_ticks, servo_ticks;
+    uint16_t carrier_ticks, loss_ticks, period_ticks, servo_ticks, up_block_ticks;
     agcp_cmd_t cmd;
     uint32_t writes;     /* commands that changed hardware state */
 } agc_policy_t;
@@ -192,15 +197,18 @@ static inline agcp_cmd_t agc_policy_tick(agc_policy_t *p, const agcp_obs_t *o,
             agcp_ring_clear(p);
         } else if (o->carrier) {
             ++p->servo_ticks;
+            if (p->up_block_ticks) --p->up_block_ticks;
             int step = 0;
             if (o->clip_pm >= AGCP_CLIP_SEVERE_PM) {
                 if (p->servo_ticks >= 2u) step = -2;       /* overload: fast */
             } else if (p->servo_ticks >= AGCP_SERVO_TICKS) {
                 if (o->clip_pm >= AGCP_CLIP_PM || o->p95 > AGCP_P95_MAX ||
                     o->p50 > AGCP_P50_HIGH) step = -1;
-                else if (o->p50 < AGCP_P50_LOW) step = 1;
-                else p->servo_ticks = 0;                   /* in band: hold */
+                else if (o->p50 < AGCP_P50_LOW && o->clip_pm < AGCP_CLIP_UP_PM &&
+                         !p->up_block_ticks) step = 1;
+                else p->servo_ticks = 0;                   /* hold */
             }
+            if (step < 0) p->up_block_ticks = AGCP_UP_BLOCK_TICKS;
             if (step) {
                 uint8_t next = agcp_clamp((int)p->cmd.force_idx + step,
                                           p->min_idx, p->max_idx);

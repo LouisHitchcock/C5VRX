@@ -5858,9 +5858,11 @@ esp_err_t video_start(void)
                  "'E' = P8ENV row, 'N' = reboot to firmware gain fallback",
                  (unsigned long)native.gain_status_reg,
                  (unsigned long)native.agc_ctrl_reg);
+        /* HOLD is not restored at boot until it is hardware-proven: a hang
+         * in HOLD must not become a boot loop. It is still one key away. */
         uint8_t stored = rf_agc_profile_load();
-        agc_policy_restart(stored < AGC_PROFILE_COUNT ? (agc_profile_t)stored
-                                                      : AGC_PROFILE_NATIVE);
+        agc_policy_restart(stored < AGC_PROFILE_COUNT && stored != AGC_PROFILE_HOLD ?
+                           (agc_profile_t)stored : AGC_PROFILE_NATIVE);
         ESP_LOGW(TAG, "AGC profile %s ('y' cycles, '1'..'4' select)",
                  agc_profile_name(s_agc_policy.profile));
     }

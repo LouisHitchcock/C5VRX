@@ -255,7 +255,7 @@ controls that are known: start gain `7094[8:2]`, RF saturation intervention
 | `1` | NATIVE | none | production reference |
 | `2` | INIT | start gain only (RAM, not NVS) | restart swings: start = operating point + 6, re-evaluated each 1 s with 4-index hysteresis; 1 s without carrier restores the vendor start |
 | `3` | TUNED | INIT + `705C = 0` | as INIT, plus no RF-saturation re-trigger (esp-sdr does this for stable gain) |
-| `4` | HOLD | force bit | both root causes: pin at the native operating point after 0.5 s of carrier, then step one index per >= 0.3 s until uncentered P50 is 12..30 (P95 <= 64, clip < 20 pm); severe clip steps -2 within 0.1 s; 0.3 s without carrier releases the pin so native AGC climbs back to high gain |
+| `4` | HOLD | force bit | both root causes: pin at the native operating point after 0.5 s of carrier, then step one index per >= 0.3 s until uncentered P50 is 20..36 (P95 <= 64, clip < 20 pm); severe clip steps -2 within 0.1 s; 0.3 s without carrier releases the pin so native AGC climbs back to high gain |
 
 `y` cycles. Retunes re-assert start gain and `705C` and drop any pin; a
 context change (channel, BW, offset) restarts the profile. P8ENV reports

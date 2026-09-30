@@ -122,6 +122,21 @@ int main(void)
         c = tick(&p, obs(false, 0, 2, 6, 0), &changed);
     assert(!c.force && p.phase == AGCP_RELEASED);
 
+    /* A VTX that clips before P50 reaches the band must not make HOLD hunt:
+     * clip grows with gain; at most one step down, then it stays put. */
+    agc_policy_reset(&p, AGC_PROFILE_HOLD, 2, 83);
+    for (unsigned k = 0; k < AGCP_ACQUIRE_TICKS; ++k)
+        c = tick(&p, obs(true, 35, 6, 20, 0), &changed);
+    assert(c.force && c.force_idx == 35);
+    uint32_t start_writes = p.writes;
+    for (unsigned k = 0; k < 2000; ++k) {       /* 100 s */
+        int g = c.force_idx;
+        uint16_t clip = g >= 43 ? 30 : g >= 41 ? 10 : 0;   /* clips at P50 ~13 */
+        c = tick(&p, obs(true, 0, (uint8_t)(g - 30), (uint8_t)(g - 10), clip), &changed);
+    }
+    assert(c.force_idx >= 40 && c.force_idx <= 42);
+    assert(p.writes - start_writes <= 14);
+
     /* The pin never leaves the table. */
     agc_policy_reset(&p, AGC_PROFILE_HOLD, 2, 83);
     for (unsigned k = 0; k < AGCP_ACQUIRE_TICKS; ++k)
