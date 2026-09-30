@@ -321,17 +321,25 @@ static const agc_tune_t s_native_acq_profiles[] = {
     {"7034_127",   0x600A7034u, 24u, 7u, 127u},
 };
 #define NATIVE_ACQ_COUNT (sizeof(s_native_acq_profiles) / sizeof(s_native_acq_profiles[0]))
+/* User-selected live default after the 7034=127 picture comparison.
+ * The standalone meter starts vendor unless NVS explicitly selects a profile. */
+#if CONFIG_C5VRX_NATIVE_AGC_CAPTURE_ONLY
+#define NATIVE_ACQ_DEFAULT_INDEX 0u
+#else
+#define NATIVE_ACQ_DEFAULT_INDEX 10u
+#endif
 static uint8_t s_native_acq_profile;
 static uint32_t s_native_acq_before, s_native_acq_after;
 
 static uint8_t native_acq_load(void)
 {
     nvs_handle_t handle;
-    uint8_t value = 0;
-    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return 0;
+    uint8_t value = NATIVE_ACQ_DEFAULT_INDEX;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+        return NATIVE_ACQ_DEFAULT_INDEX;
     (void)nvs_get_u8(handle, "agc_acq", &value);
     nvs_close(handle);
-    return value < NATIVE_ACQ_COUNT ? value : 0;
+    return value < NATIVE_ACQ_COUNT ? value : NATIVE_ACQ_DEFAULT_INDEX;
 }
 
 static void native_acq_apply(void)
@@ -1110,7 +1118,11 @@ esp_err_t rf_start(void)
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
     s_agc_tune = agc_tune_load();
+#if CONFIG_C5VRX_PHY_PHASE_TAP_PROBE
     s_native_acq_profile = s_agc_tune == 0 ? native_acq_load() : 0;
+#else
+    s_native_acq_profile = native_acq_load();
+#endif
     agc_offset_load();
     s_native_initgain = native_initgain_load();
     s_pll_track = pll_track_boot_requested();

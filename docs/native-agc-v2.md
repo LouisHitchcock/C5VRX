@@ -690,3 +690,20 @@ P8 FULL, offset disabled, coarse IQ and zero reported RX/TX/GDMA errors.
 The readback snapshot had strength 0/no usable carrier; VTX was requested
 on for direct picture assessment. No timing or image improvement is yet
 claimed for the maximum candidate.
+
+The user subsequently reported apparently very fast response and possibly
+slightly less noise, then explicitly requested 127 as the default from now
+on. Normal builds now default to native profile 10 (`7034_127`) when the NVS
+selection is missing or invalid. An explicit persisted selection remains
+respected, including `}` for vendor comparison. The board already stores
+profile 10; it survives reboot and retune. Old probe-only sweep NVS no
+longer suppresses this default in a normal image. The standalone meter
+keeps a vendor default to support independent comparisons.
+
+This is a user-selected live preference, not a calibrated speed/range proof.
+Five subsequent live telemetry snapshots reported native state 83 without
+observed changes, P50 3, coherence 6..11 per mille and strength 2. They did
+not provide a valid sub-microsecond timing measurement. Register polling
+also includes a 2 us delay per sample, so it cannot resolve the proposed
+0.6 us versus 0.1 us gain-step spacing. Do not derive an acquisition time
+from those counters or equate the register value 127 with a speed.
