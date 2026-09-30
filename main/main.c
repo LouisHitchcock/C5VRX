@@ -32,6 +32,7 @@ void app_main(void)
     /* Give the host time to reopen the USB console after reset, otherwise
      * the boot-only report is printed before anyone listens. */
     vTaskDelay(pdMS_TO_TICKS(8000));
+    rf_agc_tune_report();
     phy_phase_tap_probe_run();
 #endif
     ESP_ERROR_CHECK(video_start());

@@ -1995,6 +1995,19 @@ static uint32_t lab_delta(uint32_t current, uint32_t base)
     return current - base;
 }
 
+/* Native AGC activity next to a lab row: does the live DAC/PARLIO output
+ * (switching next to the RF input) retrigger packet detection? */
+static void lab_print_agc_activity(const char *kind)
+{
+    rf_native_gain_stats_t g;
+    rf_native_gain_stats(4000u, &g);
+    printf("C5VRX_AGC_ACTIVITY kind=%s sw_per_ms_x10=%lu restart_per_ms_x10=%lu "
+           "median=%u min=%u max=%u q=%d origin_pm=%d\n",
+           kind, (unsigned long)g.switches_per_ms_x10,
+           (unsigned long)g.restarts_per_ms_x10, g.median, g.min, g.max,
+           s_last_q_phase, s_last_origin_permille);
+}
+
 static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
 {
     const hw_transport_counters_t current = lab_counter_snapshot();
@@ -2180,9 +2193,10 @@ static void p8env_capture_report(void)
            (unsigned long)t.bs_eof_overload_count);
     /* Same row, second call: this printf already takes ~90 arguments on the
      * small console stack. */
-    printf(" strength=%d rx_gain=%u iq_fine=%u bb_agc=%u reset=%d\n",
+    printf(" strength=%d rx_gain=%u iq_fine=%u bb_agc=%u agc_tune=%u reset=%d\n",
            s_signal_strength, (unsigned)s_rx_gain_index,
            rf_fine_iq_active() ? 1u : 0u, rf_bb_agc_enabled() ? 1u : 0u,
+           (unsigned)rf_agc_tune_index(),
            (int)esp_reset_reason());
 }
 
@@ -4097,6 +4111,7 @@ static void lab_run_tx_self_noise_probe(void)
     printf("C5VRX_PREQ4_TXNOISE_BEGIN gain=%u bw=40 afc=off settle_ms=%u output=%s\n",
            s_current_gain, LAB_PREQ4_SETTLE_MS, output_mode_name());
     lab_print_row("PREQ4_TX_ACTIVE", NULL);
+    lab_print_agc_activity("PREQ4_TX_ACTIVE");
 
     ESP_ERROR_CHECK(parlio_tx_unit_disable(s_tx));
     ESP_ERROR_CHECK(bitscrambler_disable(s_flight_bs));
@@ -4114,12 +4129,14 @@ static void lab_run_tx_self_noise_probe(void)
     s_lab_tx_quiet = true;
     vTaskDelay(pdMS_TO_TICKS(LAB_PREQ4_SETTLE_MS));
     lab_print_row("PREQ4_TX_QUIET", NULL);
+    lab_print_agc_activity("PREQ4_TX_QUIET");
 
     ESP_ERROR_CHECK(lab_restore_live_tx_pipeline());
     s_lab_tx_quiet = false;
     lab_clear_transport_sticky();
     vTaskDelay(pdMS_TO_TICKS(LAB_PREQ4_SETTLE_MS));
     lab_print_row("PREQ4_TX_RESTORED", NULL);
+    lab_print_agc_activity("PREQ4_TX_RESTORED");
 
     /* Restore supervisory state after the physical live path is known-good. */
     if (s_current_gain != saved_gain) lab_apply_vendor_gain(saved_gain);
@@ -5334,7 +5351,7 @@ static void console_diag_task(void *arg)
                 }
                 if (s_gain_sweep.active && (c == '\r' || c == '\n')) continue;
                 if (rf_native_agc_active() && c < 128 &&
-                    strchr("gFGRUSK+-kjasmDIYX", c)) {
+                    strchr("gFGRUK+-kjasmDIYX", c)) {
                     printf("C5VRX_NATIVE_AGC_OWNS_GAIN command=%c action=ignored "
                            "hint=N_returns_to_firmware_gain\n", c);
                     continue;
@@ -5407,6 +5424,14 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
+                } else if (c == '8') {
+                    esp_err_t tune_err = rf_agc_tune_select_next();
+                    printf("C5VRX_AGC_TUNE_NEXT err=%s action=reboot\n", esp_err_to_name(tune_err));
+                    if (tune_err == ESP_OK) {
+                        fflush(stdout);
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                        esp_restart();
+                    }
                 } else if (c == '9') {
                     bool enable = !rf_bb_agc_enabled();
                     rf_set_bb_agc(enable);
@@ -5761,6 +5786,7 @@ static void console_diag_task(void *arg)
                     printf("  'd':         Select Phase8 FULL and reboot\n");
                     printf("  'y':         Select Phase8 FINE (issue #123 fine IQ lanes) and reboot\n");
                     printf("  '9':         LAB: baseband packet AGC on/off, RF AGC stays on\n");
+                    printf("  '8':         LAB: next native AGC register candidate (persist + reboot)\n");
                     printf("=======================================================\n\n");
                 }
             }

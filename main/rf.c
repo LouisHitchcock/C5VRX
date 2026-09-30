@@ -195,6 +195,98 @@ static esp_err_t route_modem_iq(void)
  * 702C[23]. RAM only; a retune or reboot restores the packet AGC. */
 static bool s_bb_agc_off;
 
+/* Native AGC policy registers written by phy_agc_reg_init_new() and
+ * bb_agc_reg_update() (disassembly of the pinned libphy, 2026-09-30).
+ * Semantics are unknown, so each entry is one change against the vendor
+ * value, persisted as an index (NVS c5vrx/agc_tune) and applied at boot and
+ * after every retune. Index 0 is the vendor configuration (no write).
+ * tools/agc_tune_sweep.py steps through them with serial '8' and measures
+ * each boot's native acquisitions per sample (probe AGC_WORDS). */
+typedef struct {
+    const char *name;
+    uint32_t reg;
+    uint8_t shift, width;   /* width 0 = whole word */
+    uint32_t raw;
+} agc_tune_t;
+
+static const agc_tune_t s_agc_tunes[] = {
+    {"vendor",            0u,          0u,  0u, 0u},
+    /* 7128[31:24] = 0xD2 (-46) at init: target level candidate. */
+    {"7128_target_-40",   0x600A7128u, 24u, 8u, 0xD8u},
+    {"7128_target_-34",   0x600A7128u, 24u, 8u, 0xDEu},
+    {"7128_target_-52",   0x600A7128u, 24u, 8u, 0xCCu},
+    /* phy_set_rx_comp_new(): -30/-32 dB into 702C[7:0] and 70A0[31:24]. */
+    {"702C_comp_-24",     0x600A702Cu, 0u,  8u, 0xE8u},
+    {"702C_comp_-36",     0x600A702Cu, 0u,  8u, 0xDCu},
+    {"70A0_comp_-24",     0x600A70A0u, 24u, 8u, 0xE8u},
+    {"70A0_comp_-36",     0x600A70A0u, 24u, 8u, 0xDCu},
+    /* 7034[30:24] = 10, 71B0[27:21] = 30, 7158[6:0] = 13 at init. */
+    {"7034_5",            0x600A7034u, 24u, 7u, 5u},
+    {"7034_20",           0x600A7034u, 24u, 7u, 20u},
+    {"71B0_15",           0x600A71B0u, 21u, 7u, 15u},
+    {"71B0_60",           0x600A71B0u, 21u, 7u, 60u},
+    {"7158_6",            0x600A7158u, 0u,  7u, 6u},
+    {"7158_26",           0x600A7158u, 0u,  7u, 26u},
+    /* 8028 = 0xC0403020: four stacked level thresholds (bb_agc_reg_update). */
+    {"8028_half",         0x600A8028u, 0u,  0u, 0x60201810u},
+    {"8028_double",       0x600A8028u, 0u,  0u, 0xFF806040u},
+};
+#define AGC_TUNE_COUNT (sizeof(s_agc_tunes) / sizeof(s_agc_tunes[0]))
+#define AGC_TUNE_NVS_KEY "agc_tune"
+static uint8_t s_agc_tune;
+static uint32_t s_agc_tune_before, s_agc_tune_after;
+
+static uint8_t agc_tune_load(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return 0;
+    if (nvs_get_u8(handle, AGC_TUNE_NVS_KEY, &value) != ESP_OK) value = 0;
+    nvs_close(handle);
+    return value < AGC_TUNE_COUNT ? value : 0u;
+}
+
+static void agc_tune_apply(void)
+{
+    const agc_tune_t *t = &s_agc_tunes[s_agc_tune];
+    if (!s_native_agc || !t->reg) return;
+    uint32_t v = REG32(t->reg);
+    s_agc_tune_before = v;
+    if (!t->width) {
+        v = t->raw;
+    } else {
+        uint32_t mask = ((1u << t->width) - 1u) << t->shift;
+        v = (v & ~mask) | ((t->raw << t->shift) & mask);
+    }
+    REG32(t->reg) = v;
+    s_agc_tune_after = REG32(t->reg);
+}
+
+void rf_agc_tune_report(void)
+{
+    const agc_tune_t *t = &s_agc_tunes[s_agc_tune];
+    printf("AGC_TUNE idx=%u count=%u name=%s reg=0x%08lx before=0x%08lx after=0x%08lx\n",
+           s_agc_tune, (unsigned)AGC_TUNE_COUNT, t->name, (unsigned long)t->reg,
+           (unsigned long)s_agc_tune_before, (unsigned long)s_agc_tune_after);
+}
+
+uint8_t rf_agc_tune_index(void)
+{
+    return s_agc_tune;
+}
+
+esp_err_t rf_agc_tune_select_next(void)
+{
+    uint8_t next = (uint8_t)((s_agc_tune + 1u) % AGC_TUNE_COUNT);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, AGC_TUNE_NVS_KEY, next);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
 void rf_set_bb_agc(bool enable)
 {
     if (!s_native_agc) return;
@@ -775,6 +867,7 @@ esp_err_t rf_start(void)
     esp_err_t err = init_nvs();
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
+    s_agc_tune = agc_tune_load();
     s_native_initgain = native_initgain_load();
     s_pll_track = pll_track_boot_requested();
 
@@ -896,6 +989,7 @@ esp_err_t rf_start(void)
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
+        agc_tune_apply();
     } else {
         phy_force_rx_gain(true, 52);
     }
@@ -1242,6 +1336,7 @@ esp_err_t rf_set_channel(size_t index)
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();
+        agc_tune_apply();
     } else {
         phy_disable_agc();
         phy_rfagc_disable();
