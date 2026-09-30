@@ -558,3 +558,19 @@ settling, which still needs phase/state correlation. Unlike phase calibration,
 this timing comparison can use a normal VTX kept on one fixed channel.
 
 No fast profile has yet been measured on hardware or enabled by default.
+
+### Full build and flash (2026-09-30)
+
+After restoring interactive approvals, ESP-IDF v6.0.2 compiled and linked
+the normal firmware successfully. `c5vrx3.bin` is 1,165,168 bytes (0x11c770),
+4,704 bytes larger than the previous image; the app partition has 63% free.
+Implementation commit `faf9388` was pushed to PR #122 and flashed on COM10.
+Esptool verified the bootloader, partition table and application hashes.
+
+Post-flash `E` telemetry confirmed A1/5865 MHz, `native=1`,
+`fw_gain_epochs=0`, `agc_tune=0`, `agc_off_en=0`, `agc_off_db=0`,
+`demod=PHASE8_FULL`, and zero reported RX/TX/GDMA errors. This sample had
+`class=COLLAPSE`, `p50=1`, `coh_pm=0`, `agc_state=82`: no usable video
+carrier was established. This confirms firmware operation, not a noise
+improvement. Carrier-present timing comparisons and AGC GUARD validation
+remain pending.
