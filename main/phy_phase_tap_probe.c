@@ -304,6 +304,53 @@ static void q6_dump_probe_run(void)
     route_lanes(0, true);
 }
 
+/* Full 32-bit RF dump words: Q[9:0] bits 0..9, I[9:0] bits 10..19 and,
+ * per ESPARGOS esp-sdr, the RX gain index in bits 20..27 and the native AGC
+ * state machine in bits 28..31 -- per sample at 80 MS/s. Answers which state
+ * bits mark a native re-acquisition (tools/analyze_agc_words.py). */
+#define AGC_WORD_WINDOWS 3u
+static void agc_words_run(void)
+{
+    for (unsigned n = 0; n < AGC_WORD_WINDOWS; ++n) {
+        uint32_t saved_mstatus;
+        __asm__ __volatile__("csrrc %0, mstatus, %1"
+                             : "=r"(saved_mstatus) : "r"(0x8u) : "memory");
+        const uint32_t saved_sram_usage = REG32(HP_SRAM_USAGE);
+        REG32(HP_SRAM_USAGE) = (saved_sram_usage & 0xfffef0ffu) | 0x00010200u;
+        io_fence();
+        uint32_t ctrl = REG32(DUMP_CTRL);
+        ctrl &= ~(CTRL_ENABLE | 0x00080000u | 0x00040000u);
+        ctrl |= CTRL_DUMP_FIRST;
+        ctrl = (ctrl & ~0x0001ffffu) | DUMP_WORDS;
+        REG32(DUMP_CTRL) = ctrl | CTRL_ENABLE;
+        io_fence();
+        /* 8192 words at ~80 MS/s = 102 us; wait 150 us so the ring wraps. */
+        const uint32_t t0 = get_cycle_count();
+        while (get_cycle_count() - t0 < 150u * 240u) { }
+        const uint32_t stop_ptr = REG32(DUMP_PTR_MODE) & (DUMP_WORDS - 1u);
+        REG32(DUMP_CTRL) = ctrl;
+        io_fence();
+        REG32(HP_SRAM_USAGE) = saved_sram_usage;
+        io_fence();
+        if ((saved_mstatus & 0x8u) != 0u)
+            __asm__ __volatile__("csrs mstatus, %0" : : "r"(0x8u) : "memory");
+
+        printf("AGC_WORDS BEGIN window=%u words=%u stop_ptr=%" PRIu32 "\n",
+               n, DUMP_WORDS, stop_ptr);
+        volatile const uint32_t *dump_sram = (volatile const uint32_t *)DUMP_BASE_ADDR;
+        for (unsigned c = 0; c < DUMP_WORDS / 256u; ++c) {
+            printf("AGC_WORDS_HEX window=%u chunk=%u hex=", n, c);
+            for (unsigned i = 0; i < 256u; ++i)
+                printf("%08" PRIx32, dump_sram[c * 256u + i]);
+            printf("\n");
+        }
+        printf("AGC_WORDS END window=%u\n", n);
+        /* Separate the windows in time so they see different restarts. */
+        const uint32_t t1 = get_cycle_count();
+        while (get_cycle_count() - t1 < 2000u * 240u) { }
+    }
+}
+
 static void all_diag_sweep_run(void)
 {
     printf("DIAG_SWEEP_SESSION BEGIN total_passes=7\n");
@@ -400,6 +447,8 @@ static void all_diag_sweep_run(void)
 
     /* Also execute baseline Q6 dump format for backwards compatibility */
     q6_dump_probe_run();
+
+    agc_words_run();
 
     /* Restore reference IQ routing */
     route_lanes(0, true);

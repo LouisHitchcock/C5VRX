@@ -47,7 +47,6 @@
 #include "afc_state.h"
 #include "afc_v2.h"
 #include "afc_v2_ctrl.h"
-#include "agc_policy.h"
 #include "rx_auto_lab.h"
 #include "trajectory_v2_lut.h"
 #include "hal/parlio_ll.h"
@@ -1249,14 +1248,17 @@ static const char *output_mode_name(void)
 #define DEMOD_AB_NVS_NAMESPACE "c5vrx"
 #define DEMOD_AB_NVS_KEY "demod_golden"
 #define DEMOD_LIVE_NVS_KEY "demod_live"
-typedef enum { LIVE_PHASE8_FULL, LIVE_GOLDEN, LIVE_PHASE8_VIDEO } live_demod_t;
+/* PHASE8_FINE = the PHASE8_FULL program on the issue #123 fine IQ lanes
+ * (sign, bits 7..5): same signed-nibble LUT, twice the angular resolution. */
+typedef enum { LIVE_PHASE8_FULL, LIVE_GOLDEN, LIVE_PHASE8_VIDEO, LIVE_PHASE8_FINE } live_demod_t;
 static live_demod_t s_live_demod = LIVE_PHASE8_FULL;
 
 static const char *demod_mode_name(void)
 {
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_live_demod == LIVE_GOLDEN ? "PHASE5" :
-           s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" : "PHASE8 FULL";
+           s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" :
+           s_live_demod == LIVE_PHASE8_FINE ? "P8 FINE" : "PHASE8 FULL";
 #else
     return "PHASE5";
 #endif
@@ -1266,7 +1268,8 @@ static const char *live_demod_tag(void)
 {
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_live_demod == LIVE_GOLDEN ? "GOLDEN" :
-           s_live_demod == LIVE_PHASE8_VIDEO ? "PHASE8_VIDEO32" : "PHASE8_FULL";
+           s_live_demod == LIVE_PHASE8_VIDEO ? "PHASE8_VIDEO32" :
+           s_live_demod == LIVE_PHASE8_FINE ? "PHASE8_FINE" : "PHASE8_FULL";
 #else
     return s_demod_mode == DEMOD_MODE_TRAJECTORY_V2 ? "TRAJ_V2" : "GOLDEN";
 #endif
@@ -1284,7 +1287,7 @@ static live_demod_t demod_boot_requested(void)
             value = old == 1u ? LIVE_GOLDEN : LIVE_PHASE8_FULL;
     }
     nvs_close(handle);
-    return value <= LIVE_PHASE8_VIDEO ? (live_demod_t)value : LIVE_PHASE8_FULL;
+    return value <= LIVE_PHASE8_FINE ? (live_demod_t)value : LIVE_PHASE8_FULL;
 }
 
 static esp_err_t persist_live_demod(live_demod_t mode)
@@ -1298,10 +1301,8 @@ static esp_err_t persist_live_demod(live_demod_t mode)
     return err;
 }
 
-static void lab_select_demod_boot(bool full)
+static void lab_select_demod_boot(live_demod_t next)
 {
-    live_demod_t next = full ? LIVE_PHASE8_FULL :
-        s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
     esp_err_t err = persist_live_demod(next);
     printf("C5VRX_DEMOD_ARMED next_boot=%u err=%s action=reboot\n",
            (unsigned)next, esp_err_to_name(err));
@@ -1344,9 +1345,6 @@ static volatile int s_last_p_median = 25;
 static volatile int s_last_q_phase = 0;
 static volatile int s_signal_strength = 0;
 static volatile uint8_t s_rx_gain_index;
-/* agc_policy.h: owned by the control task; the console only posts requests. */
-static agc_policy_t s_agc_policy;
-static volatile int s_agc_profile_request = -1;
 static volatile int s_last_n_clip = 0;
 static volatile int s_last_n_origin = 0;
 static volatile int s_last_clip_permille = 0;
@@ -1751,8 +1749,6 @@ static void direct_gain_v3_observer_task(void *arg)
  * otherwise the firmware-forced gain. */
 static uint8_t rx_gain_index_in_use(void)
 {
-    uint8_t pinned;
-    if (rf_native_policy_forced(&pinned)) return pinned;
     return rf_native_agc_active() ? rf_native_gain_index() : s_current_gain;
 }
 
@@ -1776,52 +1772,6 @@ static int signal_strength_score(const control_metrics_t *m, uint8_t gain)
     /* Any carrier is at least one bar; 0 is reserved for no carrier. */
     if (level < 1) level = 1; else if (level > 100) level = 100;
     return level;
-}
-
-static void agc_policy_restart(agc_profile_t profile)
-{
-    uint8_t max_idx = rf_get_arc_gain_table()->max_index;
-    agc_policy_reset(&s_agc_policy, profile, 2u, max_idx);
-    const agcp_cmd_t *c = &s_agc_policy.cmd;
-    rf_set_fine_iq(false);
-    rf_native_policy_apply(c->initgain, c->rfsat_off, c->force, c->force_idx);
-    s_last_phy_write_us = esp_timer_get_time();
-}
-
-/* One 50 ms native-mode policy step. valid = settled window of the current
- * receive context; a context change (channel, BW, offset...) restarts the
- * profile so a pin never survives onto another channel. */
-static void agc_policy_step(const control_metrics_t *m, bool valid, bool context_changed)
-{
-    int request = s_agc_profile_request;
-    if (request >= 0) {
-        s_agc_profile_request = -1;
-        agc_policy_restart((agc_profile_t)request);
-        printf("C5VRX_AGC_PROFILE profile=%s saved=%s\n",
-               agc_profile_name(s_agc_policy.profile),
-               esp_err_to_name(rf_agc_profile_save((uint8_t)s_agc_policy.profile)));
-        return;
-    }
-    if (context_changed && s_agc_policy.profile != AGC_PROFILE_NATIVE) {
-        agc_policy_restart(s_agc_policy.profile);
-        return;
-    }
-    agcp_obs_t obs = {
-        .valid = valid,
-        .carrier = m->q_phase >= 18 && m->origin_permille <= 850,
-        .native_idx = s_rx_gain_index,
-        .p50 = (uint8_t)(m->p_median > 255 ? 255 : m->p_median),
-        .p95 = (uint8_t)(m->p95 > 255 ? 255 : m->p95),
-        .clip_pm = (uint16_t)m->clip_permille,
-    };
-    bool changed;
-    agcp_cmd_t c = agc_policy_tick(&s_agc_policy, &obs, &changed);
-    if (!changed) return;
-    /* Fine lanes only under a pin: coarse before releasing, fine after pinning. */
-    if (!c.fine) rf_set_fine_iq(false);
-    rf_native_policy_apply(c.initgain, c.rfsat_off, c.force, c.force_idx);
-    if (c.fine) rf_set_fine_iq(true);
-    s_last_phy_write_us = esp_timer_get_time();
 }
 
 static void settings_save(void)
@@ -2230,13 +2180,9 @@ static void p8env_capture_report(void)
            (unsigned long)t.bs_eof_overload_count);
     /* Same row, second call: this printf already takes ~90 arguments on the
      * small console stack. */
-    printf(" strength=%d rx_gain=%u agc_prof=%s agc_hold=%d agc_init=%u "
-           "agc_rfsat_off=%u agc_writes=%lu agc_fine=%u reset=%d\n",
+    printf(" strength=%d rx_gain=%u iq_fine=%u reset=%d\n",
            s_signal_strength, (unsigned)s_rx_gain_index,
-           agc_profile_name(s_agc_policy.profile),
-           s_agc_policy.cmd.force ? (int)s_agc_policy.cmd.force_idx : -1,
-           (unsigned)rf_native_initgain(), s_agc_policy.cmd.rfsat_off ? 1u : 0u,
-           (unsigned long)rf_native_policy_writes(), rf_fine_iq_active() ? 1u : 0u,
+           rf_fine_iq_active() ? 1u : 0u,
            (int)esp_reset_reason());
 }
 
@@ -3950,10 +3896,7 @@ static void menu_draw_rf_page(void)
      * The firmware-gain fallback exists only behind the serial 'N' command. */
     bool native = rf_native_agc_active();
     menu_draw_page_title("RF FRONTEND", native ? "DEFAULT" : "SERIAL FALLBACK");
-    char gain_label[24];
-    snprintf(gain_label, sizeof(gain_label), "NATIVE AGC %s",
-             agc_profile_name(s_agc_policy.profile));
-    menu_ui_value_box(100, 22, 276, "GAIN", native ? gain_label : "FIRMWARE (SERIAL N)");
+    menu_ui_value_box(100, 22, 276, "GAIN", native ? "NATIVE HW AGC" : "FIRMWARE (SERIAL N)");
     menu_ui_value_box(100, 34, 130, "BANDWIDTH", rf_bw_mode_name());
     snprintf(buf, sizeof(buf), "S%u", (unsigned)s_signal_strength);
     menu_ui_value_box(238, 34, 138, "SIGNAL", buf);
@@ -3984,7 +3927,8 @@ static void menu_draw_video_page(void)
     char detected[24];
     bool experimental = s_output_mode == VIDEO_OUTPUT_4BIT_80;
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-    experimental = experimental || s_live_demod == LIVE_PHASE8_VIDEO;
+    experimental = experimental || s_live_demod == LIVE_PHASE8_VIDEO ||
+                   s_live_demod == LIVE_PHASE8_FINE;
 #endif
     menu_draw_page_title("VIDEO OUTPUT", experimental ? "EXPERIMENTAL" : "DEFAULT");
     menu_ui_value_box(100, 22, 130, "DAC", output_mode_name());
@@ -4046,6 +3990,8 @@ static void start_flight_demodulator(void)
                                              s_live_demod == LIVE_GOLDEN ? s_fm_program :
                                              s_live_demod == LIVE_PHASE8_VIDEO ? s_fm_phase8_video_program :
                                              s_fm_phase8_hr_live_program));
+    /* Lanes switch before the demodulator starts, never mid-stream. */
+    rf_set_fine_iq(s_live_demod == LIVE_PHASE8_FINE);
 #else
     if (s_output_mode == VIDEO_OUTPUT_4BIT_80) {
         ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs, s_fm4_program));
@@ -4496,7 +4442,8 @@ static void handle_button_long_click(void)
         case 4: /* VIDEO OUTPUT */
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
             live_demod_t next = s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_FULL :
-                               s_live_demod == LIVE_PHASE8_FULL ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
+                               s_live_demod == LIVE_PHASE8_FULL ? LIVE_PHASE8_FINE :
+                               s_live_demod == LIVE_PHASE8_FINE ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
             esp_err_t err = persist_live_demod(next);
             if (err == ESP_OK) s_live_demod = next;
             printf("[MENU: DEMOD] %s (applies on exit) err=%s\n",
@@ -4895,9 +4842,6 @@ static void analog_agc_task(void *arg)
         s_last_fusion_fast_samples = fusion_tm.samples;
 
         if (rf_native_agc_active()) {
-            agc_policy_step(&metrics,
-                settle_ticks == 0 && sampled_gain_epoch == s_gain_transition_count &&
-                sampled_rf_context == afc_ctx, afc_context_changed);
             /* Native is a separate receive-control path: no firmware gain
              * controller owns its lock state. Burst evidence gates AFC. */
             bool was_native_locked = native_locked;
@@ -5446,9 +5390,12 @@ static void console_diag_task(void *arg)
                 } else if (c == 'z') {
                     lab_dump_full_window();
                 } else if (c == 'u') {
-                    lab_select_demod_boot(false);
+                    lab_select_demod_boot(s_live_demod == LIVE_GOLDEN ?
+                                          LIVE_PHASE8_VIDEO : LIVE_GOLDEN);
                 } else if (c == 'd') {
-                    lab_select_demod_boot(true);
+                    lab_select_demod_boot(LIVE_PHASE8_FULL);
+                } else if (c == 'y') {
+                    lab_select_demod_boot(LIVE_PHASE8_FINE);
                 } else if (c == 'w') {
                     /* Cycle the persisted native AGC start gain: vendor -> 74
                      * -> 66 -> vendor. Candidate fix for restart jolts. */
@@ -5460,16 +5407,6 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
-                } else if (c == 'y' || (c >= '1' && c <= '5')) {
-                    /* AGC profile: 'y' cycles, '1'..'5' = NATIVE/INIT/TUNED/HOLD/HOLD123.
-                     * Applied by the control task, persisted in NVS. */
-                    if (!rf_native_agc_active()) {
-                        printf("C5VRX_AGC_PROFILE refused=firmware_gain_mode\n");
-                    } else {
-                        s_agc_profile_request = c == 'y' ?
-                            (int)((s_agc_policy.profile + 1) % AGC_PROFILE_COUNT) :
-                            c - '1';
-                    }
                 } else if (c == 'h') {
                     rf_poll_agc_live();
                 } else if (c == 'P' || c == 'M' || c == 'J' || c == 'B') {
@@ -5801,7 +5738,6 @@ static void console_diag_task(void *arg)
                     printf("  'R':         Run RSSI & Inverse-Q4 Oracle Probe (G15..G81 sweep)\n");
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
                     printf("  'D'/'I'/'Y': Direct Gain V3 test / Direct Gain V1 / ARC V3\n");
-                    printf("  'y' / '1'..'5': AGC profile cycle / NATIVE, INIT, TUNED, HOLD, HOLD123\n");
 #else
                     printf("  'D'/'I'/'Y': Direct Gain V2 / Direct Gain V1 / ARC V3\n");
 #endif
@@ -5818,6 +5754,7 @@ static void console_diag_task(void *arg)
                     printf("  'e':         Toggle RX sample edge (POS/NEG)\n");
                     printf("  'v'/'o'/'O': Menu controls\n");
                     printf("  'd':         Select Phase8 FULL and reboot\n");
+                    printf("  'y':         Select Phase8 FINE (issue #123 fine IQ lanes) and reboot\n");
                     printf("=======================================================\n\n");
                 }
             }
@@ -5863,14 +5800,6 @@ esp_err_t video_start(void)
                  "'E' = P8ENV row, 'N' = reboot to firmware gain fallback",
                  (unsigned long)native.gain_status_reg,
                  (unsigned long)native.agc_ctrl_reg);
-        /* HOLD is not restored at boot until it is hardware-proven: a hang
-         * in HOLD must not become a boot loop. It is still one key away. */
-        uint8_t stored = rf_agc_profile_load();
-        agc_policy_restart(stored < AGC_PROFILE_COUNT && stored != AGC_PROFILE_HOLD &&
-                           stored != AGC_PROFILE_HOLD123 ?
-                           (agc_profile_t)stored : AGC_PROFILE_NATIVE);
-        ESP_LOGW(TAG, "AGC profile %s ('y' cycles, '1'..'4' select)",
-                 agc_profile_name(s_agc_policy.profile));
     }
 
     /* Zero the ring before starting. Flush to DMA-visible SRAM. */

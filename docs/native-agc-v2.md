@@ -242,47 +242,50 @@ hysteresis and retrigger controls, then measuring annulus/near-far recovery.
 The failed target-register sweeps do not justify promoting guessed writes.
 No CPU gain controller or guessed native policy patch is enabled here.
 
-## AGC policy profiles (`main/agc_policy.h`)
+## Why native AGC restarts, and what that rules out (2026-09-30)
 
-The target register for the native Q4 radius is still unknown (not in the
-disassembly notes, not in ESPARGOS esp-sdr), so the profiles use only the
-controls that are known: start gain `7094[8:2]`, RF saturation intervention
-`705C`, and the force bit. Each profile is selectable live and persisted
-(NVS `c5vrx/agc_prof`); NATIVE stays the default.
+**Measured.** The raw 80 MS/s RF dump words carry the RX gain index in bits
+20..27 (ESPARGOS esp-sdr word format; bits 28..31 are the AGC state
+machine). In one 102 us boot capture the gain index (bits 20..25) shows a
+new acquisition every ~25-50 us, i.e. one to two per 64 us video line, each
+a ~2.4 us walk in 0.6 us steps (e.g. 16 -> 18 -> 58 -> 34 -> 10) that ends on
+a *different* trapped gain each time (10, 28, 19). The old `7078` re-entry
+proxy (1-4/ms) undercounts this by an order of magnitude.
 
-| Serial | Profile | Writes | Aims at |
-|---|---|---|---|
-| `1` | NATIVE | none | production reference |
-| `2` | INIT | start gain only (RAM, not NVS) | restart swings: start = operating point + 6, re-evaluated each 1 s with 4-index hysteresis; 1 s without carrier restores the vendor start |
-| `3` | TUNED | INIT + `705C = 0` | as INIT, plus no RF-saturation re-trigger (esp-sdr does this for stable gain) |
-| `4` | HOLD | force bit | both root causes: pin at the native operating point after 0.5 s of carrier, then step one index per >= 0.3 s until uncentered P50 is 20..36 (P95 <= 64, clip < 20 pm); severe clip steps -2 within 0.1 s; 0.3 s without carrier releases the pin so native AGC climbs back to high gain |
+**Mechanism.** This is an 802.11 packet AGC: detection -> coarse acquisition
+from the start gain -> gain trapped for the "packet" -> reset on packet end
+or abort (WARP SISO AGC, US 7212798). A 25-50 us cycle matches preamble
+processing (STF/LTF/SIG ~20 us) followed by an abort and immediate re-detect
+on a carrier that never stops. The C5 ROM/libphy expose only start gain
+(`7094`), gain threshold (`713C`), saturation bytes (`7064`/`7114`), RF
+saturation intervention (`705C`), CCA (`701C`, `0x600A4C5C`) and rx-sense /
+packet-detect thresholds (`7010`/`7014`/`7044`/`70CC`/`7124`, `7068`,
+I2C pkdet); `phy_enable_agc` is `7030[29]` clear plus a `702C[23]` strobe.
+No in-packet tracking control exists: re-acquisition *is* the tracking.
+Suppressing detection leaves a fixed gain; keeping it keeps the restarts.
 
-`y` cycles. Retunes re-assert start gain and `705C` and drop any pin; a
-context change (channel, BW, offset) restarts the profile. P8ENV reports
-`agc_prof`, `agc_hold` (pinned index or -1), `agc_init`, `agc_rfsat_off` and
-`agc_writes`; the RF menu page shows the profile.
+**Picture.** The 2.4 us acquisitions (saturated, starting high) are the thin
+black / rainbow dashes; the different trapped gain per ~40 us segment is the
+line-to-line contrast/texture change. About 6% of samples are acquisition,
+which matches the 52 pm of Q4 samples outside |x| < 256 under native AGC.
 
-**HOLD is an explicit, opt-in exception to #121's "zero CPU gain writes".**
-It is justified by the bench result that a pinned gain gives a steady Q4
-circle with zero phase jumps, while native AGC keeps restarting mid-line and
-parks at P50 ~5-7. It never predicts gain from a dB model (index-to-dB is not
-linear); it steps and measures. `rf_set_rx_gain()` still refuses every other
-firmware gain write in native mode; the pin goes through
-`rf_native_policy_apply()` only.
+**Rejected.** Pinning the gain from firmware (the former HOLD/HOLD123
+profiles) is clean while the VTX is still but lags when it moves; it hides
+the cause behind a CPU control loop and was removed. Start-gain following
+(INIT) raised the re-entry rate and was removed too.
 
-Not yet validated on hardware: whether the state byte `706C[7:0]` is in the
-same index space as the force index (HOLD corrects any offset by closed-loop
-servoing), whether native AGC can rise above a lowered start gain (INIT then
-raises the start as the operating point climbs), and whether `705C = 0`
-risks overload on a very strong VTX.
-
-Test (VTX on a fixed channel and distance; ~2 min per round):
-
-```sh
-python tools/agc_ab.py capture --port COM10 --log agc_ab.log   # blind rating
-python tools/agc_ab.py analyze agc_ab.log
-```
-
-Repeat near, medium and at the range edge. Promote a profile only if it wins
-the blind picture votes at all distances without transport faults.
-`tools/test_agc_policy.c` covers the policy logic on the host.
+**Kept / next.**
+- `P8 FINE` (VIDEO OUTPUT menu, serial `y`): the PHASE8_FULL program on the
+  #123 fine lanes I/Q {9,7,6,5}. DIAG[14]/[15] (I4/I5) are proven bit-exact
+  with six-bit reference alignment (probe passes `CAND_123`, `I_BUS_4_9`;
+  the old 63-91% came from pass 1 locking fast I bits on Q[8:9] only).
+  Trapped samples fit the window; only acquisition samples fold, and those
+  are saturated garbage on the coarse lanes as well.
+- Probe builds print three full-word windows (`AGC_WORDS`) after the sweep;
+  `tools/analyze_agc_words.py` reports acquisition interval/duration/share,
+  gain paths, which state bits separate acquisition from trapped, and IQ
+  amplitude against the fine window. That state bit is the candidate hold
+  flag for an AGC-gated demodulator.
+- A per-sample guard with reseed fits two bundles only in the pair-LUT
+  architecture (`fm_golden_hard_guard.bsasm` pattern); PHASE8_FULL uses
+  counter arithmetic, which cannot share a bundle with a branch.

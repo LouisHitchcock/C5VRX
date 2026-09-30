@@ -122,23 +122,12 @@ typedef struct {
     uint32_t elapsed_us;
 } rf_native_gain_stats_t;
 void rf_native_gain_stats(unsigned samples, rf_native_gain_stats_t *out);
-/* agc_policy.h actuators (native mode only; no-op otherwise). initgain is
- * RAM-only (0 = persisted override / vendor); rfsat_off zeroes 0x600A705C;
- * force pins the gain while the vendor AGC stays enabled. All are
- * re-asserted after a retune, except the pin, which a retune drops. */
-void rf_native_policy_apply(uint8_t initgain, bool rfsat_off, bool force, uint8_t force_idx);
-bool rf_native_policy_forced(uint8_t *idx);
-uint32_t rf_native_policy_writes(void);
-/* Persisted agc_profile_t (NVS c5vrx/agc_prof); 0 = NATIVE. */
-uint8_t rf_agc_profile_load(void);
-esp_err_t rf_agc_profile_save(uint8_t profile);
-
 /* Median native AGC state byte (706C[7:0]) over ~0.4 ms: the gain index the
  * hardware applied. Telemetry only (signal meter), never a control input. */
 uint8_t rf_native_gain_index(void);
 /* Issue #123 sign-preserving fine IQ lanes (I/Q {9,7,6,5}); false = the
- * production top four bits. Folds above |x| >= 256 per axis, so only a
- * pinned, clip-free gain (AGC profile HOLD123) may select it. */
+ * production top four bits. Folds above |x| >= 256 per axis. Selected by
+ * the P8 FINE demodulator only. */
 void rf_set_fine_iq(bool fine);
 bool rf_fine_iq_active(void);
 bool rf_native_agc_active(void);
