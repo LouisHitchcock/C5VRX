@@ -206,3 +206,15 @@ archive initializer setting it. This reinforces the audit's warning about
 actual vendor/ROM paths and later configuration. Carrier-present readback
 is still needed; no watchdog change or noise improvement is claimed. Raw
 status remains undecoded and must not be called a timeout/event counter.
+
+Carrier-present follow-up on the same A1 setup also read `ctrl=0x00000000`
+and `reset_en=0`, with `cfg=0x801800aa`, vendor acquisition profile 0,
+native AGC enabled and P8 FULL. The native polling telemetry still reported
+`agc_state_sw_per_ms_x10=233` and `agc_start_reentry_per_ms_x10=58`;
+IQ `p50=7`, `clip_pm=24`, `coh_pm=340`, signal strength 91. These are
+short register-poll/coarse-IQ snapshots, not full-word event durations.
+The reset-block toggle was **not applied** because the bit was already off.
+Consequently disabling this particular reset bit offers no change to this
+live baseline and cannot explain away the observed reacquisitions. This
+does not rule out other reset/packet-abort/retrigger paths. Vendor remains
+active; no picture improvement or calibrated timing reduction is claimed.
