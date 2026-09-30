@@ -36,13 +36,15 @@ endmenu
 
 menu "C5VRX experimental video demodulators"
     config C5VRX_PHASE8_HR_LIVE_TEST
-        bool "Enable Golden / Phase8 FULL / Phase8 VIDEO32 selection"
+        bool "Enable live demodulator selection including experimental rail guard"
         default y
         help
             Native AGC gain ownership is independent of this selector.
             Phase8 FULL preserves the 8-bit endpoint arithmetic baseline.
             Phase8 VIDEO32 is an opt-in bounded video-transfer candidate using
             32 Phase8-derived endpoint states. Golden remains the baseline.
+            AGC GUARD is an opt-in coarse-IQ rail HOLD/RESEED experiment,
+            not calibrated gain-switch compensation or AGC-state decoding.
             All modes use two bundles and 6BIT@40 output. No >180-degree
             winding recovery is claimed.
 

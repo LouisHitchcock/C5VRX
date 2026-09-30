@@ -54,6 +54,7 @@
 #include "hal/usb_serial_jtag_ll.h"
 #include "bs_relative_worker_probe.h"
 #include "bs_relative_middle_probe.h"
+#include "phy_phase_tap_probe.h"
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -150,6 +151,7 @@ BITSCRAMBLER_PROGRAM(s_fm_relative_golden_program, "fm_relative_golden");
 BITSCRAMBLER_PROGRAM(s_fm_phase5_360_program, "fm_phase5_360");
 BITSCRAMBLER_PROGRAM(s_fm_phase8_hr_live_program, "fm_phase8_hr_live");
 BITSCRAMBLER_PROGRAM(s_fm_phase8_video_program, "fm_phase8_video");
+BITSCRAMBLER_PROGRAM(s_fm_agc_guard_program, "fm_agc_guard");
 BITSCRAMBLER_PROGRAM(s_fm_fsm_capture_program, "fm_phase5_fsm_capture");
 BITSCRAMBLER_PROGRAM(s_fm4_program, "fm4");
 
@@ -1251,7 +1253,8 @@ static const char *output_mode_name(void)
 #define DEMOD_LIVE_NVS_KEY "demod_live"
 /* PHASE8_FINE = the PHASE8_FULL program on the issue #123 fine IQ lanes
  * (sign, bits 7..5): same signed-nibble LUT, twice the angular resolution. */
-typedef enum { LIVE_PHASE8_FULL, LIVE_GOLDEN, LIVE_PHASE8_VIDEO, LIVE_PHASE8_FINE } live_demod_t;
+typedef enum { LIVE_PHASE8_FULL, LIVE_GOLDEN, LIVE_PHASE8_VIDEO, LIVE_PHASE8_FINE,
+               LIVE_AGC_GUARD } live_demod_t;
 static live_demod_t s_live_demod = LIVE_PHASE8_FULL;
 
 static const char *demod_mode_name(void)
@@ -1259,6 +1262,7 @@ static const char *demod_mode_name(void)
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_live_demod == LIVE_GOLDEN ? "PHASE5" :
            s_live_demod == LIVE_PHASE8_VIDEO ? "P8 VIDEO32" :
+           s_live_demod == LIVE_AGC_GUARD ? "AGC GUARD" :
            s_live_demod == LIVE_PHASE8_FINE ? "P8 FINE" : "PHASE8 FULL";
 #else
     return "PHASE5";
@@ -1270,6 +1274,7 @@ static const char *live_demod_tag(void)
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_live_demod == LIVE_GOLDEN ? "GOLDEN" :
            s_live_demod == LIVE_PHASE8_VIDEO ? "PHASE8_VIDEO32" :
+           s_live_demod == LIVE_AGC_GUARD ? "AGC_RAIL_GUARD" :
            s_live_demod == LIVE_PHASE8_FINE ? "PHASE8_FINE" : "PHASE8_FULL";
 #else
     return s_demod_mode == DEMOD_MODE_TRAJECTORY_V2 ? "TRAJ_V2" : "GOLDEN";
@@ -1288,7 +1293,7 @@ static live_demod_t demod_boot_requested(void)
             value = old == 1u ? LIVE_GOLDEN : LIVE_PHASE8_FULL;
     }
     nvs_close(handle);
-    return value <= LIVE_PHASE8_FINE ? (live_demod_t)value : LIVE_PHASE8_FULL;
+    return value <= LIVE_AGC_GUARD ? (live_demod_t)value : LIVE_PHASE8_FULL;
 }
 
 static esp_err_t persist_live_demod(live_demod_t mode)
@@ -3950,7 +3955,7 @@ static void menu_draw_video_page(void)
     bool experimental = s_output_mode == VIDEO_OUTPUT_4BIT_80;
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     experimental = experimental || s_live_demod == LIVE_PHASE8_VIDEO ||
-                   s_live_demod == LIVE_PHASE8_FINE;
+                   s_live_demod == LIVE_PHASE8_FINE || s_live_demod == LIVE_AGC_GUARD;
 #endif
     menu_draw_page_title("VIDEO OUTPUT", experimental ? "EXPERIMENTAL" : "DEFAULT");
     menu_ui_value_box(100, 22, 130, "DAC", output_mode_name());
@@ -4011,6 +4016,7 @@ static void start_flight_demodulator(void)
     ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
                                              s_live_demod == LIVE_GOLDEN ? s_fm_program :
                                              s_live_demod == LIVE_PHASE8_VIDEO ? s_fm_phase8_video_program :
+                                             s_live_demod == LIVE_AGC_GUARD ? s_fm_agc_guard_program :
                                              s_fm_phase8_hr_live_program));
     /* Lanes switch before the demodulator starts, never mid-stream. */
     rf_set_fine_iq(s_live_demod == LIVE_PHASE8_FINE);
@@ -4468,7 +4474,8 @@ static void handle_button_long_click(void)
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
             live_demod_t next = s_live_demod == LIVE_GOLDEN ? LIVE_PHASE8_FULL :
                                s_live_demod == LIVE_PHASE8_FULL ? LIVE_PHASE8_FINE :
-                               s_live_demod == LIVE_PHASE8_FINE ? LIVE_PHASE8_VIDEO : LIVE_GOLDEN;
+                               s_live_demod == LIVE_PHASE8_FINE ? LIVE_PHASE8_VIDEO :
+                               s_live_demod == LIVE_PHASE8_VIDEO ? LIVE_AGC_GUARD : LIVE_GOLDEN;
             esp_err_t err = persist_live_demod(next);
             if (err == ESP_OK) s_live_demod = next;
             printf("[MENU: DEMOD] %s (applies on exit) err=%s\n",
@@ -5442,6 +5449,26 @@ static void console_diag_task(void *arg)
                     lab_select_demod_boot(LIVE_PHASE8_FULL);
                 } else if (c == 'y') {
                     lab_select_demod_boot(LIVE_PHASE8_FINE);
+                } else if (c == '!') {
+                    lab_select_demod_boot(LIVE_AGC_GUARD);
+                } else if (c == '@') {
+                    esp_err_t capture_err = phy_agc_capture_arm();
+                    printf("C5VRX_AGC_CAPTURE_ARMED err=%s action=reboot\n",
+                           esp_err_to_name(capture_err));
+                    if (capture_err == ESP_OK) {
+                        fflush(stdout);
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                        esp_restart();
+                    }
+                } else if (c == '{' || c == '}') {
+                    esp_err_t acq_err = rf_native_acq_arm(c == '{');
+                    printf("C5VRX_NATIVE_ACQ_ARMED action=%s err=%s\n",
+                           c == '{' ? "next_profile" : "vendor", esp_err_to_name(acq_err));
+                    if (acq_err == ESP_OK) {
+                        fflush(stdout);
+                        vTaskDelay(pdMS_TO_TICKS(120));
+                        esp_restart();
+                    }
                 } else if (c == 'w') {
                     /* Cycle the persisted native AGC start gain: vendor -> 74
                      * -> 66 -> vendor. Candidate fix for restart jolts. */
@@ -5805,6 +5832,9 @@ static void console_diag_task(void *arg)
                     printf("  'K':         Erase stored PHY calibration and reboot for a fresh vendor calibration\n");
                     printf("  'X':         Cycle RX profile (V2/V1/ARC V3)\n");
                     printf("  'u'/'d':     Golden <-> Phase8 VIDEO32 / original Phase8 FULL (persist + reboot)\n  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
+                    printf("  '!':         Experimental coarse-IQ rail HOLD/RESEED (persist + reboot)\n");
+                    printf("  '@':         One-shot full IQ/gain/state boot capture (reboot; video resumes)\n");
+                    printf("  '{' / '}':   Native acquisition field next / vendor, capture + reboot\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");
                     printf("  '+' / '-':   Manual gain step (+/-2)\n");

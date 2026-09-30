@@ -304,6 +304,75 @@ static const agc_offset_field_t s_agc_offset_fields[] = {
 #define AGC_OFFSET_FIELDS (sizeof(s_agc_offset_fields) / sizeof(s_agc_offset_fields[0]))
 #define AGC_OFFSET_NVS_FIELD "agc_off_f"
 #define AGC_OFFSET_NVS_DB    "agc_off_db"
+/* Explicit native-acquisition experiment. Field semantics are inferred from
+ * vendor writes and measured acquisition duration, not named timing units.
+ * Never force gain or disable AGC. One field changes per boot profile. */
+static const agc_tune_t s_native_acq_profiles[] = {
+    {"vendor",     0u,          0u,  0u,  0u},
+    {"7034_5",     0x600A7034u, 24u, 7u,  5u},
+    {"7034_2",     0x600A7034u, 24u, 7u,  2u},
+    {"7034_1",     0x600A7034u, 24u, 7u,  1u},
+    {"7158_6",     0x600A7158u,  0u, 7u,  6u},
+    {"7158_2",     0x600A7158u,  0u, 7u,  2u},
+    {"7158_1",     0x600A7158u,  0u, 7u,  1u},
+    {"71B0_15",    0x600A71B0u, 21u, 7u, 15u},
+    {"71B0_5",     0x600A71B0u, 21u, 7u,  5u},
+    {"71B0_1",     0x600A71B0u, 21u, 7u,  1u},
+};
+#define NATIVE_ACQ_COUNT (sizeof(s_native_acq_profiles) / sizeof(s_native_acq_profiles[0]))
+static uint8_t s_native_acq_profile;
+static uint32_t s_native_acq_before, s_native_acq_after;
+
+static uint8_t native_acq_load(void)
+{
+    nvs_handle_t handle;
+    uint8_t value = 0;
+    if (nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return 0;
+    (void)nvs_get_u8(handle, "agc_acq", &value);
+    nvs_close(handle);
+    return value < NATIVE_ACQ_COUNT ? value : 0;
+}
+
+static void native_acq_apply(void)
+{
+    const agc_tune_t *p = &s_native_acq_profiles[s_native_acq_profile];
+    if (!s_native_agc || !p->reg) return;
+    s_native_acq_before = REG32(p->reg);
+    uint32_t mask = ((1u << p->width) - 1u) << p->shift;
+    REG32(p->reg) = (s_native_acq_before & ~mask) | ((p->raw << p->shift) & mask);
+    s_native_acq_after = REG32(p->reg);
+}
+
+void rf_native_acq_report(void)
+{
+    const agc_tune_t *p = &s_native_acq_profiles[s_native_acq_profile];
+    printf("AGC_ACQ idx=%u count=%u name=%s native=%u reg=0x%08lx "
+           "before=0x%08lx after=0x%08lx ch=%s mhz=%u\n",
+           s_native_acq_profile, (unsigned)NATIVE_ACQ_COUNT, p->name,
+           s_native_agc ? 1u : 0u, (unsigned long)p->reg,
+           (unsigned long)s_native_acq_before, (unsigned long)s_native_acq_after,
+           rf_get_current_channel()->name, rf_get_frequency_mhz());
+}
+
+/* Store a complete, one-shot boot measurement request in one transaction.
+ * Reset older sweep/start-gain overrides to make each field comparison useful.
+ * The selected native profile remains active for a live picture comparison. */
+esp_err_t rf_native_acq_arm(bool next)
+{
+    if (!s_native_agc) return ESP_ERR_INVALID_STATE;
+    uint8_t value = next ? (uint8_t)((s_native_acq_profile + 1u) % NATIVE_ACQ_COUNT) : 0;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, "agc_acq", value);
+    if (err == ESP_OK) err = nvs_set_u8(handle, "agc_capture", 1u);
+    if (err == ESP_OK) err = nvs_set_u8(handle, AGC_TUNE_NVS_KEY, 0u);
+    if (err == ESP_OK) err = nvs_set_u8(handle, NATIVE_INITGAIN_NVS_KEY, 0u);
+    if (err == ESP_OK) err = nvs_set_u8(handle, AGC_OFFSET_NVS_DB, 0u);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
 static uint8_t s_agc_offset_field;
 static int8_t s_agc_offset_db;
 static int8_t s_agc_offset_vendor[AGC_OFFSET_FIELDS];
@@ -969,6 +1038,7 @@ esp_err_t rf_start(void)
     if (err != ESP_OK) return err;
     s_native_agc = native_agc_boot_requested();
     s_agc_tune = agc_tune_load();
+    s_native_acq_profile = s_agc_tune == 0 ? native_acq_load() : 0;
     agc_offset_load();
     s_native_initgain = native_initgain_load();
     s_pll_track = pll_track_boot_requested();
@@ -1093,6 +1163,7 @@ esp_err_t rf_start(void)
         native_initgain_apply();
         agc_tune_apply();
         agc_offset_apply();
+        native_acq_apply();
     } else {
         phy_force_rx_gain(true, 52);
     }
@@ -1441,6 +1512,7 @@ esp_err_t rf_set_channel(size_t index)
         native_initgain_apply();
         agc_tune_apply();
         agc_offset_apply();
+        native_acq_apply();
     } else {
         phy_disable_agc();
         phy_rfagc_disable();

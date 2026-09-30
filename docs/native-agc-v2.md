@@ -433,3 +433,128 @@ The available `probe_boot.log` has packed lane-sweep captures, not complete
 `AGC_WORDS` windows. It cannot establish a transition-error model. A new
 full-word capture is required before claiming a calibrated cancellation or
 an optimal concealment interval.
+
+## Initial implementation: rail HOLD/RESEED and calibration tools
+
+`AGC GUARD` is an opt-in lab demodulator, selected via VIDEO OUTPUT or serial
+`!` (persist and reboot). It uses coarse Q4/I4 and the same codebook and
+transfer as VIDEO32, so VIDEO32 is its unguarded comparison. VIDEO32 itself
+was reported by the operator to provide no useful filtering of this grain.
+The new operation is selective HOLD/RESEED; no filtering benefit is inferred
+from the reused codebook. Default remains PHASE8 FULL (`d` to restore).
+
+The raw-IQ LUT flags an endpoint if either signed nibble is -8 or +7. These
+are rail-risk cells, not proven ADC clipping or an acquisition flag. Other
+cells, including central cells, are not rejected. A flagged endpoint holds
+the last emitted DAC value. The first subsequent unflagged endpoint also
+holds the DAC while seeding phase history; the next reliable pair resumes
+normal discrimination. Both middle samples and rejected endpoints continue
+to be consumed at the existing rate; this does not implement adjacent-40 FM.
+Every branch takes exactly two bundles per output pair. The program uses
+five instruction slots, a 1024-entry 16-bit LUT, duplicated 20 MS/s unique
+DAC values and continuous state across DMA boundaries. Startup values are
+untrusted until the pipeline has acquired reliable endpoints.
+
+This detector can reject legitimate outer-cell samples, and can miss AGC
+errors that do not reach a rail cell. Sustained flagged reception holds the
+output indefinitely and can lose sync. It cannot detect fine-lane folding,
+so this mode explicitly selects coarse lanes. It is not calibrated phase
+compensation, does not change AGC gain/timing, and has no proven picture
+improvement or sustained-hardware throughput validation yet.
+
+Serial `@` explicitly arms one full-word boot capture and reboots. The NVS
+request is cleared before capture, the offset is zeroed, and eight separate
+8192-word IQ/gain/state windows are printed before normal video resumes.
+The existing probe capture is reused; the critical SRAM-ownership interval
+is in IRAM and the stop pointer is read after disabling the writer. Dump
+control and SRAM ownership are restored. USB never paces live video; this
+measurement intentionally runs before starting live DMA. The RF dump clock
+is still assumed to be 80 MS/s, consistent with previous measurements.
+
+```sh
+python tools/agc_transition.py capture --port COM10 --log tone-train.log
+python tools/agc_transition.py calibrate tone-train.log --tone-khz 0 --output tone.json
+python tools/agc_transition.py capture --port COM10 --log tone-eval.log
+python tools/agc_transition.py evaluate tone-eval.log --model tone.json
+```
+
+**Calibration requires an unmodulated tone of known baseband frequency.**
+A constant video image still contains sync and colour burst and does not
+satisfy that requirement. Do not use an ordinary VTX video waveform with
+`--tone-khz 0`. Known waveform/reference alignment for a video test-pattern
+calibration is not implemented. A connected board alone cannot supply the
+required calibration stimulus.
+
+The offline model learns a phase-error response per ordered gain transition
+over -4..+32 samples, keeps only entries observed at least eight times with
+small circular dispersion, and excludes intervals crossing another switch.
+It distinguishes signed 10-bit endpoint rail risk from the +/-256 fine-lane
+limit. Parsing requires complete ended windows with ordered unique chunks;
+windows are never concatenated. Duplicate training windows are removed,
+and evaluation rejects training hashes. Tone residual RMS is not a video
+quality score. Models are not loaded into the live firmware: aligned gain
+metadata and a demonstrated realtime correction path are still required.
+
+Build status at implementation: the pinned ESP-IDF v6.0.2 C5 assembler
+accepted the five-instruction guard. Full firmware compilation and flashing
+remain pending because this session cannot access Docker/WSL. No firmware
+image or bench validation is claimed from assembly alone.
+
+## Native acquisition acceleration experiment
+
+The current priority is to shorten the native hardware gain walk itself for
+continuous analog FM. Native AGC stays enabled and makes every gain decision.
+The 0.6 us observation is gain-step spacing within an acquisition, not the
+period of an entire acquisition. Improving that spacing must also reduce the
+total time with bad IQ; a shorter walk with more restarts is not automatically
+an improvement. Settling, false acquisitions, trapped IQ quality and picture
+must be measured as well.
+
+The pinned ESP-IDF [PHY library submodule](https://github.com/espressif/esp-phy-lib/tree/59c1234e929212aec0fdda75769b759951235536)
+provides C5 `libphy.a`; the gain walk is a hardware state machine rather than
+a public C loop with a configurable software delay. The public
+[C5 PHY initialization data](https://github.com/espressif/esp-idf/blob/v6.0.2/components/esp_phy/esp32c5/phy_init_data.c)
+does not expose a named 0.6 us acquisition-step setting. Vendor register
+initialization can be overridden after calibration without replacing native
+gain ownership. This implementation uses that route; it does not patch or
+redistribute a modified vendor binary.
+
+The native acquisition profiles change one seven-bit field per boot:
+
+| Index | Profile | Earlier acquisition-duration evidence |
+|---|---|---|
+| 0 | vendor | baseline ~3.4 us in the original short sweep |
+| 1 / 2 / 3 | `7034[30:24]` = 5 / 2 / 1 | 5 gave ~1.8 us; 2 and 1 unmeasured |
+| 4 / 5 / 6 | `7158[6:0]` = 6 / 2 / 1 | 6 gave ~2.1 us; 2 and 1 unmeasured |
+| 7 / 8 / 9 | `71B0[27:21]` = 15 / 5 / 1 | 15 gave ~2.4 us; 5 and 1 unmeasured |
+
+These are acquisition-policy candidates, not proven time constants. Smaller
+values are a hypothesis for faster acquisition; no value is labelled 0.1 us.
+Zero is excluded because an undocumented field's zero behavior is unknown.
+The earlier captures are too short to establish a repeatable improvement.
+
+Serial `{` advances to the next profile, atomically clears the older sweep,
+start-gain and offset overrides, requests eight boot captures, and reboots.
+Serial `}` does the same with vendor profile 0. The profile is persisted for
+live picture comparison, applies after vendor initialization and on retunes,
+and defaults to vendor when no profile was explicitly selected. Older probe
+sweep selection takes precedence rather than silently combining candidates.
+`AGC_ACQ` records index, field, register before/after, channel and frequency.
+Default demodulation is unaffected; compare with the same demodulator and RF
+setup throughout. Restore vendor after each unsuccessful candidate.
+
+```sh
+python tools/agc_transition.py capture --timing vendor --log vendor.log
+python tools/agc_transition.py capture --timing next --log 7034-5.log
+python tools/agc_transition.py report vendor.log 7034-5.log
+```
+
+The timing report measures gain-step intervals *within* each change cluster,
+cluster duration and rate, occupied-sample share, 10-bit endpoint rails and
+fine-lane overflow. Capture windows are never joined to create fictitious
+intervals. Grouping changes separated by at most 4 us is an event proxy, not
+a decoded acquisition state. Last-change-minus-first-change omits final
+settling, which still needs phase/state correlation. Unlike phase calibration,
+this timing comparison can use a normal VTX kept on one fixed channel.
+
+No fast profile has yet been measured on hardware or enabled by default.

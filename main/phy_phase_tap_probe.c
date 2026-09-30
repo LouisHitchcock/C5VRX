@@ -15,6 +15,10 @@
 #include "soc/gpio_reg.h"
 #include "soc/gpio_sig_map.h"
 #include "modem/modem_syscon_reg.h"
+#include "nvs.h"
+#include "rf.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define DIAG_FIX_REG      0x600a9404u
 #define DIAG_EXCHANGE_REG 0x600a9408u
@@ -29,7 +33,7 @@ static const uint8_t s_pins[CAPTURE_WIDTH] = {1, 0, 25, 7, 10, 5, 3, 4};
 static const uint8_t s_iq_lanes[CAPTURE_WIDTH] = {6, 7, 8, 9, 16, 17, 18, 19};
 static uint8_t s_trace[TRACE_SAMPLES];
 
-static inline void io_fence(void)
+static inline __attribute__((always_inline)) void io_fence(void)
 {
     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
 }
@@ -93,7 +97,7 @@ static void capture_and_print(unsigned config, unsigned first, bool reference)
 static const uint8_t s_q6_lanes[CAPTURE_WIDTH] = {4, 5, 6, 7, 8, 9, 16, 17};
 static RTC_DATA_ATTR uint8_t s_gpio_packed[Q6_GPIO_SAMPLES];
 
-static inline uint32_t get_cycle_count(void)
+static inline __attribute__((always_inline)) uint32_t get_cycle_count(void)
 {
     uint32_t c;
     __asm__ __volatile__("rdcycle %0" : "=r"(c));
@@ -309,9 +313,8 @@ static void q6_dump_probe_run(void)
  * state machine in bits 28..31 -- per sample at 80 MS/s. Answers which state
  * bits mark a native re-acquisition (tools/analyze_agc_words.py). */
 #define AGC_WORD_WINDOWS 3u
-static void agc_words_run(void)
+static uint32_t IRAM_ATTR agc_words_freeze(void)
 {
-    for (unsigned n = 0; n < AGC_WORD_WINDOWS; ++n) {
         uint32_t saved_mstatus;
         __asm__ __volatile__("csrrc %0, mstatus, %1"
                              : "=r"(saved_mstatus) : "r"(0x8u) : "memory");
@@ -327,14 +330,22 @@ static void agc_words_run(void)
         /* 8192 words at ~80 MS/s = 102 us; wait 150 us so the ring wraps. */
         const uint32_t t0 = get_cycle_count();
         while (get_cycle_count() - t0 < 150u * 240u) { }
-        const uint32_t stop_ptr = REG32(DUMP_PTR_MODE) & (DUMP_WORDS - 1u);
         REG32(DUMP_CTRL) = ctrl;
         io_fence();
+        /* Read the pointer after stopping, not while the ring still advances. */
+        const uint32_t stop_ptr = REG32(DUMP_PTR_MODE) & (DUMP_WORDS - 1u);
         REG32(HP_SRAM_USAGE) = saved_sram_usage;
         io_fence();
         if ((saved_mstatus & 0x8u) != 0u)
             __asm__ __volatile__("csrs mstatus, %0" : : "r"(0x8u) : "memory");
+        return stop_ptr;
+}
 
+static void agc_words_run(unsigned windows)
+{
+    const uint32_t saved_ctrl = REG32(DUMP_CTRL);
+    for (unsigned n = 0; n < windows; ++n) {
+        const uint32_t stop_ptr = agc_words_freeze();
         printf("AGC_WORDS BEGIN window=%u words=%u stop_ptr=%" PRIu32 "\n",
                n, DUMP_WORDS, stop_ptr);
         volatile const uint32_t *dump_sram = (volatile const uint32_t *)DUMP_BASE_ADDR;
@@ -346,9 +357,43 @@ static void agc_words_run(void)
         }
         printf("AGC_WORDS END window=%u\n", n);
         /* Separate the windows in time so they see different restarts. */
-        const uint32_t t1 = get_cycle_count();
-        while (get_cycle_count() - t1 < 2000u * 240u) { }
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
+    REG32(DUMP_CTRL) = saved_ctrl;
+    io_fence();
+}
+
+esp_err_t phy_agc_capture_arm(void)
+{
+    if (!rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx", NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(handle, "agc_capture", 1u);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+bool phy_agc_capture_boot_run(void)
+{
+    nvs_handle_t handle;
+    uint8_t armed = 0;
+    if (nvs_open("c5vrx", NVS_READWRITE, &handle) != ESP_OK) return false;
+    (void)nvs_get_u8(handle, "agc_capture", &armed);
+    if (!armed) { nvs_close(handle); return false; }
+    /* Clear first: interrupted capture must not become a persistent boot mode. */
+    esp_err_t err = nvs_erase_key(handle, "agc_capture");
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK || !rf_native_agc_active()) return false;
+    rf_agc_offset_set(0);
+    vTaskDelay(pdMS_TO_TICKS(8000));
+    printf("AGC_CAPTURE BEGIN windows=8 native=1 offset_db=0 boot_only=1\n");
+    rf_native_acq_report();
+    agc_words_run(8u);
+    printf("AGC_CAPTURE END restored=1\n");
+    return true;
 }
 
 static void all_diag_sweep_run(void)
@@ -448,7 +493,7 @@ static void all_diag_sweep_run(void)
     /* Also execute baseline Q6 dump format for backwards compatibility */
     q6_dump_probe_run();
 
-    agc_words_run();
+    agc_words_run(AGC_WORD_WINDOWS);
 
     /* Restore reference IQ routing */
     route_lanes(0, true);

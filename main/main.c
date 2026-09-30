@@ -28,12 +28,17 @@ void app_main(void)
     bs_addctia_probe_run();
 #endif
     ESP_ERROR_CHECK(rf_start());
+    bool agc_captured = phy_agc_capture_boot_run();
 #if CONFIG_C5VRX_PHY_PHASE_TAP_PROBE
     /* Give the host time to reopen the USB console after reset, otherwise
      * the boot-only report is printed before anyone listens. */
-    vTaskDelay(pdMS_TO_TICKS(8000));
-    rf_agc_tune_report();
-    phy_phase_tap_probe_run();
+    if (!agc_captured) {
+        vTaskDelay(pdMS_TO_TICKS(8000));
+        rf_agc_tune_report();
+        phy_phase_tap_probe_run();
+    }
+#else
+    (void)agc_captured;
 #endif
     ESP_ERROR_CHECK(video_start());
     /* Hardware pipeline is running. Application has nothing more to do. */
