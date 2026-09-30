@@ -2187,8 +2187,8 @@ static void p8env_capture_report(void)
            "hard_central_pm=%u hard_outer_pm=%u central_hard_share_pm=%u class=%s "
            "radius_pm=%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u "
            "delta_pm=%u/%u/%u/%u/%u/%u/%u/%u/%u "
-           "strength=%d rx_gain=%u agc_prof=%s agc_hold=%d agc_init=%u agc_rfsat_off=%u agc_writes=%lu sync_q=%d std_valid=%u rx_ovf=%lu tx_empty=%lu gdma_in=%lu gdma_out=%lu "
-           "bs_empty=%lu bs_eof=%lu\n",
+           "sync_q=%d std_valid=%u rx_ovf=%lu tx_empty=%lu gdma_in=%lu gdma_out=%lu "
+           "bs_empty=%lu bs_eof=%lu",
            (long long)(esp_timer_get_time() / 1000),
            rf_get_current_channel()->name, (unsigned)rf_get_frequency_mhz(),
            native_after.active ? 1u : 0u,
@@ -2217,11 +2217,6 @@ static void p8env_capture_report(void)
            e.delta_pm[0], e.delta_pm[1], e.delta_pm[2], e.delta_pm[3],
            e.delta_pm[4], e.delta_pm[5], e.delta_pm[6], e.delta_pm[7],
            e.delta_pm[8],
-           s_signal_strength, (unsigned)s_rx_gain_index,
-           agc_profile_name(s_agc_policy.profile),
-           s_agc_policy.cmd.force ? (int)s_agc_policy.cmd.force_idx : -1,
-           (unsigned)rf_native_initgain(), s_agc_policy.cmd.rfsat_off ? 1u : 0u,
-           (unsigned long)rf_native_policy_writes(),
            s_last_sync_quality, s_detected_video_std_valid ? 1u : 0u,
            (unsigned long)t.parl_rx_wovf_count,
            (unsigned long)t.parl_tx_rempty_count,
@@ -2229,6 +2224,15 @@ static void p8env_capture_report(void)
            (unsigned long)t.gdma_out_fault_count,
            (unsigned long)t.bs_fifo_empty_count,
            (unsigned long)t.bs_eof_overload_count);
+    /* Same row, second call: this printf already takes ~90 arguments on the
+     * small console stack. */
+    printf(" strength=%d rx_gain=%u agc_prof=%s agc_hold=%d agc_init=%u "
+           "agc_rfsat_off=%u agc_writes=%lu reset=%d\n",
+           s_signal_strength, (unsigned)s_rx_gain_index,
+           agc_profile_name(s_agc_policy.profile),
+           s_agc_policy.cmd.force ? (int)s_agc_policy.cmd.force_idx : -1,
+           (unsigned)rf_native_initgain(), s_agc_policy.cmd.rfsat_off ? 1u : 0u,
+           (unsigned long)rf_native_policy_writes(), (int)esp_reset_reason());
 }
 
 /* Read-only raw Q4/I4 dump ('Q'): one completed-descriptor probe, i.e. four
@@ -5945,7 +5949,8 @@ esp_err_t video_start(void)
 #endif
 
     /* Start interactive console for on-demand diagnostics (zero periodic CPU/bus traffic) */
-    xTaskCreate(console_diag_task, "console_diag", 3072, NULL, 1, NULL);
+    /* 6 KiB: P8ENV / LAB_ROW printf calls take ~90 arguments each. */
+    xTaskCreate(console_diag_task, "console_diag", 6144, NULL, 1, NULL);
 
     /* Start dedicated Analog Video AGC engine (slow physical actuator). */
     xTaskCreate(analog_agc_task, "analog_agc", 8192, NULL, 3, NULL);
