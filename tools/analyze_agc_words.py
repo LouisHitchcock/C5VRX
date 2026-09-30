@@ -78,6 +78,7 @@ def analyze(windows, merge_us=4.0):
     acq_state, trap_state = [], []
     acq_mask_all, amp_trap, amp_acq = [], [], []
     starts, durations, paths = [], [], []
+    segments = []   # (gain, samples, mean I, mean Q, radius) per trapped stretch
     total = 0
     for words in windows:
         i, q, gain, state = fields(words)
@@ -92,6 +93,16 @@ def analyze(windows, merge_us=4.0):
             paths.append(gain[max(0, a - 1):b + 1][np.r_[True, np.diff(gain[max(0, a - 1):b + 1]) != 0]].tolist())
         acq_state.append(state[acq])
         trap_state.append(state[~acq])
+        # Trapped stretches: DC offset and radius per gain state. A PHY that
+        # calibrates DC per gain index shows a different IQ centre per stretch
+        # when the tap sits before that correction.
+        edges = np.flatnonzero(np.diff(acq.astype(np.int8)) != 0) + 1
+        bounds = np.r_[0, edges, n]
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            if not acq[a] and b - a >= 400:
+                segments.append((int(np.bincount(gain[a:b]).argmax()), b - a,
+                                 float(i[a:b].mean()), float(q[a:b].mean()),
+                                 float(np.median(np.hypot(i[a:b], q[a:b])))))
         amp = np.maximum(np.abs(i), np.abs(q))
         amp_trap.append(amp[~acq])
         amp_acq.append(amp[acq])
@@ -121,6 +132,7 @@ def analyze(windows, merge_us=4.0):
         "interval_us": intervals, "duration_us": np.array(durations), "paths": paths,
         "state_acq": hist(acq_state), "state_trap": hist(trap_state),
         "state_bits": separating,
+        "segments": segments,
         "trap_amp_p50": float(np.median(amp_trap)) if len(amp_trap) else None,
         "trap_amp_p99": float(np.percentile(amp_trap, 99)) if len(amp_trap) else None,
         "trap_out256": float((amp_trap >= 256).mean()) if len(amp_trap) else None,
@@ -143,6 +155,14 @@ def report(r):
     for bit, a, t in r["state_bits"]:
         tag = "  <- separates" if abs(a - t) >= 0.8 else ""
         print(f"  state bit {bit}: P(1|acq)={a:.3f} P(1|trapped)={t:.3f}{tag}")
+    if r["segments"]:
+        print("trapped stretches (gain, us, DC I, DC Q, radius):")
+        for g, n, di, dq, rad in r["segments"][:12]:
+            print(f"  gain {g:3d}  {n / FS_HZ * 1e6:6.1f} us  DC ({di:+6.1f},{dq:+6.1f})  radius {rad:6.1f}")
+        dcs = np.array([(di, dq) for _, _, di, dq, _ in r["segments"]])
+        rads = np.array([rad for *_, rad in r["segments"]])
+        print(f"  DC spread between stretches: {np.ptp(dcs[:, 0]):.1f} / {np.ptp(dcs[:, 1]):.1f} codes; "
+              f"radius spread {np.ptp(rads):.1f} codes")
     if r["trap_amp_p50"] is not None:
         print(f"trapped max(|I|,|Q|): p50 {r['trap_amp_p50']:.0f} p99 {r['trap_amp_p99']:.0f} "
               f"codes; outside +-256: {1000 * r['trap_out256']:.1f} pm")

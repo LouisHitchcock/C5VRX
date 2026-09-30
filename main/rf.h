@@ -129,6 +129,9 @@ uint8_t rf_native_gain_index(void);
  * production top four bits. Folds above |x| >= 256 per axis. Selected by
  * the P8 FINE demodulator only. */
 void rf_set_fine_iq(bool fine);
+/* LAB: baseband packet AGC on/off with the RF AGC left on (native only). */
+void rf_set_bb_agc(bool enable);
+bool rf_bb_agc_enabled(void);
 bool rf_fine_iq_active(void);
 bool rf_native_agc_active(void);
 void rf_get_native_agc_state(rf_native_agc_state_t *state);

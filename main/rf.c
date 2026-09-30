@@ -188,6 +188,28 @@ static esp_err_t route_modem_iq(void)
     return ESP_OK;
 }
 
+/* LAB: baseband packet AGC off while the RF-side AGC (705C, never touched
+ * in native mode) stays on. The packet AGC is what re-acquires every
+ * 25-50 us; whether the RF AGC alone keeps gain in range is exactly what
+ * this measures. Reversible: phy_enable_agc() clears 7030[29] and strobes
+ * 702C[23]. RAM only; a retune or reboot restores the packet AGC. */
+static bool s_bb_agc_off;
+
+void rf_set_bb_agc(bool enable)
+{
+    if (!s_native_agc) return;
+    extern void phy_disable_agc(void);
+    extern void phy_enable_agc(void);
+    if (enable) phy_enable_agc();
+    else phy_disable_agc();
+    s_bb_agc_off = !enable;
+}
+
+bool rf_bb_agc_enabled(void)
+{
+    return !s_bb_agc_off;
+}
+
 void rf_set_fine_iq(bool fine)
 {
     if (fine == s_iq_fine) return;
@@ -1216,6 +1238,7 @@ esp_err_t rf_set_channel(size_t index)
     if (s_native_agc) {
         /* Restore native-owned state symmetrically with rf_start(): vendor
          * retune paths may touch digital/baseband scaling (#121 section 8). */
+        s_bb_agc_off = false;
         phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
         native_initgain_apply();

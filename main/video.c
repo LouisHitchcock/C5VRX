@@ -2180,9 +2180,9 @@ static void p8env_capture_report(void)
            (unsigned long)t.bs_eof_overload_count);
     /* Same row, second call: this printf already takes ~90 arguments on the
      * small console stack. */
-    printf(" strength=%d rx_gain=%u iq_fine=%u reset=%d\n",
+    printf(" strength=%d rx_gain=%u iq_fine=%u bb_agc=%u reset=%d\n",
            s_signal_strength, (unsigned)s_rx_gain_index,
-           rf_fine_iq_active() ? 1u : 0u,
+           rf_fine_iq_active() ? 1u : 0u, rf_bb_agc_enabled() ? 1u : 0u,
            (int)esp_reset_reason());
 }
 
@@ -5407,6 +5407,11 @@ static void console_diag_task(void *arg)
                     printf("C5VRX_NATIVE_INITGAIN set=%s value=%u vendor=%u err=%s\n",
                            next ? "override" : "vendor", rf_native_initgain(), vendor,
                            esp_err_to_name(ig_err));
+                } else if (c == '9') {
+                    bool enable = !rf_bb_agc_enabled();
+                    rf_set_bb_agc(enable);
+                    s_last_phy_write_us = esp_timer_get_time();
+                    printf("C5VRX_BB_AGC %s (RF AGC untouched)\n", enable ? "ON" : "OFF");
                 } else if (c == 'h') {
                     rf_poll_agc_live();
                 } else if (c == 'P' || c == 'M' || c == 'J' || c == 'B') {
@@ -5755,6 +5760,7 @@ static void console_diag_task(void *arg)
                     printf("  'v'/'o'/'O': Menu controls\n");
                     printf("  'd':         Select Phase8 FULL and reboot\n");
                     printf("  'y':         Select Phase8 FINE (issue #123 fine IQ lanes) and reboot\n");
+                    printf("  '9':         LAB: baseband packet AGC on/off, RF AGC stays on\n");
                     printf("=======================================================\n\n");
                 }
             }
