@@ -360,3 +360,76 @@ separate a reproducible effect from fading or AGC variability. Reception at
 that threshold with 12 dB more attenuation would demonstrate a 12 dB link
 margin improvement under those conditions; the offset label alone does not.
 No weak-signal range comparison has been performed yet.
+
+## Proposed suppression of AGC switching artifacts (2026-09-30)
+
+**Operator observation:** Phase5 does not suppress the visible recurring
+artifact either. Changing phase precision alone is therefore not an
+established remedy for this artifact. This observation does not establish
+that all visible grain comes from AGC: noiseless Q4 quantization already
+produces colour-band error, as described above.
+
+**Preferred research direction:** compensate repeatable gain-switch errors
+before FM discrimination, then conceal only intervals whose phase cannot be
+recovered. Native hardware AGC remains the gain owner. This is a design
+proposal, not an implemented or hardware-validated fix.
+
+For an ideal positive gain change, `z[n] = a[n] * exp(j * phi[n])`, the FM
+discriminator `arg(z[n] * conj(z[n-1]))` is independent of `a[n]`. Actual
+artifacts can come from a gain-dependent phase response, DC displacement,
+settling, analog/ADC saturation, or quantization. Model these separately:
+
+- If measurements establish a repeatable phase offset for each gain state,
+  correct the phase difference by the calibrated offset change at the actual
+  transition. Gain-dependent IQ centering or imbalance needs a corresponding
+  calibrated IQ correction. A repeatable settling response may also be
+  correctable, but its dependence on the input waveform must be checked.
+- An event's timing being predictable does not prove that its error waveform
+  is predictable. Do not subtract one fixed periodic waveform or apply a
+  notch at the average acquisition rate: gain paths and intervals vary, and
+  short disturbances have broadband energy overlapping wanted video.
+- Fine-lane overflow outside +/-256 is not proof that the signed 10-bit ADC
+  sample has saturated. Determine which errors are introduced by selecting
+  or quantizing lanes before declaring the underlying phase unrecoverable.
+- For genuinely unreliable intervals, suppress the faulty discriminator
+  output and re-prime phase history from reliable adjacent samples before
+  resuming. A minimal causal hold is a useful baseline, but holding through
+  every 2-3 us acquisition erases many colour cycles and can damage sync.
+  Buffered interpolation is another concealment candidate; neither approach
+  can recover arbitrary detail from a multi-microsecond information gap.
+
+General precedents, not C5 hardware evidence:
+[gain-transition phase compensation](https://patents.google.com/patent/US7889820B2/en)
+and [FM impulse detection with interpolation](https://patents.google.com/patent/US10404301B2/en).
+The latter addresses broadcast FM audio/MPX; its successful interpolation
+assumptions cannot be transferred directly to MHz-bandwidth composite video.
+
+### Evidence required before selecting the live implementation
+
+1. Capture complete, ordered Q10/I10 plus gain/state words over many native
+   acquisitions with a known RF stimulus. Compare high-resolution phase
+   behavior with the actual coarse/fine lane mappings on the same samples.
+   Keep capture windows separate. Measure transition timing, settling,
+   gain-conditioned IQ centres and phase errors, and distinguish ADC clipping
+   from lane overflow and coarse quantization.
+2. Determine how much of the error repeats for the same gain transition on
+   independent captures and different video content/RF levels. Calibrate on
+   a known stimulus; avoid learning wanted picture edges as a noise template.
+   Compare selective correction and minimal concealment against the existing
+   uncorrected demodulators, including sync, burst, colour and fine detail.
+3. Prove that the required gain/state information can be captured alongside
+   live IQ with the correct sample alignment. Dump-word metadata and static
+   status-bit matches alone do not prove this. An IQ-only fallback detector
+   must distinguish quantized FM rotation and real sync/colour transitions
+   from AGC disturbances; amplitude or phase-jump thresholds alone are not
+   sufficient evidence.
+4. Fit the selected operation into the sustained two-bundle hardware path
+   with continuous state and full output cadence. PHASE8_FULL currently uses
+   arithmetic that conflicts with adding a branch; compensation, buffering
+   and interpolation are not claimed to fit. Redesign the representation if
+   useful, but demonstrate throughput and useful precision before enabling.
+
+The available `probe_boot.log` has packed lane-sweep captures, not complete
+`AGC_WORDS` windows. It cannot establish a transition-error model. A new
+full-word capture is required before claiming a calibrated cancellation or
+an optimal concealment interval.
