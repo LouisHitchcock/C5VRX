@@ -633,3 +633,24 @@ on the earlier short acquisition-duration sweep alone. Vendor profile was
 restored immediately with `}`; readback `0x600A7034 = 0x8a0187a4`
 confirms `[30:24] = 10` again. The independent watchdog/reset audit in
 `libphy-native-agc-audit.md` was merged without altering its findings.
+
+### AGC GUARD live picture comparison (2026-09-30)
+
+Serial `!` selected guard mode on A1 with a carrier. `E` confirmed
+`demod=AGC_RAIL_GUARD`, coarse IQ, native AGC, vendor acquisition index 0,
+offset disabled, and zero reported RX/TX/GDMA errors. The user reported:
+"het is schoner, maar wel veel meer glitches en static". Cleaner appearance
+does **not** make this version a usable improvement: the added artifacts
+outweigh it. Serial `d` restored P8 FULL immediately.
+
+This supports investigating selective rejection, but does not prove all
+grain comes from clipped samples or that the guard detects AGC events.
+Its rail-cell test is coarse and can reject valid FM/video samples; repeated
+rail flags hold output indefinitely, then reseeding discards another pair.
+Removing enough composite waveform can disturb sync/chroma. This is a
+plausible explanation for the added glitches, not a demonstrated diagnosis.
+The comparison also changes the demodulator/codebook from P8 FULL to
+VIDEO32, so the perceived cleanliness cannot be attributed solely to hold.
+An unguarded VIDEO32 comparison and bounded-duration rejection would be
+needed to separate those effects. Do not enable this guard by default or
+claim a noise fix. Hardware runtime observation is not sample-gapless proof.
