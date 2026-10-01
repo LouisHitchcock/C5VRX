@@ -1,5 +1,10 @@
 # C5VRX-4 design starting point
 
+Current implementation: [PHASE8_THREE_BUNDLE.md](PHASE8_THREE_BUNDLE.md).
+The operator authorized the three-bundle Phase8 history experiment after the
+V5 comparison; it retains V5 and makes the history estimator switchable.
+The architecture in unmerged PR #141 is reviewed there as a separate target.
+
 ## Accepted scope
 
 - Repository-root location: `experiments/c5vrx-4`.

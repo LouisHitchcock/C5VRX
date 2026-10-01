@@ -154,7 +154,8 @@ BITSCRAMBLER_PROGRAM(s_fm_hc_program, "fm_hc");
 BITSCRAMBLER_PROGRAM(s_fm_fsm_capture_program, "fm_phase5_fsm_capture");
 BITSCRAMBLER_PROGRAM(s_fm4_program, "fm4");
 #ifdef C5VRX4_EXPERIMENT
-BITSCRAMBLER_PROGRAM(s_c5vrx4_program, "c5vrx4_span75");
+BITSCRAMBLER_PROGRAM(s_c5vrx4_static_program, "c5vrx4_phase8_static");
+BITSCRAMBLER_PROGRAM(s_c5vrx4_history_program, "c5vrx4_phase8_history");
 #endif
 
 /* ----- Fixed production constants ----- */
@@ -1230,7 +1231,7 @@ static const char *output_mode_name(void)
 static const char *demod_mode_name(void)
 {
 #ifdef C5VRX4_EXPERIMENT
-    return "C5V4 SPAN75";
+    return c5vrx4_history_enabled() ? "C5V4 P8HC75" : "C5V4 P8S75";
 #endif
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_hc_demod ? "HC TEST" : "PHASE8 HR TEST";
@@ -3960,7 +3961,9 @@ static void start_flight_demodulator(void)
     ESP_ERROR_CHECK(bitscrambler_enable(s_flight_bs));
 #ifdef C5VRX4_EXPERIMENT
     ESP_ERROR_CHECK(s_output_mode == VIDEO_OUTPUT_6BIT_40 ? ESP_OK : ESP_ERR_INVALID_STATE);
-    ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs, s_c5vrx4_program));
+    ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
+                      c5vrx4_history_enabled() ? s_c5vrx4_history_program :
+                                                s_c5vrx4_static_program));
 #elif CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     ESP_ERROR_CHECK(s_output_mode == VIDEO_OUTPUT_6BIT_40 ?
                     ESP_OK : ESP_ERR_INVALID_STATE);
@@ -4536,7 +4539,7 @@ static void handle_button_long_click(void)
             break;
         case 4: /* VIDEO OUTPUT */
 #ifdef C5VRX4_EXPERIMENT
-            printf("[MENU: OUTPUT] 6BIT@40 fixed for C5V4 SPAN75\n");
+            printf("[MENU: OUTPUT] 6BIT@40 fixed for C5V4 PHASE8/75\n");
 #elif CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
             printf("[MENU: OUTPUT] 6BIT@40 fixed for PHASE8 HR TEST\n");
 #else
@@ -5891,9 +5894,10 @@ esp_err_t video_start(void)
 
     /* Print startup stamp (visible on serial monitor at boot). */
 #ifdef C5VRX4_EXPERIMENT
-    ESP_EARLY_LOGW(TAG, "C5VRX-4 SPAN75: IQ40M -> Phase6 -> DAC13.333M "
+    ESP_EARLY_LOGW(TAG, "C5VRX-4 PHASE8/75: IQ40M -> %s -> DAC13.333M "
                    "[D,D,D]@40M gain_owner=%s; descriptors RX=%d TX=%d; "
                    "experimental, no range claim",
+                   c5vrx4_history_enabled() ? "Phase8 HISTORY" : "Phase8 STATIC",
                    rf_native_agc_active() ? "NATIVE" : rx_profile_name(),
                    rx_nodes, tx_nodes);
 #else

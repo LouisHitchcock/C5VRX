@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Generate experimental program
-        run: python3 experiments/c5vrx-4/generate_pipeline.py
+        run: python3 experiments/c5vrx-4/generate_phase8.py
       - name: Build isolated C5VRX-4 target
         shell: bash
         working-directory: experiments/c5vrx-4

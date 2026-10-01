@@ -1,6 +1,6 @@
 # C5VRX-4: long-range receiver research
 
-Status: first experimental firmware implementation. This is not a demonstrated
+Status: three-bundle Phase8 history comparison, on top of PR #133. This is not a demonstrated
 replacement for C5VRX-3 or a measured range improvement.
 The ordinary PR release still builds the root C5VRX-3 application. The separate
 **C5VRX-4 Experimental Build** workflow uploads the experimental firmware as an
@@ -23,6 +23,8 @@ redesigned; measured hardware limits still apply.
   hardware constraints and candidate architectures carried over from PR #122.
 - [DESIGN.md](DESIGN.md): project decisions, open questions and implementation
   sequence for this experiment.
+- [PHASE8_THREE_BUNDLE.md](PHASE8_THREE_BUNDLE.md): implemented Phase8 dataflow,
+  prior assumptions, comparison controls and lessons from PR #141.
 - [../../docs/arc-receive-chain.md](../../docs/arc-receive-chain.md): recovered
   PHY ABI, RF/BB/fine gain stages and calibration constraints.
 - [../../docs/continuous-iq-findings.md](../../docs/continuous-iq-findings.md):
@@ -46,7 +48,7 @@ close-range video alone does not establish sensitivity improvement.
 From an ESP-IDF v6.0.2 environment, in this directory:
 
 ```sh
-python generate_pipeline.py
+python generate_phase8.py
 idf.py -DIDF_TARGET=esp32c5 build
 ```
 
@@ -71,8 +73,10 @@ of the output waveform has been performed.
 
 - IQ: signed I4/Q4, 40 MS/s, continuous existing 32 KiB DMA ring. Direct Gain
   V5 can select the existing finer lane sets, just as in C5VRX-3.
-- Detector: Phase6 endpoint difference across 75 ns, separate nominal
-  resistor-DAC inversion LUT; three bundles consume and emit three bytes.
+- Detector: Phase8 endpoint difference across 75 ns, with optional bounded
+  near-origin history estimation and a nominal resistor-DAC transfer. A
+  512x32 LUT packs the phase terms and DAC field; three bundles consume and
+  emit three bytes. The Phase6 generator/program is retained as history.
 - Output: 13.333 MS/s unique codes held `[D,D,D]` at 40 MHz, existing pin order.
 - Direct Gain V5 is enabled and is the default automatic gain owner, using the
   same controller, observer, emergency sentinel and lane policy as C5VRX-3.
@@ -85,6 +89,9 @@ of the output waveform has been performed.
 - `~` compares paced/continuous native tracking only in native mode; it reports
   ignored in V5 mode. `T` prints `C5VRX4` gain-owner/timing state before the
   existing diagnostics. Video settings use NVS namespace `c5vrx4`.
+- `H` switches HISTORY/STATIC Phase8 through the `c5vrx4/phase8_hc` NVS key
+  and reboots. HISTORY is the initial default. This comparison keeps the
+  discriminator span, gain controller and DAC transfer fixed.
 - Menu rendering remains the original raster transport; video output mode is
   fixed to 6BIT@40 for this experiment.
 
@@ -100,8 +107,9 @@ diagnostics are not a measurement of this detector's actual DAC waveform.
 The first flashed build used paced native AGC with the V5 controller disabled.
 Therefore the initial less-clean picture cannot isolate the demodulator from
 the gain policy. Version `4.0.0-exp-span75-v5` enables the current main gain
-controller and defaults to firmware ownership. The span75 program and DAC LUT
-are unchanged. Compare with C5VRX-3 using the same RF profile, bandwidth and
+controller and defaults to firmware ownership. That version kept Phase6.
+The current Phase8 follow-up preserves V5 and offers a static/history decoder
+comparison. Compare with C5VRX-3 using the same RF profile, bandwidth and
 lane policy. This update has not yet been evaluated on hardware; it does not
 establish that native AGC caused all the observed grain.
 
