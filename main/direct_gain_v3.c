@@ -1,5 +1,8 @@
 #include "direct_gain_v3.h"
 #include "direct_gain_v3_lut.h"
+#ifdef C5VRX4_EXPERIMENT
+#include "c5vrx4.h"
+#endif
 
 #include <string.h>
 
@@ -406,6 +409,9 @@ static void note_direction(direct_gain_v3_t *v3, int8_t dir, uint64_t now)
 static uint8_t set_lane(direct_gain_v3_t *v3, const dg3_observation_t *o,
                         uint8_t lane)
 {
+#ifdef C5VRX4_EXPERIMENT
+    if (c5vrx4_ultrafine_forced()) return v3->current_gain;
+#endif
     if (lane > v3->lane_max) lane = v3->lane_max;
     if (lane == v3->lane) return v3->current_gain;
     note_direction(v3, lane > v3->lane ? 1 : -1, o->observed_us);
@@ -463,6 +469,9 @@ void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
     v3->lane_max = lane_max;
     v3->lane_cap = lane_max;
     v3->lane = 0u;
+#ifdef C5VRX4_EXPERIMENT
+    if (c5vrx4_ultrafine_forced()) v3->lane = lane_max;
+#endif
 }
 
 /* Learn the receiver noise from a no-carrier window at maximum gain and
@@ -523,6 +532,10 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
     bool saturated = o->clip_pm >= 100 || o->p95 >= 95;
     bool at_max = v3->current_gain == v3->table.max_index;
+    bool fixed_lane = false;
+#ifdef C5VRX4_EXPERIMENT
+    fixed_lane = c5vrx4_ultrafine_forced();
+#endif
     /* Fold guard. On a finer lane the rail codes are the last warning before
      * the window folds; a folded strong carrier reads as wide, incoherent
      * junk (rail codes, large P95) rather than as quiet noise. Either one
@@ -530,7 +543,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
      * true level on the next window. */
     bool junk = o->clip_pm >= 20 || o->p95 > 72 ||
                 (!carrier(o) && !no_carrier && o->p95 >= 53);
-    if (v3->lane && (saturated || junk)) {
+    if (!fixed_lane && v3->lane && (saturated || junk)) {
         if (!saturated && ++v3->junk_windows < DG3_JUNK_WINDOWS)
             return v3->current_gain;
         ++v3->fold_drops;
@@ -551,10 +564,10 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
                  o->clip_pm == 0u && o->p95 < 40u && o->coherence < 45u;
     if (quiet) learn_noise(v3, o);
     uint8_t lane_limit = (no_carrier || quiet) ? v3->lane_max : v3->lane_cap;
-    bool lane_up_ok = at_max && v3->lane < lane_limit &&
+    bool lane_up_ok = !fixed_lane && at_max && v3->lane < lane_limit &&
                       o->observed_us >= v3->lane_hold_until_us;
     /* A carrier found while listening above the cap comes down to it. */
-    if (carrier(o) && v3->lane > v3->lane_cap)
+    if (!fixed_lane && carrier(o) && v3->lane > v3->lane_cap)
         return set_lane(v3, o, v3->lane_cap);
     if (no_carrier && lane_up_ok) {
         /* Listen on the finest lane: a carrier below one coarse step becomes
@@ -691,7 +704,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     /* Lanes are the last gain stage in and the first one out, but only in
      * whole 6 dB steps: when dropping one lane would undershoot the band,
      * the analog gain trims down instead (continuous total gain). */
-    if (high && v3->lane && scale_power(o->p50, -1) >= 13u)
+    if (!fixed_lane && high && v3->lane && scale_power(o->p50, -1) >= 13u)
         return set_lane(v3, o, lane_for(v3, o, false));
     int target_power = weak ? 17 : 27;
     int error_q8 = power_db_q8((unsigned)target_power) -

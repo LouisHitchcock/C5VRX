@@ -1701,7 +1701,11 @@ static void direct_gain_v3_observer_task(void *arg)
             was_active = false;
             (void)__sync_lock_test_and_set(&s_v3_fast_overload_state, 0u);
             /* Finer range lanes are owned by Direct Gain only. */
-            if (rf_get_iq_lanes()) {
+            if (rf_get_iq_lanes()
+#ifdef C5VRX4_EXPERIMENT
+                && !c5vrx4_ultrafine_forced()
+#endif
+            ) {
                 rf_set_iq_lanes(0u);
                 ++s_gain_transition_count;
             }
@@ -1715,7 +1719,11 @@ static void direct_gain_v3_observer_task(void *arg)
                                  s_current_gain, rf_get_arc_survival_gain());
             direct_gain_v3_enable_lanes(&s_direct_gain_v3,
                                         (uint8_t)(RF_IQ_LANE_SETS - 1u));
-            if (rf_get_iq_lanes()) {
+            if (rf_get_iq_lanes()
+#ifdef C5VRX4_EXPERIMENT
+                && !c5vrx4_ultrafine_forced()
+#endif
+            ) {
                 rf_set_iq_lanes(0u);
                 ++s_gain_transition_count;
             }
@@ -5788,6 +5796,11 @@ esp_err_t video_start(void)
                  (unsigned long)native.agc_ctrl_reg);
     }
 
+#ifdef C5VRX4_EXPERIMENT
+    /* Select the forced lane before capture starts; the fixed comparison
+     * never switches geometry inside a live line or at a DMA boundary. */
+    rf_set_iq_lanes(0u);
+#endif
     /* Zero the ring before starting. Flush to DMA-visible SRAM. */
     memset(s_raw_ring, 0, sizeof(s_raw_ring));
     sync_dma_c2m(s_raw_ring, sizeof(s_raw_ring));

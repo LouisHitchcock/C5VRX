@@ -27,6 +27,22 @@ static unsigned s_suspend_depth;
 static uint64_t s_next_open, s_opened_at;
 static uint32_t s_opens, s_faults, s_late_max, s_open_max;
 static bool s_history_loaded, s_history = false;
+static bool s_ultrafine_loaded, s_ultrafine = true;
+
+bool c5vrx4_ultrafine_forced(void)
+{
+    if (!s_ultrafine_loaded) {
+        nvs_handle_t handle;
+        uint8_t enabled = 1;
+        if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+            (void)nvs_get_u8(handle, "force_ultra", &enabled);
+            nvs_close(handle);
+        }
+        s_ultrafine = enabled != 0;
+        s_ultrafine_loaded = true;
+    }
+    return s_ultrafine;
+}
 
 bool c5vrx4_history_enabled(void)
 {
@@ -142,7 +158,12 @@ static void print_state(void)
            c5vrx4_history_enabled() ? "history" : "static",
            rf_native_agc_active() ? "native" : "direct_gain_v5",
            running, open, PERIOD_US, WINDOW_US, opens, late, duration, faults,
-           control);
+            control);
+    printf("C5VRX4_LANES policy=%s lane=%u adc_step=%u window_codes=%u "
+           "fold_guard=%s\n", c5vrx4_ultrafine_forced() ? "fixed_ultrafine" : "baseline",
+           rf_get_iq_lanes(), 64u >> rf_get_iq_lanes(),
+           512u >> rf_get_iq_lanes(),
+           c5vrx4_ultrafine_forced() ? "disabled_for_fixed_lane_test" : "baseline");
 }
 
 void c5vrx4_start(void)
@@ -168,6 +189,24 @@ void c5vrx4_start(void)
 
 bool c5vrx4_console(int key)
 {
+    if (key == 'Z') {
+        nvs_handle_t handle;
+        bool enabled = !c5vrx4_ultrafine_forced();
+        esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+        if (err == ESP_OK) {
+            err = nvs_set_u8(handle, "force_ultra", enabled ? 1 : 0);
+            if (err == ESP_OK) err = nvs_commit(handle);
+            nvs_close(handle);
+        }
+        printf("C5VRX4 ultrafine_next=%u err=%s action=%s\n", enabled,
+               esp_err_to_name(err), err == ESP_OK ? "reboot" : "unchanged");
+        if (err == ESP_OK) {
+            fflush(stdout);
+            vTaskDelay(pdMS_TO_TICKS(120));
+            esp_restart();
+        }
+        return true;
+    }
     if (key == 'H') {
         nvs_handle_t handle;
         bool enabled = !c5vrx4_history_enabled();
