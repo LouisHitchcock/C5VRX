@@ -6,9 +6,10 @@ The ordinary PR release still builds the root C5VRX-3 application. The separate
 **C5VRX-4 Experimental Build** workflow uploads the experimental firmware as an
 Actions artifact; it does not publish it as a production release.
 
-Current follow-up: [fixed ultrafine comparison](ULTRAFINE_TEST.md), version
-`4.0.0-exp-ultrafine`. Lane2 is always on by default in every gain mode;
-serial Z reboots to the PR #145 baseline lane policy for comparison.
+Current follow-up: fixed **coarse** by default, version `4.0.0-exp-coarse`.
+Serial Z switches fixed coarse / fixed ultrafine and reboots. The new
+`c5vrx4/iq_ultra` key defaults to0; old fixed-ultrafine settings do not select
+ultrafine in this build. See [COARSE_DEFAULT.md](COARSE_DEFAULT.md).
 
 Started from main `59a8713b467916f00436642702a4b14e9598c662` on 2026-09-30.
 Research imported from PR #122, commit `33a8c0b`, without importing its firmware

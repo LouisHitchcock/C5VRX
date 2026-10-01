@@ -410,7 +410,7 @@ static uint8_t set_lane(direct_gain_v3_t *v3, const dg3_observation_t *o,
                         uint8_t lane)
 {
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) return v3->current_gain;
+    return v3->current_gain; /* Both comparison modes keep a fixed lane. */
 #endif
     if (lane > v3->lane_max) lane = v3->lane_max;
     if (lane == v3->lane) return v3->current_gain;
@@ -471,6 +471,7 @@ void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
     v3->lane = 0u;
 #ifdef C5VRX4_EXPERIMENT
     if (c5vrx4_ultrafine_forced()) v3->lane = lane_max;
+    else v3->lane_max = v3->lane_cap = 0u;
 #endif
 }
 
@@ -534,7 +535,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     bool at_max = v3->current_gain == v3->table.max_index;
     bool fixed_lane = false;
 #ifdef C5VRX4_EXPERIMENT
-    fixed_lane = c5vrx4_ultrafine_forced();
+    fixed_lane = true;
 #endif
     /* Fold guard. On a finer lane the rail codes are the last warning before
      * the window folds; a folded strong carrier reads as wide, incoherent

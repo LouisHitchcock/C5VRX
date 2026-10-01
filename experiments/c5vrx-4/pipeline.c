@@ -27,15 +27,15 @@ static unsigned s_suspend_depth;
 static uint64_t s_next_open, s_opened_at;
 static uint32_t s_opens, s_faults, s_late_max, s_open_max;
 static bool s_history_loaded, s_history = false;
-static bool s_ultrafine_loaded, s_ultrafine = true;
+static bool s_ultrafine_loaded, s_ultrafine = false;
 
 bool c5vrx4_ultrafine_forced(void)
 {
     if (!s_ultrafine_loaded) {
         nvs_handle_t handle;
-        uint8_t enabled = 1;
+        uint8_t enabled = 0;
         if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
-            (void)nvs_get_u8(handle, "force_ultra", &enabled);
+            (void)nvs_get_u8(handle, "iq_ultra", &enabled);
             nvs_close(handle);
         }
         s_ultrafine = enabled != 0;
@@ -160,10 +160,10 @@ static void print_state(void)
            running, open, PERIOD_US, WINDOW_US, opens, late, duration, faults,
             control);
     printf("C5VRX4_LANES policy=%s lane=%u adc_step=%u window_codes=%u "
-           "fold_guard=%s\n", c5vrx4_ultrafine_forced() ? "fixed_ultrafine" : "baseline",
+           "fold_guard=%s\n", c5vrx4_ultrafine_forced() ? "fixed_ultrafine" : "fixed_coarse",
            rf_get_iq_lanes(), 64u >> rf_get_iq_lanes(),
            512u >> rf_get_iq_lanes(),
-           c5vrx4_ultrafine_forced() ? "disabled_for_fixed_lane_test" : "baseline");
+           "fixed_lane_test");
 }
 
 void c5vrx4_start(void)
@@ -194,7 +194,7 @@ bool c5vrx4_console(int key)
         bool enabled = !c5vrx4_ultrafine_forced();
         esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
         if (err == ESP_OK) {
-            err = nvs_set_u8(handle, "force_ultra", enabled ? 1 : 0);
+            err = nvs_set_u8(handle, "iq_ultra", enabled ? 1 : 0);
             if (err == ESP_OK) err = nvs_commit(handle);
             nvs_close(handle);
         }

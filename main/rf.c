@@ -176,7 +176,7 @@ static esp_err_t route_modem_iq(void)
 void rf_set_iq_lanes(uint8_t set)
 {
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) set = RF_IQ_LANE_SETS - 1u;
+    set = c5vrx4_ultrafine_forced() ? RF_IQ_LANE_SETS - 1u : 0u;
 #endif
     if (set >= RF_IQ_LANE_SETS) set = RF_IQ_LANE_SETS - 1u;
     if (set == s_iq_lane_set) return;
