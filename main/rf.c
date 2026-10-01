@@ -13,6 +13,9 @@
 #include "rf.h"
 #ifdef C5VRX4_EXPERIMENT
 #include "c5vrx4.h"
+#include "soc/gpio_struct.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 #endif
 
 #include <stdint.h>
@@ -115,6 +118,17 @@ static const uint8_t s_iq_lane_sets[RF_IQ_LANE_SETS][8] = {
     { 4u, 5u, 6u, 9u, 14u, 15u, 16u, 19u },
 };
 static volatile uint8_t s_iq_lane_set;
+#ifdef C5VRX4_EXPERIMENT
+static portMUX_TYPE s_lane_route_lock = portMUX_INITIALIZER_UNLOCKED;
+static rf_iq_lane_stats_t s_lane_stats;
+
+void rf_get_iq_lane_stats(rf_iq_lane_stats_t *stats)
+{
+    portENTER_CRITICAL(&s_lane_route_lock);
+    *stats = s_lane_stats;
+    portEXIT_CRITICAL(&s_lane_route_lock);
+}
+#endif
 
 /* Internal vendor symbol -- globally exported by the pinned IDF 6.0.x
  * pp (protocol processing) library for ESP32-C5. */
@@ -177,12 +191,43 @@ void rf_set_iq_lanes(uint8_t set)
 {
     if (set >= RF_IQ_LANE_SETS) set = RF_IQ_LANE_SETS - 1u;
     if (set == s_iq_lane_set) return;
+#ifdef C5VRX4_EXPERIMENT
+    /* Preserve output enable/inversion and both sign routes. Only the six
+     * changed magnitude selectors are written, with Q/I paired per bit.
+     * Six MMIO writes remain sequential: this is not an atomic handover. */
+    uint32_t route[8];
+    portENTER_CRITICAL(&s_lane_route_lock);
+    uint8_t before = s_iq_lane_set;
+    for (unsigned lane = 0; lane < 8; ++lane) {
+        gpio_func_out_sel_cfg_reg_t config;
+        config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
+        config.out_sel = MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane];
+        route[lane] = config.val;
+    }
+    uint64_t started = (uint64_t)esp_timer_get_time();
+    for (unsigned step = 0; step < 3; ++step) {
+        unsigned bit = set > before ? step : 2u - step;
+        GPIO.func_out_sel_cfg[s_iq_pins[bit]].val = route[bit];
+        GPIO.func_out_sel_cfg[s_iq_pins[bit + 4u]].val = route[bit + 4u];
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    uint64_t finished = (uint64_t)esp_timer_get_time();
+    s_iq_lane_set = set;
+    ++s_lane_stats.switches;
+    s_lane_stats.last_switch_us = finished;
+    s_lane_stats.last_from = before;
+    s_lane_stats.last_to = set;
+    uint32_t duration = (uint32_t)(finished - started);
+    if (duration > s_lane_stats.route_max_us) s_lane_stats.route_max_us = duration;
+    portEXIT_CRITICAL(&s_lane_route_lock);
+#else
     for (unsigned lane = 0u; lane < 8u; ++lane)
         esp_rom_gpio_connect_out_signal(s_iq_pins[lane],
                                         MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane],
                                         false, false);
     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
     s_iq_lane_set = set;
+#endif
 }
 
 uint8_t rf_get_iq_lanes(void)

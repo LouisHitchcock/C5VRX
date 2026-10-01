@@ -1730,10 +1730,17 @@ static void direct_gain_v3_observer_task(void *arg)
             __sync_lock_release(&s_v3_fast_overload_state);
             uint8_t emergency = direct_gain_v3_tick(&s_direct_gain_v3,
                                                     &overload);
+#ifdef C5VRX4_EXPERIMENT
+            s_direct_gain_v3.lane = c5vrx4_lane_target(rf_get_iq_lanes(),
+                              s_direct_gain_v3.lane, NULL, 0, overload.observed_us);
+#endif
             direct_gain_v3_apply_target(emergency, profile);
             continue;
         }
 
+#ifdef C5VRX4_EXPERIMENT
+        if (!c5vrx4_lane_window_ready((uint64_t)esp_timer_get_time())) continue;
+#endif
         uint32_t gain_epoch = s_gain_transition_count;
         int block_idx = -1;
         if (!rx_probe_copy_completed_idx(sample, &block_idx)) continue;
@@ -1752,6 +1759,13 @@ static void direct_gain_v3_observer_task(void *arg)
         s_v3_clip_pm = observation.clip_pm;
         s_v3_coherence = observation.coherence;
         uint8_t target = direct_gain_v3_tick(&s_direct_gain_v3, &observation);
+#ifdef C5VRX4_EXPERIMENT
+        /* Keep the controller's lane state equal to what is actually routed.
+         * Deferred upgrades get another fresh-window opportunity; the phase
+         * engine itself is never restarted at a routing change. */
+        s_direct_gain_v3.lane = c5vrx4_lane_target(rf_get_iq_lanes(),
+                   s_direct_gain_v3.lane, sample, sizeof(sample), observation.observed_us);
+#endif
         direct_gain_v3_apply_target(target, profile);
         direct_gain_v5_dc_observe(sample, sizeof(sample), &observation);
         direct_gain_v5_bw_gear(&observation);

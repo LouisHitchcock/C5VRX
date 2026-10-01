@@ -25,6 +25,8 @@ redesigned; measured hardware limits still apply.
   sequence for this experiment.
 - [PHASE8_THREE_BUNDLE.md](PHASE8_THREE_BUNDLE.md): implemented Phase8 dataflow,
   prior assumptions, comparison controls and lessons from PR #141.
+- [LANE_HANDOVER.md](LANE_HANDOVER.md): protected overlap-based lane upgrades,
+  paired GPIO routing, persistent phase history and remaining transition limits.
 - [../../docs/arc-receive-chain.md](../../docs/arc-receive-chain.md): recovered
   PHY ABI, RF/BB/fine gain stages and calibration constraints.
 - [../../docs/continuous-iq-findings.md](../../docs/continuous-iq-findings.md):
@@ -89,9 +91,13 @@ of the output waveform has been performed.
 - `~` compares paced/continuous native tracking only in native mode; it reports
   ignored in V5 mode. `T` prints `C5VRX4` gain-owner/timing state before the
   existing diagnostics. Video settings use NVS namespace `c5vrx4`.
-- `H` switches HISTORY/STATIC Phase8 through the `c5vrx4/phase8_hc` NVS key
+- `H` switches HISTORY/STATIC Phase8 through the `c5vrx4/lane_hc` NVS key
   and reboots. HISTORY is the initial default. This comparison keeps the
   discriminator span, gain controller and DAC transfer fixed.
+- Lane upgrades require two fresh overlap windows and advance one step at a
+  time. Coarser recovery is immediate. Phase history survives the switch; the
+  six routing writes remain sequential and no per-sample transition tag exists.
+  `T` prints `C5VRX4_LANES` counters.
 - Menu rendering remains the original raster transport; video output mode is
   fixed to 6BIT@40 for this experiment.
 

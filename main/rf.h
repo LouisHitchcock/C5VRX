@@ -105,6 +105,14 @@ bool rf_native_agc_active(void);
 #define RF_IQ_LANE_SETS 3u
 void rf_set_iq_lanes(uint8_t set);
 uint8_t rf_get_iq_lanes(void);
+#ifdef C5VRX4_EXPERIMENT
+typedef struct {
+    uint32_t switches, route_max_us;
+    uint64_t last_switch_us;
+    uint8_t last_from, last_to;
+} rf_iq_lane_stats_t;
+void rf_get_iq_lane_stats(rf_iq_lane_stats_t *stats);
+#endif
 void rf_get_native_agc_state(rf_native_agc_state_t *state);
 
 /**

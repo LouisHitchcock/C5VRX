@@ -34,7 +34,7 @@ bool c5vrx4_history_enabled(void)
         nvs_handle_t handle;
         uint8_t enabled = 1;
         if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
-            (void)nvs_get_u8(handle, "phase8_hc", &enabled);
+            (void)nvs_get_u8(handle, "lane_hc", &enabled);
             nvs_close(handle);
         }
         s_history = enabled != 0;
@@ -173,7 +173,7 @@ bool c5vrx4_console(int key)
         bool enabled = !c5vrx4_history_enabled();
         esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
         if (err == ESP_OK) {
-            err = nvs_set_u8(handle, "phase8_hc", enabled ? 1 : 0);
+            err = nvs_set_u8(handle, "lane_hc", enabled ? 1 : 0);
             if (err == ESP_OK) err = nvs_commit(handle);
             nvs_close(handle);
         }
@@ -188,6 +188,7 @@ bool c5vrx4_console(int key)
     }
     if (key == 'T') {
         print_state();
+        c5vrx4_lane_print();
         return false; /* Also print the ordinary receiver diagnostics. */
     }
     if (key == '~' && !rf_native_agc_active()) {
