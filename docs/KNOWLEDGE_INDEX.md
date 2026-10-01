@@ -97,4 +97,5 @@ describe a diagnostic mode or future proof gate rather than the default build.
   active dump-SRAM reads, RX-attached BitScrambler, simultaneous RX+TX
   BitScrambler, >40 MB/s live TX overclocking, raw-Q4 observers on transformed
   rings, or a synthetic raster as the normal receiver.
+| C5VRX-4 target pipeline: loss budget and model, native AGC hold via DIAG gain lanes, fixed fine tap, PHY pre-detection filter, HC decoder with calibrated DAC transfer, span-75 audit, acceptance plan | [../experiments/c5vrx-4/PIPELINE.md](../experiments/c5vrx-4/PIPELINE.md) |
 | Range max: dB budget, noise-referenced lanes, BW gear, sync flywheel + colour killer, two-bundle demod limits, hardware plan | [range-max.md](range-max.md) |

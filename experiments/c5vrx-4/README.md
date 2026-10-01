@@ -19,6 +19,8 @@ redesigned; measured hardware limits still apply.
 
 ## Starting documents
 
+- [PIPELINE.md](PIPELINE.md): **target pipeline and experiment plan** (merges
+  research PRs #136 and #140). It replaces the span-75 direction below.
 - [RESEARCH.md](RESEARCH.md): source review, evidence, rejected assumptions,
   hardware constraints and candidate architectures carried over from PR #122.
 - [DESIGN.md](DESIGN.md): project decisions, open questions and implementation

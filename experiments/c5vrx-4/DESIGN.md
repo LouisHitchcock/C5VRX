@@ -1,5 +1,11 @@
 # C5VRX-4 design starting point
 
+> **Superseded direction (2026-10-01):** the target pipeline is now
+> [PIPELINE.md](PIPELINE.md): 20 MS/s two-bundle output, native AGC with
+> re-acquisition stopped in the PHY, fixed fine tap, edge-only PHY filter and
+> a calibrated history-conditioned decoder. Span-75 stays as a comparison
+> artifact. The text below is kept as history.
+
 ## Accepted scope
 
 - Repository-root location: `experiments/c5vrx-4`.
