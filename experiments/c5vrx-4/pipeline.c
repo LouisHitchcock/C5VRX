@@ -26,15 +26,15 @@ static bool s_requested = true, s_running, s_open;
 static unsigned s_suspend_depth;
 static uint64_t s_next_open, s_opened_at;
 static uint32_t s_opens, s_faults, s_late_max, s_open_max;
-static bool s_history_loaded, s_history = true;
+static bool s_history_loaded, s_history = false;
 
 bool c5vrx4_history_enabled(void)
 {
     if (!s_history_loaded) {
         nvs_handle_t handle;
-        uint8_t enabled = 1;
+        uint8_t enabled = 0;
         if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
-            (void)nvs_get_u8(handle, "phase8_hc", &enabled);
+            (void)nvs_get_u8(handle, "unwrap_hc", &enabled);
             nvs_close(handle);
         }
         s_history = enabled != 0;
@@ -134,7 +134,7 @@ static void print_state(void)
     uint32_t late = s_late_max, duration = s_open_max;
     uint32_t control = AGC_CTRL;
     portEXIT_CRITICAL(&s_lock);
-    printf("C5VRX4 pipeline=phase8_%s span_ns=75 phase_bits=8 iq_bits=4+4 "
+    printf("C5VRX4 pipeline=unwrap75_%s span_ns=75 phase_bits=8 winding=quadrant3 bound_step_bins=63 dac_delta_bits=6 iq_bits=4+4 "
            "iq_hz=40000000 dac_hz=40000000 unique_hz=13333333 "
            "gain_owner=%s pace=%d acquiring=%d period_us=%u window_us=%u "
            "opens=%" PRIu32 " late_max_us=%" PRIu32 " open_max_us=%" PRIu32
@@ -173,7 +173,7 @@ bool c5vrx4_console(int key)
         bool enabled = !c5vrx4_history_enabled();
         esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
         if (err == ESP_OK) {
-            err = nvs_set_u8(handle, "phase8_hc", enabled ? 1 : 0);
+            err = nvs_set_u8(handle, "unwrap_hc", enabled ? 1 : 0);
             if (err == ESP_OK) err = nvs_commit(handle);
             nvs_close(handle);
         }

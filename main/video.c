@@ -1231,7 +1231,7 @@ static const char *output_mode_name(void)
 static const char *demod_mode_name(void)
 {
 #ifdef C5VRX4_EXPERIMENT
-    return c5vrx4_history_enabled() ? "C5V4 P8HC75" : "C5V4 P8S75";
+    return c5vrx4_history_enabled() ? "C5V4 U8HC75" : "C5V4 U8S75";
 #endif
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     return s_hc_demod ? "HC TEST" : "PHASE8 HR TEST";
@@ -4539,7 +4539,7 @@ static void handle_button_long_click(void)
             break;
         case 4: /* VIDEO OUTPUT */
 #ifdef C5VRX4_EXPERIMENT
-            printf("[MENU: OUTPUT] 6BIT@40 fixed for C5V4 PHASE8/75\n");
+            printf("[MENU: OUTPUT] 6BIT@40 fixed for C5V4 UNWRAP/75\n");
 #elif CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
             printf("[MENU: OUTPUT] 6BIT@40 fixed for PHASE8 HR TEST\n");
 #else
@@ -5894,10 +5894,10 @@ esp_err_t video_start(void)
 
     /* Print startup stamp (visible on serial monitor at boot). */
 #ifdef C5VRX4_EXPERIMENT
-    ESP_EARLY_LOGW(TAG, "C5VRX-4 PHASE8/75: IQ40M -> %s -> DAC13.333M "
+    ESP_EARLY_LOGW(TAG, "C5VRX-4 UNWRAP/75: IQ40M -> %s -> DAC13.333M "
                    "[D,D,D]@40M gain_owner=%s; descriptors RX=%d TX=%d; "
                    "experimental, no range claim",
-                   c5vrx4_history_enabled() ? "Phase8 HISTORY" : "Phase8 STATIC",
+                   c5vrx4_history_enabled() ? "Unwrap8 HISTORY" : "Unwrap8 STATIC",
                    rf_native_agc_active() ? "NATIVE" : rx_profile_name(),
                    rx_nodes, tx_nodes);
 #else

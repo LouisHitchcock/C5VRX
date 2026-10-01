@@ -21,6 +21,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate experimental program
         run: python3 experiments/c5vrx-4/generate_phase8.py
+      - name: Prove trajectory winding and generated routing
+        run: |
+          gcc -O3 -Wall -Wextra -Werror experiments/c5vrx-4/unwrap_oracle.c -o /tmp/unwrap-oracle
+          /tmp/unwrap-oracle
+          python3 experiments/c5vrx-4/test_unwrap.py
       - name: Build isolated C5VRX-4 target
         shell: bash
         working-directory: experiments/c5vrx-4

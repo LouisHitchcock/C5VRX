@@ -1,3 +1,8 @@
+# Historical PR #142 design
+
+The current firmware extends this baseline with [trajectory unwrap](UNWRAP75.md).
+The table layout, history default and modulo limit below describe PR #142.
+
 # Three-bundle Phase8 with bounded phase history
 
 Implemented as a comparison experiment on top of PR #133 (Direct Gain V5).

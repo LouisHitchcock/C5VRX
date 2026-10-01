@@ -72,60 +72,111 @@ def decoder(history):
     return tables
 
 
-def build(history):
+def quadrant(signs):
+    i, q = signs & 1, (signs >> 1) & 1
+    return (2 if q else 1) if i else (3 if q else 0)
+
+
+def trajectory_class(index):
+    quarters = [quadrant(index >> (2 * k)) for k in range(4)]
+    steps = [(b - a) & 3 for a, b in zip(quarters, quarters[1:])]
+    if 2 in steps:
+        return 3  # Opposite quadrants: direction is not established.
+    n = sum(-1 if d == 3 else d for d in steps)
+    return 1 if n >= 2 else 2 if n <= -2 else 0
+
+
+def transfer_delta(index):
+    delta = (index & 63) * 4 + 2 - 128
+    cls = index >> 6
+    if cls == 3:
+        return 0  # Explicit neutral output for an ambiguous trajectory.
+    if cls == 1 and delta < 0:
+        delta += 256
+    if cls == 2 and delta >= 0:
+        delta -= 256
+    return delta
+
+
+def words_for(history):
     phases = decoder(history)
     resistance = (8200, 3900, 2000, 1000, 470, 240)
     voltage = [sum(1 / r for bit, r in enumerate(resistance)
                    if code & (1 << bit)) for code in range(64)]
     dac = [min(range(64), key=lambda code:
-               abs(voltage[code] - voltage[63] * delta / 255))
-           for delta in range(256)]
+               abs(voltage[code] - voltage[63] *
+                   max(0, min(1, (transfer_delta(index) + 128) / 255))))
+           for index in range(256)]
     words = []
-    for bank in range(2):
+    for bank in range(4):
         for index in range(256):
-            p = phases[bank][index]
-            # Independent bit planes at every address. DAC is identical in
-            # both banks: mapper address bit 8 aliases the negative phase LSB.
-            words.append(((128 + p) & 255) | (((-p) & 255) << 8) |
-                         (dac[index] << 16))
+            if bank & 1:
+                p = phases[bank >> 1][index]
+                words.append(((128 + p) & 255) | (((-p) & 255) << 8))
+            else:
+                # Counter payload bit24 is zero. Bit25 may vary with phase;
+                # duplicate trajectory/DAC planes in both even banks.
+                words.append(dac[index] | (trajectory_class(index) << 6))
+    return words
+
+
+def build(history):
+    words = words_for(history)
     mode = 'history' if history else 'static'
-    return f"""# C5VRX-4: Phase8 {mode}, 75 ns endpoint difference.
+    return f"""# C5VRX-4: unwrapped Phase8 {mode}, 75 ns endpoint difference.
 # Three bundles consume 3 IQ bytes and emit [D,D,D] at 40 MHz.
-# 512x32=2048 bytes. Low byte: biased phase; next byte: -phase;
-# bits 16..21: nominal DAC transfer, independent of bank.
-# Only the near-origin history decoder uses the previous -phase MSB.
+# 1024x16=2048 bytes: odd banks decode complete Phase8 endpoints;
+# even banks hold DAC6 and trajectory2 in independent planes.
+# O6/O7 retain both endpoint parity bits; DAC only connects bits0..5.
 cfg prefetch true
 cfg eof_on downstream
 cfg trailing_bytes 0
-cfg lut_width_bits 32
+cfg lut_width_bits 16
 lut """ + ' '.join(map(str, words)) + """
 
 accumulate:
-    # L comes from decode_next. A.high retains -previous; A.low is ignored.
-    set 0..5 O0..O5,
+    # P,M1,M2,C are FIFO bytes1,2,3,4. L is the full decoded C.
+    # Counter operands have bit0 cleared to select an even LUT bank.
+    # Retained endpoint parity makes the pre-transfer result exact Phase8.
+    set 0..6 O0..O6,
+    set 7 L0,
     set 8..15 L8..L15,
-    set 24..31 L0..L7,
+    set 16 15,
+    set 17 11,
+    set 18 23,
+    set 19 19,
+    set 20 31,
+    set 21 27,
+    set 22 39,
+    set 23 35,
+    set 24 L,
+    set 25..31 L1..L7,
     read 16,
     write 8,
     addctiah
 
 map_delta:
-    # A.high is the biased delta. Loading only A.high prevents low-byte
-    # LUT-address bits from contributing a carry to phase arithmetic.
-    set 0..5 O0..O5,
+    # LUT16 leaves Counter A and FIFO bits32..47 directly accessible.
+    # Address: delta6 + trajectory2. Payload: truncated -C for next delta.
+    # Final DAC address is a 4-bin midpoint (<=2 bins from exact delta).
+    set 0..7 O0..O7,
     set 8..13 O0..O5,
-    set 16..23 A8..A15,
-    set 24..31 O8..O15,
+    set 16..21 A10..A15,
+    set 22..23 L6..L7,
+    set 24 L,
+    set 25..31 O9..O15,
     read 8,
     write 16,
     ldctiah
 
 decode_next:
-    # L comes from map_delta. Keep its DAC for both following writes.
-    # Reads above advanced three bytes; byte 1 is the next endpoint.
-    set 0..5 L16..L21,
-    set 16..23 8..15,
-    set 24 O31,
+    # Byte4 keeps the previous endpoint and both middle samples in FIFO
+    # for the following accumulate. Select an odd decode bank explicitly.
+    set 0..5 L0..L5,
+    set 6 O7,
+    set 16..23 32..39,
+    set 24 H,
+    set 25 O31,
     jmp accumulate
 """
 
@@ -135,4 +186,4 @@ if __name__ == '__main__':
         name = 'history' if history else 'static'
         path = HERE / f'c5vrx4_phase8_{name}.bsasm'
         path.write_text(build(history), encoding='utf-8')
-        print(f'Generated {path.name}: three bundles, 512x32 LUT')
+        print(f'Generated {path.name}: three bundles, 1024x16 LUT, trajectory unwrap')
