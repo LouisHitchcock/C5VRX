@@ -32,6 +32,7 @@
 #include "c5vrx4.h"
 #endif
 #include "rf.h"
+#include "phy_rx_lab.h"
 #include "menu_font.h"
 #include "menu_raster.h"
 #include "range_control.h"
@@ -1428,6 +1429,7 @@ static void direct_gain_v2_fast_tick(const control_metrics_t *metrics,
 #endif
     static uint32_t seen_profile_generation = UINT32_MAX;
     static uint32_t seen_arc_generation = UINT32_MAX;
+    static uint32_t seen_phy_generation = UINT32_MAX;
     static uint32_t seen_slow_sequence;
     static bool was_active;
     bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
@@ -1437,12 +1439,14 @@ static void direct_gain_v2_fast_tick(const control_metrics_t *metrics,
 
     uint32_t profile_generation = s_profile_generation;
     uint32_t arc_generation = rf_get_arc_generation();
+    uint32_t phy_generation = phy_rx_lab_generation();
     if (!was_active || seen_profile_generation != profile_generation ||
-        seen_arc_generation != arc_generation) {
+        seen_arc_generation != arc_generation || seen_phy_generation != phy_generation) {
         direct_gain_v2_reset(&s_direct_gain_v2, rf_get_arc_gain_table(),
                              s_current_gain, rf_get_arc_survival_gain());
         seen_profile_generation = profile_generation;
         seen_arc_generation = arc_generation;
+        seen_phy_generation = phy_generation;
         was_active = true;
         seen_slow_sequence = s_direct_gain_v2_slow_seq;
     }
@@ -1467,7 +1471,8 @@ static void direct_gain_v2_fast_tick(const control_metrics_t *metrics,
         .observed_us = now_us,
     };
     uint8_t target = direct_gain_v2_tick(&s_direct_gain_v2, &observation);
-    if (profile_generation != s_profile_generation ||
+    if (phy_generation != phy_rx_lab_generation() || phy_rx_lab_busy() ||
+        profile_generation != s_profile_generation ||
         s_agc_mode != ANALOG_AGC_ACTIVE || s_rx_profile != RX_PROFILE_DIRECT_GAIN)
         return;
 
@@ -1530,9 +1535,10 @@ static bool rx_probe_copy_completed(uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_R
 }
 
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile)
+static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32_t phy)
 {
-    if (profile != s_profile_generation ||
+    if (phy != phy_rx_lab_generation() || phy_rx_lab_busy() ||
+        profile != s_profile_generation ||
         s_agc_mode != ANALOG_AGC_ACTIVE ||
         s_rx_profile != RX_PROFILE_DIRECT_GAIN) return;
     s_shadow_gain = target;
@@ -1583,7 +1589,7 @@ static void direct_gain_v3_sentinel_task(void *arg)
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&
-                      !s_gain_sweep.active && !s_pre_q4_probe_active &&
+                      !s_gain_sweep.active && !phy_rx_lab_busy() && !s_pre_q4_probe_active &&
                       !s_rssi_probe_active;
         if (!active || s_v3_fast_overload_state != 0u ||
             s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 2)
@@ -1687,14 +1693,14 @@ static void direct_gain_v3_observer_task(void *arg)
 {
     (void)arg;
     uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
-    uint32_t seen_profile = UINT32_MAX, seen_arc = UINT32_MAX;
+    uint32_t seen_profile = UINT32_MAX, seen_arc = UINT32_MAX, seen_phy = UINT32_MAX;
     bool was_active = false;
     int last_block_idx = -1;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&
-                      !s_gain_sweep.active && !s_pre_q4_probe_active &&
+                      !s_gain_sweep.active && !phy_rx_lab_busy() && !s_pre_q4_probe_active &&
                       !s_rssi_probe_active;
         if (!active) {
             was_active = false;
@@ -1708,7 +1714,8 @@ static void direct_gain_v3_observer_task(void *arg)
         }
         uint32_t profile = s_profile_generation;
         uint32_t arc = rf_get_arc_generation();
-        if (!was_active || profile != seen_profile || arc != seen_arc ||
+        uint32_t phy = phy_rx_lab_generation();
+        if (!was_active || profile != seen_profile || arc != seen_arc || phy != seen_phy ||
             s_direct_gain_v3.current_gain != s_current_gain) {
             direct_gain_v3_reset(&s_direct_gain_v3, rf_get_arc_gain_table(),
                                  s_current_gain, rf_get_arc_survival_gain());
@@ -1720,6 +1727,7 @@ static void direct_gain_v3_observer_task(void *arg)
             }
             seen_profile = profile;
             seen_arc = arc;
+            seen_phy = phy;
             was_active = true;
         }
 
@@ -1729,7 +1737,7 @@ static void direct_gain_v3_observer_task(void *arg)
             __sync_lock_release(&s_v3_fast_overload_state);
             uint8_t emergency = direct_gain_v3_tick(&s_direct_gain_v3,
                                                     &overload);
-            direct_gain_v3_apply_target(emergency, profile);
+            direct_gain_v3_apply_target(emergency, profile, phy);
             continue;
         }
 
@@ -1750,8 +1758,9 @@ static void direct_gain_v3_observer_task(void *arg)
         s_v3_origin_pm = observation.origin_pm;
         s_v3_clip_pm = observation.clip_pm;
         s_v3_coherence = observation.coherence;
+        if (phy != phy_rx_lab_generation() || phy_rx_lab_busy()) continue;
         uint8_t target = direct_gain_v3_tick(&s_direct_gain_v3, &observation);
-        direct_gain_v3_apply_target(target, profile);
+        direct_gain_v3_apply_target(target, profile, phy);
         direct_gain_v5_dc_observe(sample, sizeof(sample), &observation);
         direct_gain_v5_bw_gear(&observation);
     }
@@ -2476,7 +2485,7 @@ static void lab_run_fft_probe(void)
  * phy_wifi_fbw_sel() BW40/BW20 path. Unknown channel-filter ROM calls remain
  * read-only research candidates until their C5 ABI and register effects are
  * proven. */
-static void lab_run_bandwidth_probe(void)
+static void lab_run_bandwidth_probe(bool vendor_path)
 {
     if (s_gain_sweep.active || s_menu_active) {
         printf("C5VRX_BW_PROBE_REFUSED reason=%s\n",
@@ -2484,6 +2493,12 @@ static void lab_run_bandwidth_probe(void)
         return;
     }
 
+    bool saved_vendor_bw40=true;
+    if (vendor_path && rf_get_vendor_bandwidth_lab(&saved_vendor_bw40) != ESP_OK) {
+        printf("PHYLAB vendor_bandwidth_unavailable\n");
+        return;
+    }
+    phy_rx_lab_stock();
     const analog_agc_mode_t saved_agc_mode = s_agc_mode;
     const agc_state_t saved_agc_state = s_agc_state;
     const rf_bw_mode_t saved_bw_mode = s_rf_bw_mode;
@@ -2505,17 +2520,31 @@ static void lab_run_bandwidth_probe(void)
     vTaskDelay(pdMS_TO_TICKS(250));
     lab_reset_correlation();
 
-    printf("C5VRX_BW_PROBE_BEGIN gain=%u settle_ms=%u order=40,20\n",
-           s_current_gain, LAB_BW_SETTLE_MS);
+    printf("C5VRX_BW_PROBE_BEGIN gain=%u settle_ms=%u vendor_path=%u order=40,20\n",
+           s_current_gain, LAB_BW_SETTLE_MS, vendor_path);
 
     const bool states[2] = {true, false};
     for (unsigned i = 0; i < 2; ++i) {
         const hw_transport_counters_t base = lab_counter_snapshot();
-        apply_rf_bandwidth(states[i]);
+        if (vendor_path) {
+            esp_err_t err=rf_set_vendor_bandwidth_lab(states[i]);
+            if (err != ESP_OK) {
+                printf("PHYLAB vendor_bw_error=%s\n",esp_err_to_name(err));
+                break;
+            }
+            s_current_bw40=states[i];
+        } else apply_rf_bandwidth(states[i]);
         vTaskDelay(pdMS_TO_TICKS(LAB_BW_SETTLE_MS));
-        lab_print_row("BW_SWEEP", &base);
+        lab_print_row(vendor_path ? "VENDOR_BW_SWEEP" : "BW_SWEEP", &base);
+        phy_rx_lab_dump(false);
     }
 
+    if (vendor_path) {
+        /* Failed restoration cannot silently resume a mismatched production
+         * receiver. ESP_ERROR_CHECK reboots through calibrated startup. */
+        ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(saved_vendor_bw40));
+        s_current_bw40=saved_vendor_bw40;
+    }
     s_rf_bw_mode = saved_bw_mode;
     if (s_current_bw40 != saved_bw40) apply_rf_bandwidth(saved_bw40);
     s_afc_mode = saved_afc_mode;
@@ -4604,6 +4633,7 @@ static void analog_agc_task(void *arg)
     (void)arc_v5_load_nvs(&arc_v5_autotune);
     uint32_t seen_arc_generation = rf_get_arc_generation();
     uint32_t receive_generation = s_receive_generation;
+    uint32_t seen_phy_generation = phy_rx_lab_generation();
     int boot_grace_ticks = 20;
 
     for (;;) {
@@ -4674,6 +4704,17 @@ static void analog_agc_task(void *arg)
             }
         }
 
+        phy_rx_lab_poll();
+        uint32_t phy_generation = phy_rx_lab_generation();
+        if (phy_generation != seen_phy_generation) {
+            seen_phy_generation = phy_generation;
+            /* Do not reuse AFC/sync observations spanning a compound tune. */
+            video_standard_detector_reset();
+            s_cfo_khz = 0;
+            afc_ticks = 0;
+            settle_ticks = GAIN_SETTLE_TICKS;
+        }
+        if (s_menu_active && phy_rx_lab_profile_active()) phy_rx_lab_stock();
         bool menu_was_active = s_menu_active;
         if (seen_profile_generation != s_profile_generation) {
             seen_profile_generation = s_profile_generation;
@@ -5339,8 +5380,10 @@ static void console_diag_task(void *arg)
                     continue;
                 }
                 if (s_gain_sweep.active && (c == '\r' || c == '\n')) continue;
+                if (phy_rx_lab_profile_active() && c < 128 &&
+                    !strchr("[]HpLl}q\r\n", c)) phy_rx_lab_stock();
                 if (rf_native_agc_active() && c < 128 &&
-                    strchr("gFGRUSK+-kjasmDIYX", c)) {
+                    strchr("gFBWAGRUSK+-kjasmDIYX", c)) {
                     printf("C5VRX_NATIVE_AGC_OWNS_GAIN command=%c action=ignored "
                            "hint=N_returns_to_firmware_gain\n", c);
                     continue;
@@ -5348,6 +5391,7 @@ static void console_diag_task(void *arg)
 
                 if (c == 'l' || c == 'L') {
                     int64_t now = esp_timer_get_time();
+                    phy_rx_lab_mark();
                     s_last_user_lag_mark_us = now;
                     ++s_hw_counters.user_lag_mark_count;
                     long long gain_age_ms = s_last_gain_write_us > 0 ?
@@ -5388,11 +5432,34 @@ static void console_diag_task(void *arg)
                 } else if (c == 'F') {
                     lab_run_fft_probe();
                 } else if (c == 'W') {
-                    lab_run_bandwidth_probe();
+                    lab_run_bandwidth_probe(false);
+                } else if (c == 'B') {
+                    lab_run_bandwidth_probe(true);
                 } else if (c == 'A') {
                     lab_run_frequency_probe();
                 } else if (c == 'H') {
                     lab_print_arc_oracle();
+                    phy_rx_lab_dump(false);
+                } else if (c == '}') {
+                    phy_rx_lab_toggle_monitor();
+                } else if (c == '{') {
+                    if (!rf_native_agc_active() && !s_gain_sweep.active && !s_menu_active) {
+                        lab_enter_quiet_baseline();
+                        phy_rx_lab_dump(true);
+                    } else {
+                        printf("PHYLAB analog_snapshot_refused=busy_or_native_owner\n");
+                    }
+                } else if (c == '[') {
+                    if (!rf_native_agc_active() && !s_gain_sweep.active && !s_menu_active) {
+                        /* Enter baseline once; later profiles restore their own
+                         * saved fields without changing the RF reference. */
+                        if (!phy_rx_lab_profile_active()) lab_enter_quiet_baseline();
+                        phy_rx_lab_next_profile();
+                    } else {
+                        printf("PHYLAB profile_refused=busy_or_native_owner\n");
+                    }
+                } else if (c == ']') {
+                    phy_rx_lab_stock();
                 } else if (c == 'G') {
                     lab_run_far_gain_probe();
                 } else if (c == 'U') {
@@ -5728,6 +5795,10 @@ static void console_diag_task(void *arg)
 #endif
                     printf("  'K':         Erase stored PHY calibration and reboot for a fresh vendor calibration\n");
                     printf("  'X':         Cycle RX profile (V2/V1/ARC V3)\n");
+                    printf("  'B':         Public vendor BW40/BW20 + retune A/B, restore on exit\n");
+                    printf("  'H'/'{':   PHY MMIO / quiet baseline + analog I2C snapshot\n");
+                    printf("  '}':         Toggle 50ms PHY monitor (L dumps bounded events)\n");
+                    printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
                     printf("  'l':         Mark a visible lag/freeze for correlation\n");

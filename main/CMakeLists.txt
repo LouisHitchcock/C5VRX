@@ -10,6 +10,7 @@ idf_component_register(
         "arc_v5_autotune.c"
         "rx_auto_lab.c"
         "rf.c"
+        "phy_rx_lab.c"
         "video.c"
         "direct_gain.c"
         "direct_gain_v2.c"
@@ -51,4 +52,16 @@ target_bitscrambler_add_src("fm_phase8_hr_live.bsasm")
 target_bitscrambler_add_src("fm_hc.bsasm")
 if(C5VRX4_EXPERIMENT)
     include("${PROJECT_DIR}/component.cmake")
+endif()
+
+# Recovered MMIO overrides are valid only for this exact C5 archive. Unknown
+# library versions retain observation but refuse all lab writes/I2C helpers.
+set(C5_PHY_ARCHIVE "$ENV{IDF_PATH}/components/esp_phy/lib/esp32c5/libphy.a")
+if(EXISTS "${C5_PHY_ARCHIVE}")
+    file(SHA256 "${C5_PHY_ARCHIVE}" C5_PHY_SHA256)
+    if(C5_PHY_SHA256 STREQUAL "dbf33c418c8d408d4005c849d12a1432deea82e2e5e57de3c8ddf914d104fffb")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE C5VRX_PHY_RX_LAB_PINNED=1)
+    else()
+        message(WARNING "Unverified C5 PHY: RX lab writes disabled (${C5_PHY_SHA256})")
+    endif()
 endif()

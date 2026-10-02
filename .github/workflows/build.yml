@@ -164,6 +164,10 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -Wno-misleading-indentation -Imain tools/test_analog_video_detect.c main/analog_video_detect.c -lm -o /tmp/test_analog_video_detect
           /tmp/test_analog_video_detect
           python3 -m pip install --quiet numpy
+          gcc -std=c11 -Wall -Wextra -Werror -DC5VRX_PHY_RX_LAB_PINNED=1 -Itools/phy_lab_stubs -Imain tools/test_phy_rx_lab.c -o /tmp/test_phy_rx_lab
+          /tmp/test_phy_rx_lab
+          gcc -std=c11 -Wall -Wextra -Werror -Itools/phy_lab_stubs -Imain tools/test_phy_rx_lab.c -o /tmp/test_phy_rx_readonly
+          /tmp/test_phy_rx_readonly
           python3 tools/analyze_agc_words.py --self-test
           gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_rx_auto_lab.c main/rx_auto_lab.c -o /tmp/test_rx_auto_lab
           /tmp/test_rx_auto_lab

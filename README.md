@@ -343,3 +343,11 @@ C5VRX/
 C5VRX is open-source software licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`).
 
 See [LICENSE](LICENSE) for full licensing terms. The C5VRX name and logos have separate terms; see [assets/BRANDING.md](assets/BRANDING.md).
+
+### Analog Lock / receive-state investigations
+
+Issues #150–153 now have an [Analog Lock and bounded PHY lab workflow](docs/analog-lock-phy-lab.md):
+Direct Gain ownership restoration after tuning, opt-in RX/ADC/watchdog monitoring,
+individual reversible filter/packet-control tests, and public vendor-bandwidth A/B.
+Hardware attenuation/passband results remain pending; these experiments do not
+claim a measured range gain or change the production filter defaults.
