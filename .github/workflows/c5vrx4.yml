@@ -9,6 +9,7 @@ on:
       - 'partitions.csv'
       - 'tools/test_c5vrx4_gate.c'
       - 'tools/test_phy_rx_lab.c'
+      - 'tools/test_rx_control_epoch.c'
       - 'tools/phy_lab_stubs/**'
       - 'tools/validate_build.py'
       - '.github/workflows/c5vrx4.yml'
@@ -31,6 +32,8 @@ jobs:
           /tmp/test_phy_rx_lab
           gcc -pthread -std=c11 -Wall -Wextra -Werror -Itools/phy_lab_stubs -Imain tools/test_phy_rx_lab.c -o /tmp/test_phy_rx_readonly
           /tmp/test_phy_rx_readonly
+          gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_rx_control_epoch.c main/direct_gain_v3.c main/arc_phy.c -o /tmp/test_rx_control_epoch
+          /tmp/test_rx_control_epoch
   build:
     needs: verify
     runs-on: ubuntu-latest

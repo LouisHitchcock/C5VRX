@@ -139,6 +139,12 @@ negative target sweeps, and adds a native-only bounded BB-gate A/B / 100-cycle
 prototype in both targets. Acquisition-complete detection, safe-slot rearm and
 closed-loop overload/fade recovery remain unproven; see
 `docs/native-agc-analog-patch.md`.
+The follow-up range audit fixes stale sentinel overload decisions across
+profile/PHY/gain changes and makes gain application nonblocking, generation-
+checked and serialized with retunes. Software gain state advances only after an
+accepted write; V3/V5 lane-and-gain application shares that ownership. These are
+host-tested control correctness fixes, not measured dB improvements; see the
+range-edge control-race section in `docs/analog-lock-phy-lab.md`.
 
 ### Data sources and acquisition methods already investigated
 

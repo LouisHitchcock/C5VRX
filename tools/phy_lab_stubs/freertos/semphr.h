@@ -16,6 +16,6 @@ static inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemap
     return m;
 }
 static inline int xSemaphoreTakeRecursive(SemaphoreHandle_t m, unsigned timeout)
-{ (void)timeout; return pthread_mutex_lock(m)==0; }
+{ return (timeout ? pthread_mutex_lock(m) : pthread_mutex_trylock(m))==0; }
 static inline int xSemaphoreGiveRecursive(SemaphoreHandle_t m)
 { return pthread_mutex_unlock(m)==0; }

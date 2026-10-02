@@ -46,6 +46,8 @@ void rf_set_analog_bandwidth(bool bw40);
 bool rf_get_analog_bandwidth(void);
 
 void rf_set_rx_gain(bool force, uint8_t gain_idx);
+/* True only when vendor gain write ran under the expected PHY generation. */
+bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generation);
 uint32_t rf_get_rx_gain_reg(void);
 
 /**

@@ -683,11 +683,20 @@ void rf_set_rx_gain(bool force, uint8_t gain_idx)
         ++s_native_agc_blocked_writes;
         return;
     }
-    if (phy_rx_lab_busy()) return;
-    if (force) {
-        s_current_gain_val = gain_idx;
+    (void)rf_try_set_rx_gain(force, gain_idx, phy_rx_lab_generation());
+}
+
+bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generation)
+{
+    if (s_native_agc) {
+        ++s_native_agc_blocked_writes;
+        return false;
     }
+    if (!phy_rx_lab_try_actuator(expected_generation)) return false;
     phy_force_rx_gain(force, gain_idx);
+    if (force) s_current_gain_val = gain_idx;
+    phy_rx_lab_end_actuator();
+    return true;
 }
 
 uint32_t rf_get_rx_gain_reg(void)

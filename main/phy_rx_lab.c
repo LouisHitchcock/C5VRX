@@ -17,13 +17,17 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
  * short spinlock below protects observations; it must never cover vendor I2C. */
 static StaticSemaphore_t s_transaction_storage;
 static SemaphoreHandle_t s_transaction;
-static void transaction_take(void)
+static void transaction_init(void)
 {
     portENTER_CRITICAL(&s_mux);
     if (!s_transaction)
         s_transaction=xSemaphoreCreateRecursiveMutexStatic(&s_transaction_storage);
     portEXIT_CRITICAL(&s_mux);
     configASSERT(s_transaction);
+}
+static void transaction_take(void)
+{
+    transaction_init();
     int taken=xSemaphoreTakeRecursive(s_transaction, portMAX_DELAY);
     configASSERT(taken==pdTRUE);
     (void)taken;
@@ -183,6 +187,20 @@ bool phy_rx_lab_busy(void)
     portEXIT_CRITICAL(&s_mux);
     return busy;
 }
+
+/* Gain/lane writes share the RF mutex without cancelling an A/B profile or
+ * publishing a new tune generation. Never wait with a stale control decision. */
+bool phy_rx_lab_try_actuator(uint32_t expected_generation)
+{
+    transaction_init();
+    if (xSemaphoreTakeRecursive(s_transaction, 0) != pdTRUE) return false;
+    portENTER_CRITICAL(&s_mux);
+    bool valid = !s_depth && s_generation == expected_generation;
+    portEXIT_CRITICAL(&s_mux);
+    if (!valid) transaction_give();
+    return valid;
+}
+void phy_rx_lab_end_actuator(void) { transaction_give(); }
 
 void phy_rx_lab_poll(void)
 {

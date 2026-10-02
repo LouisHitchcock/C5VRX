@@ -75,6 +75,14 @@ static void observe(const char *stage)
     ++stages;
 }
 static atomic_bool attempted, acquired;
+static void *actuator_contender(void *unused)
+{
+    (void)unused;
+    bool got=phy_rx_lab_try_actuator(phy_rx_lab_generation());
+    atomic_store(&acquired,got);
+    if (got) phy_rx_lab_end_actuator();
+    return NULL;
+}
 static void *contender(void *unused)
 {
     (void)unused; atomic_store(&attempted,true);
@@ -92,6 +100,26 @@ int main(void)
     phy_rx_lab_capture_vendor();
     phy_rx_lab_end();
     assert(s_enables==1 && s_disables==0 && s_generation==1);
+    /* A gain/lane actuator is nonblocking, excludes vendor transactions and
+     * cannot apply a decision made before a completed retune. */
+    uint32_t actuator_generation=phy_rx_lab_generation();
+    assert(phy_rx_lab_try_actuator(actuator_generation));
+    assert(!phy_rx_lab_busy()); /* not a tune: does not reset controller */
+    pthread_t actuator_thread;
+    assert(!pthread_create(&actuator_thread,NULL,actuator_contender,NULL));
+    assert(!pthread_join(actuator_thread,NULL));
+    assert(!atomic_load(&acquired));
+    phy_rx_lab_end_actuator();
+    assert(phy_rx_lab_generation()==actuator_generation);
+    phy_rx_lab_begin("retune_between_measure_and_write");
+    assert(!phy_rx_lab_try_actuator(actuator_generation)); /* same-task nesting */
+    assert(!pthread_create(&actuator_thread,NULL,actuator_contender,NULL));
+    assert(!pthread_join(actuator_thread,NULL));
+    assert(!atomic_load(&acquired));
+    phy_rx_lab_end();
+    assert(!phy_rx_lab_try_actuator(actuator_generation));
+    assert(phy_rx_lab_try_actuator(phy_rx_lab_generation()));
+    phy_rx_lab_end_actuator();
     uint32_t baseline=REG(0x600A0890);
     REG(0x600A0890)^=1;
     clock_us+=50000;

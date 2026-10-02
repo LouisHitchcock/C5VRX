@@ -33,6 +33,7 @@
 #endif
 #include "rf.h"
 #include "phy_rx_lab.h"
+#include "rx_control_epoch.h"
 #include "menu_font.h"
 #include "menu_raster.h"
 #include "range_control.h"
@@ -303,6 +304,7 @@ static TaskHandle_t s_v3_sentinel_task_handle;
 static esp_timer_handle_t s_v3_sentinel_timer;
 static volatile uint32_t s_v3_fast_overload_state;
 static dg3_observation_t s_v3_fast_overload_observation;
+static rx_control_epoch_t s_v3_fast_overload_epoch;
 #endif
 static volatile uint32_t s_gain_transition_count = 0;
 static volatile uint32_t s_direct_gain_v2_write_seq;
@@ -1379,7 +1381,7 @@ static void step_frequency_offset_khz_tracked(int delta_khz)
     apply_frequency_offset_khz_tracked(rf_get_frequency_offset_khz() + delta_khz);
 }
 
-static uint8_t apply_rx_gain_tracked(uint8_t gain)
+static uint8_t apply_rx_gain_for_generation(uint8_t gain, uint32_t phy_generation)
 {
     /* Native AGC experiment: the vendor loop owns gain; keep state unchanged. */
     if (rf_native_agc_active()) return s_current_gain;
@@ -1406,13 +1408,19 @@ static uint8_t apply_rx_gain_tracked(uint8_t gain)
     }
 
     if (next_gain == s_current_gain) return s_current_gain;
+    /* A busy or changed PHY must not leave software ahead of hardware. */
+    if (!rf_try_set_rx_gain(true, next_gain, phy_generation)) return s_current_gain;
     s_current_gain = next_gain;
     s_last_gain_write_us = esp_timer_get_time();
     s_last_phy_write_us = s_last_gain_write_us;
     s_last_phy_write_kind = PHY_WRITE_GAIN;
-    rf_set_rx_gain(true, next_gain);
     ++s_gain_transition_count;
     return next_gain;
+}
+
+static uint8_t apply_rx_gain_tracked(uint8_t gain)
+{
+    return apply_rx_gain_for_generation(gain, phy_rx_lab_generation());
 }
 
 /* Direct Gain V2 is the sole gain writer for its profile. It executes in the
@@ -1488,7 +1496,7 @@ static void direct_gain_v2_fast_tick(const control_metrics_t *metrics,
     if (target != s_current_gain) {
         ++s_direct_gain_v2_write_seq;
         __sync_synchronize();
-        uint8_t applied = apply_rx_gain_tracked(target);
+        uint8_t applied = apply_rx_gain_for_generation(target, phy_generation);
         direct_gain_v2_sync_applied(&s_direct_gain_v2, applied,
                                     (uint64_t)esp_timer_get_time());
         __sync_synchronize();
@@ -1541,6 +1549,7 @@ static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32
         profile != s_profile_generation ||
         s_agc_mode != ANALOG_AGC_ACTIVE ||
         s_rx_profile != RX_PROFILE_DIRECT_GAIN) return;
+    if (!phy_rx_lab_try_actuator(phy)) return;
     s_shadow_gain = target;
     s_agc_state = s_direct_gain_v3.state == DG3_HOLD ?
                   AGC_STATE_TRACK : AGC_STATE_LEARN;
@@ -1559,12 +1568,13 @@ static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32
     if (target != s_current_gain) {
         ++s_direct_gain_v2_write_seq;
         __sync_synchronize();
-        uint8_t applied = apply_rx_gain_tracked(target);
+        uint8_t applied = apply_rx_gain_for_generation(target, phy);
         direct_gain_v3_sync_applied(&s_direct_gain_v3, applied,
                                     (uint64_t)esp_timer_get_time());
         __sync_synchronize();
         ++s_direct_gain_v2_write_seq;
     }
+    phy_rx_lab_end_actuator();
 }
 
 /* ESP timer callback does no DMA or sample processing. It only wakes the
@@ -1595,7 +1605,9 @@ static void direct_gain_v3_sentinel_task(void *arg)
             s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 2)
             continue;
 
-        uint32_t gain_epoch = s_gain_transition_count;
+        rx_control_epoch_t epoch = {s_profile_generation, phy_rx_lab_generation(),
+                                    s_gain_transition_count};
+        uint32_t gain_epoch = epoch.gain;
         uint32_t active_addr = AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val;
         int active_idx = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count,
                                          active_addr);
@@ -1617,9 +1629,13 @@ static void direct_gain_v3_sentinel_task(void *arg)
             sample, sizeof(sample), c5vrx_phase8_gain_lut,
             (uint64_t)esp_timer_get_time());
         if (observation.clip_pm < 125u && observation.p95 < 95u) continue;
+        rx_control_epoch_t current = {s_profile_generation, phy_rx_lab_generation(),
+                                      s_gain_transition_count};
+        if (!rx_control_epoch_equal(epoch, current) || phy_rx_lab_busy()) continue;
         if (!__sync_bool_compare_and_swap(&s_v3_fast_overload_state, 0u, 1u))
             continue;
         s_v3_fast_overload_observation = observation;
+        s_v3_fast_overload_epoch = epoch;
         __sync_synchronize();
         __sync_lock_test_and_set(&s_v3_fast_overload_state, 2u);
         if (s_v3_observer_task_handle)
@@ -1704,7 +1720,9 @@ static void direct_gain_v3_observer_task(void *arg)
                       !s_rssi_probe_active;
         if (!active) {
             was_active = false;
-            (void)__sync_lock_test_and_set(&s_v3_fast_overload_state, 0u);
+            /* Never clear state 1 while the sentinel owns publication. */
+            if (__sync_bool_compare_and_swap(&s_v3_fast_overload_state, 2u, 1u))
+                __sync_lock_release(&s_v3_fast_overload_state);
             /* Finer range lanes are owned by Direct Gain only. */
             if (rf_get_iq_lanes()) {
                 rf_set_iq_lanes(0u);
@@ -1734,7 +1752,11 @@ static void direct_gain_v3_observer_task(void *arg)
         if (__sync_bool_compare_and_swap(&s_v3_fast_overload_state, 2u, 1u)) {
             __sync_synchronize();
             dg3_observation_t overload = s_v3_fast_overload_observation;
+            rx_control_epoch_t epoch = s_v3_fast_overload_epoch;
             __sync_lock_release(&s_v3_fast_overload_state);
+            rx_control_epoch_t current = {profile, phy, s_gain_transition_count};
+            if (!rx_control_observation_current(epoch, current, overload.observed_us,
+                                                 (uint64_t)esp_timer_get_time())) continue;
             uint8_t emergency = direct_gain_v3_tick(&s_direct_gain_v3,
                                                     &overload);
             direct_gain_v3_apply_target(emergency, profile, phy);

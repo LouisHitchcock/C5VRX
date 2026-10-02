@@ -233,3 +233,34 @@ operation; defaults and Direct Gain labs retain their original policy. No RF
 AGC disable or forced gain is allowed in this prototype. See
 [native-agc-analog-patch.md](native-agc-analog-patch.md) for the binary audit,
 prior negative results, exact test sequence and pending PAL/NTSC acceptance.
+
+
+## Range-edge control races fixed after the native audit
+
+This extends C5VRX/Twotoz/contributors' existing Direct Gain V5 and PHY-owner
+work, not a new demodulator or a measured sensitivity improvement.
+
+Two concrete software paths could reduce usable reception around a retune:
+
+1. The sentinel's overload mailbox stored only Q4 metrics. A strong-signal
+   observation from the prior channel, lane or gain could survive a controller
+   reset and issue an emergency gain cut on a newly selected weak channel.
+   It now carries profile/PHY/gain epochs, rejects changed epochs, and expires
+   after 1 ms. Fresh same-state overload still takes the immediate path. The
+   inactive consumer no longer clears a mailbox while its producer owns it.
+2. `apply_rx_gain_tracked()` advanced the software index, timestamp and transition
+   count before `rf_set_rx_gain()` could refuse a busy PHY write. The controller
+   could therefore measure a different physical gain than the one it believed
+   it had applied. RF gain writes now acquire the same recursive mutex as vendor
+   retunes, without waiting or changing tune generation, and check the expected
+   generation while holding it. Tracked state advances only after acceptance.
+   Direct Gain V3/V5 holds this ownership over its lane-and-gain application;
+   V2 also passes its pre-observation PHY generation to the actuator.
+
+Host tests exercise stale strong input against a maximum-gain listener, fresh
+emergency response, age bounds, same-task busy refusal, competing-task refusal,
+post-retune stale-generation refusal, and unchanged generation for an accepted
+actuator. Both firmware targets and the shared host suites must pass. The native
+AGC gain-write refusal remains intact. These fixes do not change AGC targets,
+gain tables, bandwidth defaults or demodulation, and provide no numeric dB claim.
+Physical weak/strong/channel/lab transitions still need hardware acceptance.

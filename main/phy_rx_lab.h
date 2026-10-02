@@ -10,6 +10,10 @@ void phy_rx_lab_end(void);
 void phy_rx_lab_capture_vendor(void);
 uint32_t phy_rx_lab_generation(void);
 bool phy_rx_lab_busy(void);
+/* Task-only nonblocking actuator ownership. Successful acquire must be paired
+ * with end_actuator. Does not change profiles or tune generation. */
+bool phy_rx_lab_try_actuator(uint32_t expected_generation);
+void phy_rx_lab_end_actuator(void);
 void phy_rx_lab_poll(void);
 void phy_rx_lab_toggle_monitor(void);
 void phy_rx_lab_dump(bool analog_i2c);
