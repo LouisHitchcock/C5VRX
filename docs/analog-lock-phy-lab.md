@@ -224,3 +224,12 @@ Direct Gain lab writes. The span75 detector/output stays unchanged. Input Q4
 metrics are bounded observations; shared Phase5 sync/chroma diagnostics are
 not evidence of this detector's physical output. C5VRX-4 acceptance needs its
 own hardware comparison, separate from C5VRX-3.
+
+## Native analog patch prototype (#139)
+
+Explicit native-only `(`/`)` commands test the reversible BB gate in both
+firmware targets. This is a scoped exception to ordinary native zero-disable
+operation; defaults and Direct Gain labs retain their original policy. No RF
+AGC disable or forced gain is allowed in this prototype. See
+[native-agc-analog-patch.md](native-agc-analog-patch.md) for the binary audit,
+prior negative results, exact test sequence and pending PAL/NTSC acceptance.

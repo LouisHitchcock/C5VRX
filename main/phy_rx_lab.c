@@ -418,3 +418,61 @@ esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage))
     return restored ? (applied ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
 #endif
 }
+
+/* Native analog patch prototype (#139): retain the hardware-selected tuple,
+ * stop only BB acquisition, then use the vendor resume strobe. This bounded
+ * console experiment does not infer acquisition-complete from an unknown FSM
+ * byte and does not establish automatic analog tracking. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_disable_agc(void);
+extern void phy_enable_agc(void);
+#endif
+esp_err_t phy_rx_lab_run_native_hold(unsigned cycles,
+    void (*observe)(const char *stage, unsigned cycle))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)cycles; (void)observe;
+    printf("NATIVEHOLD refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!rf_native_agc_active() || !observe || (cycles!=1 && cycles!=100))
+        return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("native_hold_lab");
+    /* 702C is force/control configuration, NOT live gain status. Bit23 is
+     * also the vendor resume strobe. Refuse any pre-existing forced mode. */
+    if ((REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23))) {
+        phy_rx_lab_end();
+        printf("NATIVEHOLD refused=already_held_or_forced\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    unsigned completed=0;
+    bool verified=true;
+    observe("FREE_BASELINE",0);
+    if ((REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23))) verified=false;
+    for (unsigned n=1; verified && n<=cycles; ++n) {
+        phy_disable_agc(); /* Exactly 7030 bit29; no RF disable, no gain write. */
+        if (!(REG(0x600A7030)&PHYBIT(29))) { verified=false; break; }
+        observe("HOLD",n);
+        /* An asynchronous writer reopening BB acquisition taints this trial. */
+        if (!(REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23))) {
+            verified=false; break;
+        }
+        phy_enable_agc(); /* Clear29 and pulse702C[23]; leaves RF AGC intact. */
+        if ((REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23))) {
+            verified=false; break;
+        }
+        ++completed;
+        observe("FREE_RESTORED",n);
+        if ((REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23))) verified=false;
+    }
+    /* Always recover baseline native ownership, even after failed hold. */
+    if ((REG(0x600A7030)&PHYBIT(29)) || (REG(0x600A702C)&PHYBIT(23)))
+        phy_enable_agc();
+    bool restored=!(REG(0x600A7030)&PHYBIT(29)) && !(REG(0x600A702C)&PHYBIT(23));
+    phy_rx_lab_end();
+    printf("NATIVEHOLD completed=%u requested=%u gate_verified=%u restored=%u "
+           "explicit_gain_index_writes=0 rf_disable_calls=0 hardware_acceptance=pending\n",
+           completed,cycles,verified,restored);
+    return restored ? (verified ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
+#endif
+}

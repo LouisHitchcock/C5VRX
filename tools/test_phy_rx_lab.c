@@ -34,6 +34,33 @@ void phy_11p_set(uint8_t enable,uint8_t mode)
 #endif
     for (unsigned i=6;i<=13;++i) analog_regs[i]=60;
 }
+static unsigned native_holds, native_releases, native_observations;
+static bool fail_native_hold, fail_native_release, interfere_native;
+void phy_disable_agc(void)
+{
+    ++native_holds;
+    if (!fail_native_hold) REG(0x600A7030)|=PHYBIT(29);
+}
+void phy_enable_agc(void)
+{
+    ++native_releases;
+    if (!fail_native_release) {
+        REG(0x600A7030)&=~PHYBIT(29);
+        REG(0x600A702C)|=PHYBIT(23);
+        REG(0x600A702C)&=~PHYBIT(23);
+    }
+}
+static void native_observe(const char *stage,unsigned cycle)
+{
+    assert(phy_rx_lab_busy()); ++native_observations;
+    if (!strcmp(stage,"HOLD")) {
+        assert(cycle && (REG(0x600A7030)&PHYBIT(29)));
+        assert(!(REG(0x600A702C)&PHYBIT(23)));
+        REG(0x600A7030)^=1u; /* unrelated bit must survive */
+        if (interfere_native) REG(0x600A7030)&=~PHYBIT(29);
+    } else assert(!(REG(0x600A7030)&PHYBIT(29)));
+    clock_us+=40000;
+}
 static unsigned stages;
 static void observe(const char *stage)
 {
@@ -147,6 +174,41 @@ int main(void)
     assert(stages==2 && !phy_rx_lab_busy()); fail_restore=false;
 #else
     assert(phy_rx_lab_run_11p_probe(observe)==ESP_ERR_NOT_SUPPORTED && !stages);
+#endif
+
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    native=true;
+    REG(0x600A7030)&=~PHYBIT(29); REG(0x600A702C)&=~PHYBIT(23);
+    uint32_t ctrl=REG(0x600A7030), force=REG(0x600A702C), rfctrl=REG(0x600A705C);
+    assert(phy_rx_lab_run_native_hold(100,native_observe)==ESP_OK);
+    assert(native_holds==100 && native_releases==100 && native_observations==201);
+    assert(REG(0x600A7030)==ctrl && REG(0x600A702C)==force && REG(0x600A705C)==rfctrl);
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_OK);
+    assert(REG(0x600A7030)==(ctrl^1u));
+    assert(REG(0x600A702C)==force && REG(0x600A705C)==rfctrl);
+    unsigned calls=native_holds;
+    assert(phy_rx_lab_run_native_hold(0,native_observe)==ESP_ERR_INVALID_STATE);
+    assert(phy_rx_lab_run_native_hold(1,NULL)==ESP_ERR_INVALID_STATE);
+    REG(0x600A702C)|=PHYBIT(23);
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_ERR_INVALID_STATE);
+    REG(0x600A702C)&=~PHYBIT(23);
+    REG(0x600A7030)|=PHYBIT(29);
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_ERR_INVALID_STATE);
+    REG(0x600A7030)&=~PHYBIT(29);
+    native=false;
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_ERR_INVALID_STATE);
+    assert(native_holds==calls); native=true;
+    fail_native_hold=true;
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_ERR_INVALID_RESPONSE);
+    fail_native_hold=false; interfere_native=true;
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_ERR_INVALID_RESPONSE);
+    interfere_native=false; fail_native_release=true;
+    assert(phy_rx_lab_run_native_hold(1,native_observe)==ESP_FAIL);
+    assert(!phy_rx_lab_busy());
+    fail_native_release=false; phy_enable_agc(); native=false;
+#else
+    assert(phy_rx_lab_run_native_hold(100,native_observe)==ESP_ERR_NOT_SUPPORTED);
+    assert(!native_holds && !native_releases);
 #endif
     for (unsigned i=0; i<100; ++i) { ++clock_us; phy_rx_lab_osi_event(false); }
     assert(s_disables==100);

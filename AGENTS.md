@@ -132,6 +132,13 @@ and the full lab. Its native gate is inert in Direct Gain; `c5vrx4` gain-owner N
 is separate from `c5vrx`. The detector/transport is retained, and input Q4 tests
 are not evidence of C5VRX-4 DAC sync/chroma or range. See that experiment README
 for available keys and its separate pending hardware acceptance.
+The later native AGC audit extends the existing #139 sample-and-hold proposal,
+not an independently discovered gain policy. It distinguishes configuration
+702C from live gain, records static init/reset/table call graphs and prior
+negative target sweeps, and adds a native-only bounded BB-gate A/B / 100-cycle
+prototype in both targets. Acquisition-complete detection, safe-slot rearm and
+closed-loop overload/fade recovery remain unproven; see
+`docs/native-agc-analog-patch.md`.
 
 ### Data sources and acquisition methods already investigated
 
@@ -408,10 +415,17 @@ requirements by themselves**.
   the default again without a new hardware comparison that beats V4.
 
 - VTX presence and USB must never gate or pace IQ production.
-- Native ESP32-C5 hardware AGC is opt-in (NVS `c5vrx/native_agc = 1`, set by
-  `N` or the RF page profile cycle). In that mode never call
+- Native ESP32-C5 hardware AGC is opt-in (NVS `c5vrx/native_agc = 1` or
+  `c5vrx4/native_agc = 1`, set by `N` or the RF page profile cycle). In ordinary
+  native operation never call
   `phy_disable_agc()` / `phy_rfagc_disable()` and never force RX gain; every
   firmware gain write must stay refused at `rf_set_rx_gain()`.
+  The explicitly requested PR #154 native analog patch prototype is a scoped
+  exception: console `(`/`)` may temporarily call the reversible BB-only
+  `phy_disable_agc()`/`phy_enable_agc()` under a serialized lab transaction.
+  It never calls `phy_rfagc_disable()` or forces a gain. Native pacing is paused
+  before the trial, baseline ownership is restored afterwards, and production
+  native operation remains untouched. See `docs/native-agc-analog-patch.md`.
 - The normal live source is MODEM_DIAG Q4/I4 captured by PARLIO RX; active
   MAC-owned dump SRAM is a diagnostic writer, not a readable live source.
 - Do not turn a physical SRAM or DMA block boundary into a DSP reset.

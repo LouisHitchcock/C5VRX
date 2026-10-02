@@ -22,3 +22,8 @@ bool phy_rx_lab_profile_active(void);
 /* Synchronous task-only A/B. Callback observes fresh samples without RF writes.
  * Caller pauses all controllers; ESP_FAIL means rollback failed, reboot required. */
 esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage));
+
+/* Explicit native-only laboratory exception: reversible BB gate, never RF-AGC
+ * destruction or forced gain. Observer must yield; 1 or 100 cycles only. */
+esp_err_t phy_rx_lab_run_native_hold(unsigned cycles,
+    void (*observe)(const char *stage, unsigned cycle));

@@ -126,3 +126,9 @@ built successfully with ESP-IDF v6.0.2. The generated C5VRX-4 configuration has
 architecture checks, the existing host range/demod suite, pinned/unpinned lab
 lifecycle tests and C5VRX-4 gate isolation test passed. Hardware acceptance is
 still pending; this record is not an RF sensitivity or video-quality result.
+
+Native analog AGC patch prototype: after `N` selects native mode on reboot,
+`(` runs BB-only acquire/hold/release A/B and `)` runs100 reversible cycles.
+The native pacing ISR is suspended during the trial and its previous policy
+resumes afterwards. These experiments never force gain or destroy RF AGC.
+See [the detailed binary audit and acceptance limits](../../docs/native-agc-analog-patch.md).

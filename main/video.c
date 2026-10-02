@@ -2728,6 +2728,67 @@ static void lab_run_11p_probe(void)
     printf("PHY11P done status=%d\n",(int)result);
 }
 
+static unsigned s_native_hold_cycles;
+static void lab_observe_native_hold(const char *stage, unsigned cycle)
+{
+    volatile uint32_t *proxy_a=(volatile uint32_t *)0x600A706Cu;
+    volatile uint32_t *proxy_b=(volatile uint32_t *)0x600A7078u;
+    uint32_t before_a=*proxy_a, before_b=*proxy_b;
+    /* One second for visual A/B; cycle stress uses >=2 PAL/NTSC fields. */
+    vTaskDelay(pdMS_TO_TICKS(s_native_hold_cycles==1 ? 1000 : 40));
+    uint8_t sample[256];
+    if (!rx_probe_copy_completed(sample)) {
+        printf("NATIVEHOLD stage=%s cycle=%u sample=unavailable\n",stage,cycle);
+        return;
+    }
+    control_metrics_t m=analyze_control_window(sample,sizeof(sample),0);
+    centered_q4_metrics_t center=measure_centered_q4(sample,sizeof(sample));
+    printf("NATIVEHOLD stage=%s cycle=%u freq=%u bw=%u offset=%d "
+           "proxyA=%08lx/%08lx proxyB=%08lx/%08lx samples=%u "
+           "bb_ctrl=%08lx force_ctrl=%08lx rf_ctrl=%08lx "
+           "P50=%d P50_center=%d P95_center=%d Q_phase=%d outer_pm=%d origin_pm=%d "
+           "live_gain=unknown video=hardware_pending\n",
+           stage,cycle,rf_get_frequency_mhz(),rf_get_analog_bandwidth()?40:20,
+           rf_get_frequency_offset_khz(),(unsigned long)before_a,(unsigned long)*proxy_a,
+           (unsigned long)before_b,(unsigned long)*proxy_b,(unsigned)sizeof(sample),
+           (unsigned long)*(volatile uint32_t *)0x600A7030u,
+           (unsigned long)*(volatile uint32_t *)0x600A702Cu,
+           (unsigned long)*(volatile uint32_t *)0x600A705Cu,
+           m.p_median,center.p_median,center.p95,m.q_phase,m.clip_permille,m.origin_permille);
+}
+static void lab_run_native_hold(unsigned cycles)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)cycles;
+    printf("NATIVEHOLD refused=unverified_PHY_binary\n");
+    return;
+#endif
+    if (!rf_native_agc_active() || s_gain_sweep.active || s_menu_active ||
+        s_pre_q4_probe_active || s_rssi_probe_active) {
+        printf("NATIVEHOLD refused=busy_or_not_native hint=N_native_on_next_boot\n");
+        return;
+    }
+    analog_agc_mode_t saved_mode=s_agc_mode;
+    s_rssi_probe_active=true;
+    s_agc_mode=ANALOG_AGC_MANUAL;
+    vTaskDelay(pdMS_TO_TICKS(100));
+#ifdef C5VRX4_EXPERIMENT
+    /* Stop the native pacing ISR before touching the same BB gate. Resuming
+     * afterwards restores the operator's paced/continuous selection. */
+    c5vrx4_suspend();
+#endif
+    s_native_hold_cycles=cycles;
+    esp_err_t result=phy_rx_lab_run_native_hold(cycles,lab_observe_native_hold);
+    if (result==ESP_FAIL) { printf("NATIVEHOLD restore_failed rebooting\n"); esp_restart(); }
+#ifdef C5VRX4_EXPERIMENT
+    c5vrx4_resume();
+#endif
+    ++s_profile_generation;
+    s_agc_mode=saved_mode;
+    s_rssi_probe_active=false;
+    printf("NATIVEHOLD done status=%d\n",(int)result);
+}
+
 /* Fast empirical probe for Direct Gain: measures phy_get_rssi() and Q4 metrics
  * across 6 fixed gains (G15..G81) to verify pre-gain vs post-gain RSSI behavior. */
 static void lab_run_rssi_gain_probe(void)
@@ -5508,6 +5569,8 @@ static void console_diag_task(void *arg)
                     lab_run_tx_self_noise_probe();
                 } else if (c == 'K') {
                     lab_request_fresh_phy_calibration();
+                } else if (c == '(' || c == ')') {
+                    lab_run_native_hold(c == '(' ? 1u : 100u);
                 } else if (c == ':') {
                     lab_run_11p_probe();
                 } else if (c == 'R') {
@@ -5840,6 +5903,7 @@ static void console_diag_task(void *arg)
                     printf("  'B':         Public vendor BW40/BW20 + retune A/B, restore on exit\n");
                     printf("  'H'/'{':   PHY MMIO / quiet baseline + analog I2C snapshot\n");
                     printf("  '}':         Toggle 50ms PHY monitor (L dumps bounded events)\n");
+                    printf("  '('/')':     Native BB hold A/B / 100 reversible cycles (native only)\n");
                     printf("  ':':         Reversible phy_11p_set(1,0) A/B (three fresh Q4 rows)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
