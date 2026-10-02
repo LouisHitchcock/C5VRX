@@ -2688,6 +2688,46 @@ static centered_q4_metrics_t measure_centered_q4(const uint8_t *sample, size_t b
     return m;
 }
 
+/* The controller is paused, so cached LAB rows would be stale. Measure each
+ * 11p stage afresh from completed DMA regions; no CPU processing in AV path. */
+static void lab_observe_11p(const char *stage)
+{
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    uint8_t sample[256];
+    if (!rx_probe_copy_completed(sample)) {
+        printf("PHY11P stage=%s sample=unavailable\n",stage);
+        return;
+    }
+    control_metrics_t m=analyze_control_window(sample,sizeof(sample),0);
+    centered_q4_metrics_t center=measure_centered_q4(sample,sizeof(sample));
+    printf("PHY11P stage=%s freq=%u G=%u bw=%u offset=%d samples=%u "
+           "P50=%d P50_center=%d P95_center=%d Q_phase=%d outer_permille=%d "
+           "origin_permille=%d origin_center_permille=%d video=hardware_pending\n",
+           stage,rf_get_frequency_mhz(),s_current_gain,rf_get_analog_bandwidth()?40:20,
+           rf_get_frequency_offset_khz(),(unsigned)sizeof(sample),m.p_median,
+           center.p_median,center.p95,m.q_phase,m.clip_permille,m.origin_permille,
+           center.origin_permille);
+}
+static void lab_run_11p_probe(void)
+{
+    if (rf_native_agc_active() || s_gain_sweep.active || s_menu_active ||
+        s_pre_q4_probe_active || s_rssi_probe_active) {
+        printf("PHY11P refused=other_lab_menu_or_native_owner\n");
+        return;
+    }
+    analog_agc_mode_t saved_mode=s_agc_mode;
+    s_rssi_probe_active=true;
+    s_agc_mode=ANALOG_AGC_MANUAL;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_err_t result=phy_rx_lab_run_11p_probe(lab_observe_11p);
+    /* A failed exact rollback must not resume control over an unknown PHY. */
+    if (result==ESP_FAIL) { printf("PHY11P rollback_failed rebooting\n"); esp_restart(); }
+    ++s_profile_generation;
+    s_agc_mode=saved_mode;
+    s_rssi_probe_active=false;
+    printf("PHY11P done status=%d\n",(int)result);
+}
+
 /* Fast empirical probe for Direct Gain: measures phy_get_rssi() and Q4 metrics
  * across 6 fixed gains (G15..G81) to verify pre-gain vs post-gain RSSI behavior. */
 static void lab_run_rssi_gain_probe(void)
@@ -5468,6 +5508,8 @@ static void console_diag_task(void *arg)
                     lab_run_tx_self_noise_probe();
                 } else if (c == 'K') {
                     lab_request_fresh_phy_calibration();
+                } else if (c == ':') {
+                    lab_run_11p_probe();
                 } else if (c == 'R') {
                     lab_run_rssi_gain_probe();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
@@ -5798,6 +5840,7 @@ static void console_diag_task(void *arg)
                     printf("  'B':         Public vendor BW40/BW20 + retune A/B, restore on exit\n");
                     printf("  'H'/'{':   PHY MMIO / quiet baseline + analog I2C snapshot\n");
                     printf("  '}':         Toggle 50ms PHY monitor (L dumps bounded events)\n");
+                    printf("  ':':         Reversible phy_11p_set(1,0) A/B (three fresh Q4 rows)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

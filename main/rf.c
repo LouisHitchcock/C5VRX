@@ -836,11 +836,12 @@ void rf_set_frequency_offset_khz(int offset_khz)
     if (offset_khz > 1500)  offset_khz = 1500;
 
     if (offset_khz == s_current_offset_khz) return;
-    s_current_offset_khz = offset_khz;
+
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
 #endif
     phy_rx_lab_begin("offset");
+    s_current_offset_khz = offset_khz;
     phy_chip_set_chan_offset(offset_khz);
     /* The pinned helper unconditionally enables BB AGC before returning. */
     analog_phy_restore_lock();

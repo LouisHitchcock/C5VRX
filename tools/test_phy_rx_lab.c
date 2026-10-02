@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <sched.h>
 static int64_t clock_us;
 static bool native;
 unsigned char phy_param[0x500];
@@ -12,9 +15,45 @@ bool rf_native_agc_active(void) { return native; }
 bool rf_get_analog_bandwidth(void) { return true; }
 uint16_t rf_get_frequency_mhz(void) { return 5865; }
 int rf_get_frequency_offset_khz(void) { return 0; }
+static uint8_t analog_regs[32];
+static bool fail_restore, fail_apply;
 uint8_t phy_i2c_readReg(uint8_t b, uint8_t h, uint8_t r)
-{ assert(b==0x67 && h==1); return r; }
+{ assert(b==0x67 && h==1); return analog_regs[r]; }
 #include "../main/phy_rx_lab.c"
+void phy_i2c_writeReg(uint8_t b,uint8_t h,uint8_t r,uint8_t v)
+{ assert(b==0x67 && h==1); if (!fail_restore) analog_regs[r]=v; }
+void phy_11p_set(uint8_t enable,uint8_t mode)
+{
+    assert(enable==1 && mode==0);
+    if (fail_apply) return;
+    phy_param[0x26]=enable; phy_param[0x27]=mode;
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    for (unsigned i=0;i<4;++i) {
+        patch_t x=s_11p_fields[i]; REG(x.addr)=(REG(x.addr)&~x.mask)|x.value;
+    }
+#endif
+    for (unsigned i=6;i<=13;++i) analog_regs[i]=60;
+}
+static unsigned stages;
+static void observe(const char *stage)
+{
+    assert(phy_rx_lab_busy());
+    if (stages==0) assert(!strcmp(stage,"BASELINE"));
+    else if (stages==1 && !fail_apply) {
+        assert(!strcmp(stage,"ENABLED"));
+        assert(phy_param[0x26]==1 && phy_param[0x27]==0);
+        /* Preserve unrelated volatile bits despite exact owned rollback. */
+        REG(0x600A7030)^=1u;
+    } else assert(!strcmp(stage,"RESTORED"));
+    ++stages;
+}
+static atomic_bool attempted, acquired;
+static void *contender(void *unused)
+{
+    (void)unused; atomic_store(&attempted,true);
+    phy_rx_lab_begin("other_task");
+    atomic_store(&acquired,true); phy_rx_lab_end(); return NULL;
+}
 int main(void)
 {
     void *memory=mmap((void *)0x600A0000, 0x10000, PROT_READ|PROT_WRITE,
@@ -73,6 +112,41 @@ int main(void)
 #else
     phy_rx_lab_next_profile();
     assert(!s_profile);
+#endif
+
+    /* A competing task cannot join another owner's nested transaction. */
+    phy_rx_lab_begin("owner");
+    pthread_t thread; assert(!pthread_create(&thread,NULL,contender,NULL));
+    while (!atomic_load(&attempted)) sched_yield();
+    assert(!atomic_load(&acquired));
+    phy_rx_lab_end(); assert(!pthread_join(thread,NULL));
+    assert(atomic_load(&acquired));
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    for (unsigned i=6;i<=13;++i) analog_regs[i]=i+20;
+    phy_param[0x26]=7; phy_param[0x27]=9;
+    uint32_t before=REG(0x600A7030), fields[4];
+    for (unsigned i=0;i<4;++i) fields[i]=REG(s_11p_fields[i].addr);
+    assert(phy_rx_lab_run_11p_probe(observe)==ESP_OK);
+    assert(stages==3 && !phy_rx_lab_busy());
+    assert(REG(0x600A7030)==(before^1u));
+    for (unsigned i=0;i<4;++i)
+        assert((REG(s_11p_fields[i].addr)&s_11p_fields[i].mask)==(fields[i]&s_11p_fields[i].mask));
+    assert(phy_param[0x26]==7 && phy_param[0x27]==9);
+    for (unsigned i=6;i<=13;++i) assert(analog_regs[i]==i+20);
+    native=true; stages=0;
+    assert(phy_rx_lab_run_11p_probe(observe)==ESP_ERR_INVALID_STATE && !stages);
+    native=false;
+    fail_apply=true;
+    /* A failed application still restores and releases task ownership. */
+    assert(phy_rx_lab_run_11p_probe(NULL)==ESP_ERR_INVALID_STATE);
+    assert(phy_rx_lab_run_11p_probe(observe)==ESP_ERR_INVALID_RESPONSE);
+    assert(stages==2 && !phy_rx_lab_busy());
+    fail_apply=false;
+    fail_restore=true; stages=0;
+    assert(phy_rx_lab_run_11p_probe(observe)==ESP_FAIL);
+    assert(stages==2 && !phy_rx_lab_busy()); fail_restore=false;
+#else
+    assert(phy_rx_lab_run_11p_probe(observe)==ESP_ERR_NOT_SUPPORTED && !stages);
 #endif
     for (unsigned i=0; i<100; ++i) { ++clock_us; phy_rx_lab_osi_event(false); }
     assert(s_disables==100);

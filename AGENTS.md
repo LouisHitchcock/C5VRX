@@ -116,6 +116,18 @@ Older documents retain their original evidence boundaries; later measurements
 can supersede them. In particular, an early C5VRX-1 "no continuous source proven"
 verdict predates the C5VRX-2 autonomous-writer and MODEM_DIAG hardware findings.
 
+### Analog PHY ownership and scoped 11p lab (2026-10-02)
+
+PR #154 implements the #150–153 pinned register evidence/invariant lab, restores
+Direct Gain ownership after vendor offset/BW/channel operations, and adds a
+public vendor bandwidth+retune comparison. PHY transactions use a task-owned
+recursive mutex; a depth counter alone cannot exclude concurrent tasks.
+Issue #155 adds an opt-in, exact-state-restored `phy_11p_set(1,0)` A/B, credited
+to SushiDude (@Ready4Sushi on X) for the reported reception improvement.
+These are implemented/host-tested controls and static binary findings, not
+hardware proof of passband, sensitivity or range. See
+`docs/analog-lock-phy-lab.md` for masks, rollback and pending measurements.
+
 ### Data sources and acquisition methods already investigated
 
 | Source / method | What it supplies or attempts | Evidence and limitation | Start here |

@@ -168,3 +168,46 @@ then deliberately retune for a positive control and use `H`/`L` again.
 | Pending hardware | — | stock/fix-only/candidate | — | — | — | — | No dB claim |
 
 Keep #150–153 open until their measurement criteria are actually met.
+
+## Issue #155: reversible 11p A/B
+
+Press `:` in Direct Gain mode to compare BASELINE, ENABLED and RESTORED at
+one fixed channel, gain, bandwidth, offset and IQ lane. Gain/BW/AFC controllers
+pause for the complete experiment; the live hardware video path continues.
+Each stage settles for one second and measures four fresh 64-byte regions from
+a completed DMA descriptor. These bounded Q4 statistics are not a measurement
+of continuous phase quality, sync, chroma, range or received power in dBm.
+Compare the picture physically and repeat with controlled attenuation.
+
+The original reported improvement around 5.75–5.99 GHz is credited to
+**SushiDude (@Ready4Sushi on X)**. The pinned helper contains no frequency test;
+the reported frequency range is an observation, not a proven validity boundary.
+
+For the pinned `libphy.a` SHA-256 above, `phy_11p_set(1,0)` writes:
+
+| State | Owned mask / registers | Enabled value |
+| --- | --- | --- |
+| `phy_param` | offsets `0x26`, `0x27` | `1`, `0` |
+| `0x600A7CE4` | `0x0000001c` | `0x00000010` |
+| `0x600A7030` | bit 5 | clear |
+| `0x600A7048` | `0x00007f00` | `0x00004000` |
+| `0x600A71C4` | `0x00fe0000` | `0x00440000` |
+| analog I2C block `0x67`, host `1` | registers 6–13 | all `60` |
+
+The helper itself does not retune the PLL, rebuild the gain table or write the
+ADC/filter tuple. The normal vendor channel helper can replay 11p from the
+stored flags. A task-owned recursive PHY mutex therefore excludes other RF
+transactions across all three stages. Vendor I2C calls run outside spinlocks.
+
+Rollback restores the two saved flags, eight full saved analog bytes and four
+saved MMIO fields, preserving unrelated bits. Calling `phy_11p_set(0,0)` would
+install vendor defaults, which may differ from the previous calibration/state,
+and is deliberately not used. Application and rollback have readback checks;
+a failed application skips the candidate measurement, and failed rollback
+reboots rather than resuming the controller over unknown PHY state. Native AGC
+and unknown library revisions refuse the experiment. No NVS state is changed.
+
+Host tests cover saved non-default flags/analog state, unrelated-bit changes,
+failed rollback, native/unpinned refusal and competing-task exclusion. Hardware
+quality, stability, attenuation and PAL/NTSC acceptance remain pending. Keep
+#155 open until these measurements are recorded.

@@ -4,6 +4,7 @@
 #include "rf.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <inttypes.h>
 #include <stdio.h>
 
@@ -12,6 +13,27 @@
 #define EVENT_CAP 64u
 #define PROFILE_US 10000000LL
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+/* Task ownership is recursive for nested channel/bandwidth restoration. The
+ * short spinlock below protects observations; it must never cover vendor I2C. */
+static StaticSemaphore_t s_transaction_storage;
+static SemaphoreHandle_t s_transaction;
+static void transaction_take(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    if (!s_transaction)
+        s_transaction=xSemaphoreCreateRecursiveMutexStatic(&s_transaction_storage);
+    portEXIT_CRITICAL(&s_mux);
+    configASSERT(s_transaction);
+    int taken=xSemaphoreTakeRecursive(s_transaction, portMAX_DELAY);
+    configASSERT(taken==pdTRUE);
+    (void)taken;
+}
+static void transaction_give(void)
+{
+    int given=xSemaphoreGiveRecursive(s_transaction);
+    configASSERT(given==pdTRUE);
+    (void)given;
+}
 
 typedef struct {
     uint32_t addr, baseline, current, changes;
@@ -116,6 +138,7 @@ void phy_rx_lab_osi_event(bool enable)
 
 void phy_rx_lab_begin(const char *reason)
 {
+    transaction_take();
     portENTER_CRITICAL(&s_mux);
     if (s_depth++ == 0) {
         stock_locked(); /* Never carry a previous-channel snapshot into a tune. */
@@ -142,6 +165,7 @@ void phy_rx_lab_end(void)
         record_locked(esp_timer_get_time(), 3, 1, 0);
     }
     portEXIT_CRITICAL(&s_mux);
+    transaction_give();
 }
 
 uint32_t phy_rx_lab_generation(void)
@@ -322,5 +346,75 @@ void phy_rx_lab_dump(bool analog_i2c)
     }
 #else
     (void)analog_i2c;
+#endif
+}
+
+/* Issue #155: scoped vendor experiment, never a production/NVS setting.
+ * phy_11p_set(0,0) installs defaults, so it is NOT an exact rollback. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_11p_set(uint8_t enable, uint8_t mode);
+extern void phy_i2c_writeReg(uint8_t block, uint8_t host, uint8_t reg, uint8_t value);
+static const patch_t s_11p_fields[] = {
+    {0x600A7CE4, 0x1cu, 0x10u}, {0x600A7030, PHYBIT(5), 0},
+    {0x600A7048, 0x7f00u, 0x4000u}, {0x600A71C4, 0x00fe0000u, 0x00440000u},
+};
+static void snapshot_11p(const char *stage)
+{
+    printf("PHY11P_STATE stage=%s flags=%02x/%02x\n",stage,phy_param[0x26],phy_param[0x27]);
+    for (unsigned i=0; i<4; ++i)
+        printf("PHY11P_REG reg=%08" PRIx32 " value=%08" PRIx32 " mask=%08" PRIx32 "\n",
+               s_11p_fields[i].addr,REG(s_11p_fields[i].addr),s_11p_fields[i].mask);
+    for (uint8_t i=6; i<=13; ++i)
+        printf("PHY11P_I2C reg=%u value=%02x\n",i,phy_i2c_readReg(0x67,1,i));
+}
+static bool verify_11p(const uint32_t *values, const uint8_t *analog)
+{
+    for (unsigned i=0; i<4; ++i)
+        if ((REG(s_11p_fields[i].addr)&s_11p_fields[i].mask) != values[i]) return false;
+    for (uint8_t i=0; i<8; ++i)
+        if (phy_i2c_readReg(0x67,1,6+i)!=analog[i]) return false;
+    return true;
+}
+#endif
+esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("PHY11P refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe || rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("11p_AB");
+    uint32_t saved[4], enabled[4];
+    uint8_t analog[8], expected[8];
+    uint8_t flags[2]={phy_param[0x26],phy_param[0x27]};
+    for (unsigned i=0; i<4; ++i) {
+        saved[i]=REG(s_11p_fields[i].addr)&s_11p_fields[i].mask;
+        enabled[i]=s_11p_fields[i].value;
+    }
+    for (uint8_t i=0; i<8; ++i) {
+        analog[i]=phy_i2c_readReg(0x67,1,6+i);
+        expected[i]=60;
+    }
+    snapshot_11p("BASELINE");
+    observe("BASELINE");
+    phy_11p_set(1,0);
+    bool applied=phy_param[0x26]==1 && phy_param[0x27]==0 && verify_11p(enabled,expected);
+    printf("PHY11P apply_verified=%u persistent=0\n",applied);
+    if (applied) { snapshot_11p("ENABLED"); observe("ENABLED"); }
+    /* Clear the persistent vendor flags before another channel operation can
+     * replay 11p. Restore saved analog bytes, then only the owned MMIO masks. */
+    phy_param[0x26]=flags[0]; phy_param[0x27]=flags[1];
+    for (uint8_t i=0; i<8; ++i) phy_i2c_writeReg(0x67,1,6+i,analog[i]);
+    for (unsigned i=0; i<4; ++i) {
+        patch_t x=s_11p_fields[i];
+        REG(x.addr)=(REG(x.addr)&~x.mask)|saved[i];
+    }
+    __sync_synchronize();
+    bool restored=phy_param[0x26]==flags[0] && phy_param[0x27]==flags[1] && verify_11p(saved,analog);
+    printf("PHY11P restore_verified=%u\n",restored);
+    if (restored) { snapshot_11p("RESTORED"); observe("RESTORED"); }
+    phy_rx_lab_end();
+    return restored ? (applied ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
 #endif
 }
