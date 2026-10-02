@@ -211,3 +211,16 @@ Host tests cover saved non-default flags/analog state, unrelated-bit changes,
 failed rollback, native/unpinned refusal and competing-task exclusion. Hardware
 quality, stability, attenuation and PAL/NTSC acceptance remain pending. Keep
 #155 open until these measurements are recorded.
+
+## C5VRX-4 integration
+
+The isolated `experiments/c5vrx-4` target shares this entire PHY lab, RF restore
+policy and controller generation handling. Direct Gain V5 is now its default;
+`N` / RF-menu gain-owner changes persist only in namespace `c5vrx4` and reboot.
+The optional native pacing gate is inert under Direct Gain, including suspend,
+resume and `~`, so it cannot reopen native AGC during a profile or 11p A/B.
+All keys above apply; native mode retains read-only diagnostics and refuses
+Direct Gain lab writes. The span75 detector/output stays unchanged. Input Q4
+metrics are bounded observations; shared Phase5 sync/chroma diagnostics are
+not evidence of this detector's physical output. C5VRX-4 acceptance needs its
+own hardware comparison, separate from C5VRX-3.

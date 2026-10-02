@@ -7,6 +7,10 @@ on:
       - 'main/**'
       - 'sdkconfig.defaults'
       - 'partitions.csv'
+      - 'tools/test_c5vrx4_gate.c'
+      - 'tools/test_phy_rx_lab.c'
+      - 'tools/phy_lab_stubs/**'
+      - 'tools/validate_build.py'
       - '.github/workflows/c5vrx4.yml'
 permissions:
   contents: read
@@ -14,7 +18,21 @@ concurrency:
   group: c5vrx4-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify shared architecture and C5VRX-4 PHY ownership
+        run: |
+          python3 tools/validate_build.py
+          gcc -pthread -std=c11 -Wall -Wextra -Werror -Itools/phy_lab_stubs -Imain -Iexperiments/c5vrx-4 tools/test_c5vrx4_gate.c -o /tmp/test_c5vrx4_gate
+          /tmp/test_c5vrx4_gate
+          gcc -pthread -std=c11 -Wall -Wextra -Werror -DC5VRX_PHY_RX_LAB_PINNED=1 -Itools/phy_lab_stubs -Imain tools/test_phy_rx_lab.c -o /tmp/test_phy_rx_lab
+          /tmp/test_phy_rx_lab
+          gcc -pthread -std=c11 -Wall -Wextra -Werror -Itools/phy_lab_stubs -Imain tools/test_phy_rx_lab.c -o /tmp/test_phy_rx_readonly
+          /tmp/test_phy_rx_readonly
   build:
+    needs: verify
     runs-on: ubuntu-latest
     container: espressif/idf:v6.0.2
     steps:

@@ -1,3 +1,4 @@
+/* C5VRX by Twotoz and contributors: span75 transport and opt-in native gate. */
 #include "c5vrx4.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -65,6 +66,8 @@ static bool IRAM_ATTR gate_alarm(gptimer_handle_t timer,
 
 void c5vrx4_suspend(void)
 {
+    /* Direct Gain owns the hold state. No timer/register writes in this mode. */
+    if (!rf_native_agc_active()) return;
     if (!s_transition_lock) return;
     xSemaphoreTakeRecursive(s_transition_lock, portMAX_DELAY);
     portENTER_CRITICAL(&s_lock);
@@ -77,6 +80,8 @@ void c5vrx4_suspend(void)
 
 void c5vrx4_resume(void)
 {
+    /* Direct Gain owns the hold state. No timer/register writes in this mode. */
+    if (!rf_native_agc_active()) return;
     if (!s_transition_lock) return;
     portENTER_CRITICAL(&s_lock);
     if (s_suspend_depth) --s_suspend_depth;
@@ -113,16 +118,17 @@ static void print_state(void)
     portEXIT_CRITICAL(&s_lock);
     printf("C5VRX4 pipeline=span75 phase_bits=6 iq_bits=4+4 "
            "iq_hz=40000000 dac_hz=40000000 unique_hz=13333333 "
-           "pace=%d acquiring=%d period_us=%u window_us=%u "
+           "owner=%s pace=%d acquiring=%d period_us=%u window_us=%u "
            "opens=%" PRIu32 " late_max_us=%" PRIu32 " open_max_us=%" PRIu32
            " faults=%" PRIu32 " ctrl=0x%08" PRIx32 "\n",
+           rf_native_agc_active() ? "native" : "direct_gain_v5",
            running, open, PERIOD_US, WINDOW_US, opens, late, duration, faults,
            control);
 }
 
 void c5vrx4_start(void)
 {
-    ESP_ERROR_CHECK(rf_native_agc_active() ? ESP_OK : ESP_ERR_INVALID_STATE);
+    if (!rf_native_agc_active()) { print_state(); return; }
     gptimer_config_t config = {.clk_src = GPTIMER_CLK_SRC_DEFAULT,
         .direction = GPTIMER_COUNT_UP, .resolution_hz = 1000000};
     ESP_ERROR_CHECK(gptimer_new_timer(&config, &s_timer));
@@ -138,6 +144,14 @@ void c5vrx4_start(void)
 
 bool c5vrx4_console(int key)
 {
+    if (key == 'T') print_state();
+    if (!rf_native_agc_active()) {
+        if (key == '~') {
+            printf("C5VRX4 pace_refused=direct_gain_owner hint=N_native_on_next_boot\n");
+            return true;
+        }
+        return false;
+    }
     if (!s_transition_lock) return false;
     if (key == '~') {
         c5vrx4_suspend();
@@ -150,6 +164,5 @@ bool c5vrx4_console(int key)
         print_state();
         return true;
     }
-    if (key == 'T') print_state();
     return false;
 }

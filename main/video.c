@@ -6006,8 +6006,9 @@ esp_err_t video_start(void)
     /* Print startup stamp (visible on serial monitor at boot). */
 #ifdef C5VRX4_EXPERIMENT
     ESP_EARLY_LOGW(TAG, "C5VRX-4 SPAN75: IQ40M -> Phase6 -> DAC13.333M "
-                   "[D,D,D]@40M native AGC; descriptors RX=%d TX=%d; "
-                   "experimental, no range claim", rx_nodes, tx_nodes);
+                   "[D,D,D]@40M gain=%s; descriptors RX=%d TX=%d; "
+                   "experimental, no range claim",
+                   rf_native_agc_active() ? "native" : "Direct Gain V5", rx_nodes, tx_nodes);
 #else
     ESP_EARLY_LOGW(TAG,
         "\n=======================================================\n"

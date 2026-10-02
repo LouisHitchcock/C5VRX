@@ -48,7 +48,11 @@ static bool s_analog_bw40 = true;
  * Decided once per boot from NVS before PHY init: the vendor AGC cannot be
  * restored after phy_disable_agc()/phy_rfagc_disable(), so it is never
  * disabled instead. Only an explicit NVS value of 1 selects native AGC. */
+#ifdef C5VRX4_EXPERIMENT
+#define NATIVE_AGC_NVS_NAMESPACE "c5vrx4"
+#else
 #define NATIVE_AGC_NVS_NAMESPACE "c5vrx"
+#endif
 #define NATIVE_AGC_NVS_KEY       "native_agc"
 #define RX_AGC_CTRL_REG          0x600A7030u
 static bool s_native_agc;
@@ -389,9 +393,6 @@ static bool native_agc_boot_requested(void)
 
 esp_err_t rf_request_native_agc_boot(bool enable)
 {
-#ifdef C5VRX4_EXPERIMENT
-    return enable ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
-#else
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NATIVE_AGC_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
@@ -399,7 +400,6 @@ esp_err_t rf_request_native_agc_boot(bool enable)
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;
-#endif
 }
 
 bool rf_native_agc_active(void)
@@ -433,11 +433,7 @@ esp_err_t rf_start(void)
     /* NVS is required by ESP-IDF Wi-Fi/PHY initialization. */
     esp_err_t err = init_nvs();
     if (err != ESP_OK) return err;
-#ifdef C5VRX4_EXPERIMENT
-    s_native_agc = true; /* Separate experiment policy; do not modify main NVS. */
-#else
     s_native_agc = native_agc_boot_requested();
-#endif
 
     /* esp_netif_init + default event loop are required by esp_wifi_init().
      * Tolerant of ESP_ERR_INVALID_STATE (already initialized by IDF). */

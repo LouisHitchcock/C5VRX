@@ -127,6 +127,11 @@ to SushiDude (@Ready4Sushi on X) for the reported reception improvement.
 These are implemented/host-tested controls and static binary findings, not
 hardware proof of passband, sensitivity or range. See
 `docs/analog-lock-phy-lab.md` for masks, rollback and pending measurements.
+The same PR extends the isolated C5VRX-4 span75 build with shared Direct Gain V5
+and the full lab. Its native gate is inert in Direct Gain; `c5vrx4` gain-owner NVS
+is separate from `c5vrx`. The detector/transport is retained, and input Q4 tests
+are not evidence of C5VRX-4 DAC sync/chroma or range. See that experiment README
+for available keys and its separate pending hardware acceptance.
 
 ### Data sources and acquisition methods already investigated
 
