@@ -110,7 +110,7 @@ jobs:
           gcc -O3 -std=c11 experiments/c5vrx-4/unwrap_oracle.c -o /tmp/unwrap_oracle
           /tmp/unwrap_oracle
       - name: Confirm generated output artifacts are tracked
-        run: git diff --exit-code -- experiments/c5vrx-4/*.bsasm experiments/c5vrx-4/cvbs_tables.h
+        run: git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code -- experiments/c5vrx-4/*.bsasm experiments/c5vrx-4/cvbs_tables.h
       - name: Build isolated C5VRX-4 target
         shell: bash
         working-directory: experiments/c5vrx-4
