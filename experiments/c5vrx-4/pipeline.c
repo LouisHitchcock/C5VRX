@@ -181,10 +181,12 @@ static void print_state(void)
            rf_native_agc_active() ? "native" : "direct_gain_v5",
            running, open, PERIOD_US, WINDOW_US, opens, late, duration, faults,
             control);
-    printf("C5VRX4_CVBS transfer=%s blank_mv=300 volts_per_mhz=0.150 "
+    printf("C5VRX4_CVBS transfer=%s reference_mv=%u volts_per_mhz=%s "
            "calibration=%s load_ohms=75 live_lut_writes=0 "
            "sync_repair=0 keys=M_AB_reboot,J_snapshot\n",
            c5vrx4_cvbs_legacy_enabled() ? "LEGACY_FULL" : "CVBS150",
+           c5vrx4_cvbs_legacy_enabled() ? c5v4_dac_uv[c5v4_dac_legacy_codes[32]] / 1000u : 300u,
+           c5vrx4_cvbs_legacy_enabled() ? "full_span" : "0.150",
            C5V4_DAC_MEASURED ? "measured" : "nominal");
     printf("C5VRX4_LANES policy=%s lane=%u adc_step=%u window_codes=%u "
            "fold_guard=%s\n", c5vrx4_ultrafine_forced() ? "fixed_ultrafine" : "baseline",
