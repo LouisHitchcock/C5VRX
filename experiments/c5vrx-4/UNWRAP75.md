@@ -1,3 +1,7 @@
+> Current output update: [CVBS_OUTPUT.md](CVBS_OUTPUT.md). The Phase8/winding
+> oracle below still applies; final DAC scaling now defaults to CVBS150.
+> Legacy scaling remains selectable with M. HISTORY toggles with lowercase h.
+
 # Phase8 / 75 ns trajectory unwrap — issue #144
 
 Implemented on PR #142's gain/RF/lane baseline. Direct Gain V5 remains the

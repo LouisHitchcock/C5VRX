@@ -74,7 +74,10 @@ def tests():
         pairs = sorted((gen.transfer_delta(i), voltage[words[i] & 63])
                        for i in range(192))
         assert all(a[1] <= b[1] for a,b in zip(pairs,pairs[1:]))
-        assert len(set(words[i] & 63 for i in range(64))) >= 50
+        # Fixed volts/MHz deliberately saturates outer frequency bins. Keep
+        # at least 25 physical levels in the principal branch, not full-span
+        # DAC coverage at the expense of video/sync amplitude.
+        assert len(set(words[i] & 63 for i in range(64))) >= 25
         # Near-origin and noisy Q4: compare the exact decoded adjacent reference
         # only within its stated bound; report ambiguous paths separately.
         for radius in (.5, 1, 2, 4, 7):

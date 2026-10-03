@@ -1,4 +1,23 @@
-# C5VRX-4: long-range receiver research
+# C5VRX-4: Phase8 Unwrap75 with fixed CVBS output scale
+
+This branch combines the most developed Phase8 detector (PR #145/#146),
+PR #154's shared PHY ownership and range-control fixes, and current alpha
+publication/versioning. See [CVBS_OUTPUT.md](CVBS_OUTPUT.md) for the current
+output transfer, calibration, tests and evidence limits.
+
+Default: **Phase8 Unwrap75 STATIC + CVBS150 + Direct Gain V5 + fixed ultrafine**.
+There is no Phase5 rollback. `M` compares the previous output transfer (reboot),
+`J` measures bounded frozen IQ snapshots, `h` selects HISTORY (reboot), `Z`
+selects the prior lane policy (reboot), and `T` reports the active configuration.
+Uppercase `H` now passes through to the shared PHY lab. The fixed-ultrafine
+folding tradeoff remains explicit; use `Z` for the baseline comparison.
+
+The following sections preserve earlier experiment and PHY-lab context; the
+current output contract is in CVBS_OUTPUT.md. Scope/HDZero/range validation is
+pending. Automatic output AGC, DC correction and sync regeneration are not
+implemented by this update.
+
+## Earlier C5VRX-4: long-range receiver research
 
 Status: three-bundle Phase8 trajectory unwrap for issue #144, on top of PR #142. This is not a demonstrated
 replacement for C5VRX-3 or a measured range improvement.
@@ -101,9 +120,26 @@ of the output waveform has been performed.
 - `~` compares paced/continuous native tracking only in native mode; it reports
   ignored in V5 mode. `T` prints `C5VRX4` gain-owner/timing state before the
   existing diagnostics. Video settings use NVS namespace `c5vrx4`.
-- `H` switches HISTORY/STATIC Phase8 through the `c5vrx4/unwrap_hc` NVS key
+- `h` switches HISTORY/STATIC Phase8 through the `c5vrx4/unwrap_hc` NVS key
   and reboots. STATIC is the initial default. This comparison keeps the
   discriminator span, gain controller and DAC transfer fixed.
+
+## Firmware contract (PR #154 PHY lab update)
+
+- IQ: signed I4/Q4, coarse I[9:6]/Q[9:6] at startup, established finer lanes
+  selected by Direct Gain; 40 MS/s, continuous existing 32 KiB DMA ring.
+- Detector: Phase6 endpoint difference across 75 ns, separate nominal
+  resistor-DAC inversion LUT; three bundles consume and emit three bytes.
+- Output: 13.333 MS/s unique codes held `[D,D,D]` at 40 MHz, existing pin order.
+- Direct Gain V5 is the default, using the shared calibrated gain table and
+  200 us observer. Native AGC is opt-in via `N` / RF menu and reboot.
+- Gain-owner selection and receiver settings both use `c5vrx4`; changing them
+  does not change the ordinary application's `c5vrx` settings.
+- Native-only tracking gate: 1000 us period, 20 us open, acquisition profile127;
+  suspended across channel, bandwidth and frequency-offset changes. Under
+  Direct Gain the gate creates no timer and performs no AGC register writes.
+- `~` compares paced/continuous native tracking only when native owns gain.
+  `T` prints `C5VRX4` owner/timing state before the existing diagnostics.
 - Menu rendering remains the original raster transport; video output mode is
   fixed to 6BIT@40 for this experiment.
 
@@ -130,3 +166,43 @@ When rebuilding an existing experiment build directory, set
 `CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT=y` in `idf.py menuconfig`; existing
 sdkconfig values override sdkconfig.defaults. The historical V3 config name
 enables the controller currently presented as Direct Gain V5.
+
+## Shared analog PHY lab (#150–153, #155)
+
+This isolated target compiles the same `rf.c`, `video.c` and `phy_rx_lab.c` as
+C5VRX-3, including policy restoration, serialized RF transactions and generation
+invalidation. Direct Gain makes the shared experiments accessible:
+
+| Key | Experiment / observation |
+| --- | --- |
+| `H` | Gain table and pinned PHY invariant snapshot |
+| `}` | Toggle 50 ms register monitoring; `L` records/dumps event markers |
+| `{` | Quiet baseline and bounded analog I2C/PHY parameter snapshot |
+| `[` / `]` | Next isolated 10-second packet/NF/CCA/BW/channel/spur profile / restore |
+| `W` / `B` | Front-end BW comparison / public vendor BW plus retune comparison |
+| `A` | Frequency-offset comparison with Direct Gain ownership restored |
+| `:` | One-second BASELINE / 11p ENABLED / exact RESTORED Q4 comparisons |
+
+The 11p observation is credited to SushiDude (@Ready4Sushi on X).
+See [the shared lab contract](../../docs/analog-lock-phy-lab.md) for exact masks,
+restore semantics, binary pinning and native-mode restrictions. The span75
+three-bundle detector and `[D,D,D]` transport are retained; shared Phase5 semantic
+sync diagnostics do not measure the C5VRX-4 DAC waveform. Q4 input statistics
+remain valid as input observations. No range improvement is claimed.
+
+CI runs native-gate isolation and pinned/unpinned lab lifecycle tests before
+building this target. Host tests establish software ownership/rollback only;
+repeat controlled hardware attenuation and PAL/NTSC comparisons on C5VRX-4.
+
+Port verification for PR #154: both root C5VRX-3 and isolated C5VRX-4 firmware
+built successfully with ESP-IDF v6.0.2. The generated C5VRX-4 configuration has
+`CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT=y` and Phase8 HR disabled. All 206 shared
+architecture checks, the existing host range/demod suite, pinned/unpinned lab
+lifecycle tests and C5VRX-4 gate isolation test passed. Hardware acceptance is
+still pending; this record is not an RF sensitivity or video-quality result.
+
+Native analog AGC patch prototype: after `N` selects native mode on reboot,
+`(` runs BB-only acquire/hold/release A/B and `)` runs100 reversible cycles.
+The native pacing ISR is suspended during the trial and its previous policy
+resumes afterwards. These experiments never force gain or destroy RF AGC.
+See [the detailed binary audit and acceptance limits](../../docs/native-agc-analog-patch.md).

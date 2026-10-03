@@ -1,19 +1,25 @@
 import { ESPLoader, Transport } from './esptool.js';
+import { SerialTerminal } from './serial-terminal.js';
 
 // DOM Elements
 const btnConnect = document.getElementById('btnConnect');
 const btnConnectText = document.getElementById('btnConnectText');
-const portIndicator = document.getElementById('portIndicator');
 const btnFlash = document.getElementById('btnFlash');
 const unsupportedWarning = document.getElementById('unsupportedWarning');
 
 const tabGithub = document.getElementById('tabGithub');
+const tabAlpha = document.getElementById('tabAlpha');
+const paneAlpha = document.getElementById('paneAlpha');
+const selectAlphaBuild = document.getElementById('selectAlphaBuild');
+const selectAlphaPackageType = document.getElementById('selectAlphaPackageType');
+const btnRefreshAlphaBuilds = document.getElementById('btnRefreshAlphaBuilds');
+const alphaBuildDetails = document.getElementById('alphaBuildDetails');
+
 const tabPr = document.getElementById('tabPr');
 const tabLocal = document.getElementById('tabLocal');
 const paneGithub = document.getElementById('paneGithub');
 const panePr = document.getElementById('panePr');
 const paneLocal = document.getElementById('paneLocal');
-const sourceBadge = document.getElementById('sourceBadge');
 
 const selectRelease = document.getElementById('selectRelease');
 const btnRefreshReleases = document.getElementById('btnRefreshReleases');
@@ -46,11 +52,7 @@ const inputFlashOffset = document.getElementById('inputFlashOffset');
 const selectBaud = document.getElementById('selectBaud');
 const chkEraseAll = document.getElementById('chkEraseAll');
 
-const statChip = document.getElementById('statChip');
-const statMac = document.getElementById('statMac');
-const statFlash = document.getElementById('statFlash');
 const statStatus = document.getElementById('statStatus');
-const chipBadge = document.getElementById('chipBadge');
 
 const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
@@ -61,14 +63,16 @@ const consoleOutput = document.getElementById('consoleOutput');
 const btnClearConsole = document.getElementById('btnClearConsole');
 
 // App State
-let activeSource = 'github'; // 'github' | 'pr' | 'local'
+let activeSource = 'github'; // 'github' | 'pr' | 'alpha' | 'local'
 let port = null;
 let transport = null;
 let esploader = null;
 let isConnected = false;
+let isConnecting = false;
 let isFlashing = false;
 let githubReleases = [];
 let githubPrBuilds = [];
+let githubAlphaBuilds = [];
 let localFileBinary = null;
 let localFileNameStr = '';
 
@@ -97,6 +101,7 @@ function getPrBuildNumber(rel) {
 
 // Terminal output helper
 function log(msg, type = 'info') {
+  if (type === 'error') document.getElementById('flashLog').open = true;
   const time = new Date().toLocaleTimeString();
   const prefix = `[${time}] `;
   consoleOutput.textContent += prefix + msg + '\n';
@@ -130,50 +135,45 @@ function checkSerialSupport() {
 
 // Tab Switching
 function activateSource(source) {
+  if (isFlashing) return;
   activeSource = source;
+  for (const [button, name] of [[tabGithub, 'github'], [tabPr, 'pr'], [tabAlpha, 'alpha'], [tabLocal, 'local']]) {
+    button.setAttribute('aria-pressed', String(source === name));
+  }
 
   tabGithub.classList.toggle('active', source === 'github');
   tabPr.classList.toggle('active', source === 'pr');
+  tabAlpha.classList.toggle('active', source === 'alpha');
+  paneAlpha.classList.toggle('active', source === 'alpha');
   tabLocal.classList.toggle('active', source === 'local');
 
   paneGithub.classList.toggle('active', source === 'github');
   panePr.classList.toggle('active', source === 'pr');
   paneLocal.classList.toggle('active', source === 'local');
 
-  if (source === 'github') {
-    const idx = parseInt(selectRelease.value, 10);
-    if (Number.isInteger(idx)) onReleaseSelected(idx);
-    else {
-      sourceBadge.textContent = 'Release';
-      sourceBadge.className = 'badge';
-    }
-  } else if (source === 'pr') {
-    const idx = parseInt(selectPrBuild.value, 10);
-    if (Number.isInteger(idx)) onPrBuildSelected(idx);
-    else {
-      sourceBadge.textContent = 'PR Builds';
-      sourceBadge.className = 'badge badge-danger';
-    }
-  } else {
-    sourceBadge.textContent = 'Local File';
-    sourceBadge.className = 'badge badge-secondary';
-  }
-
   updateFlashButtonState();
 }
 
 tabGithub.addEventListener('click', () => activateSource('github'));
+tabAlpha.addEventListener('click', () => activateSource('alpha'));
+btnRefreshAlphaBuilds.addEventListener('click', () => fetchReleases());
+selectAlphaBuild.addEventListener('change', () => onAlphaBuildSelected());
+
 tabPr.addEventListener('click', () => activateSource('pr'));
 tabLocal.addEventListener('click', () => activateSource('local'));
 
 // Drag & drop file handling
-dropzone.addEventListener('click', () => inputLocalFile.click());
+dropzone.addEventListener('click', (event) => {
+  // The file input click bubbles too; never open the picker recursively.
+  if (!isFlashing && event.target !== inputLocalFile) inputLocalFile.click();
+});
 dropzone.addEventListener('dragover', (e) => {
   e.preventDefault();
   dropzone.classList.add('dragover');
 });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
 dropzone.addEventListener('drop', (e) => {
+  if (isFlashing) { e.preventDefault(); return; }
   e.preventDefault();
   dropzone.classList.remove('dragover');
   if (e.dataTransfer.files.length > 0) {
@@ -222,6 +222,7 @@ function handleLocalFile(file) {
 async function fetchReleases() {
   selectRelease.innerHTML = '<option value="">Fetching firmware index...</option>';
   selectPrBuild.innerHTML = '<option value="">Fetching PR builds...</option>';
+  selectAlphaBuild.innerHTML = '<option value="">Fetching alpha builds...</option>';
 
   let data = null;
   try {
@@ -264,10 +265,52 @@ async function fetchReleases() {
 
   githubReleases = productionReleases;
   githubPrBuilds = prBuilds;
+  githubAlphaBuilds = data.filter(rel => rel.prerelease && /^c5vrx4-(?:alpha|pr-[0-9]+|v4\.[0-9]+\.[0-9]+-alpha\.[0-9]+)$/.test(rel.tag_name || ""))
+    .sort((a, b) => (Number(/^c5vrx4-pr-/.test(a.tag_name)) - Number(/^c5vrx4-pr-/.test(b.tag_name))) || new Date(b.published_at || 0) - new Date(a.published_at || 0));
+  if (githubAlphaBuilds.some(rel => rel.tag_name.startsWith("c5vrx4-v"))) {
+    githubAlphaBuilds = githubAlphaBuilds.filter(rel => rel.tag_name !== "c5vrx4-alpha");
+  }
   log(`Available: ${githubReleases.length} versioned release(s), ${githubPrBuilds.length} experimental PR build(s).`);
 
   populateReleaseDropdown();
   populatePrBuildDropdown();
+  populateAlphaBuildDropdown();
+  updateFlashButtonState();
+}
+
+function populateAlphaBuildDropdown() {
+  selectAlphaBuild.replaceChildren();
+  githubAlphaBuilds.forEach((rel, index) => {
+    const opt = document.createElement('option');
+    opt.value = index;
+    opt.textContent = rel.tag_name.startsWith('c5vrx4-v')
+      ? `C5VRX-4 ${rel.tag_name.slice('c5vrx4-'.length)}${index === 0 ? ' (Latest alpha)' : ''}`
+      : rel.tag_name === 'c5vrx4-alpha'
+      ? 'C5VRX-4 Alpha — latest main'
+      : `C5VRX-4 Alpha — PR #${rel.tag_name.split('-').pop()} / unmerged`;
+    selectAlphaBuild.appendChild(opt);
+  });
+  selectAlphaBuild.disabled = githubAlphaBuilds.length === 0;
+  if (githubAlphaBuilds.length) {
+    selectAlphaBuild.value = '0';
+    onAlphaBuildSelected();
+  } else {
+    selectAlphaBuild.innerHTML = '<option value="">No alpha builds published yet</option>';
+    alphaBuildDetails.style.display = 'none';
+  }
+}
+
+function onAlphaBuildSelected() {
+  const rel = githubAlphaBuilds[Number(selectAlphaBuild.value)];
+  if (!rel) return;
+  alphaBuildDetails.style.display = 'block';
+  for (const [id, value] of [
+    ['infoAlphaBuildName', rel.name || rel.tag_name],
+    ['infoAlphaBuildDate', rel.published_at ? new Date(rel.published_at).toLocaleDateString() : 'N/A'],
+    ['infoAlphaBuildTag', rel.tag_name],
+    ['infoAlphaBuildAssets', (rel.assets || []).map(a => a.name).join(', ')]
+  ]) document.getElementById(id).textContent = value;
+  updateFlashButtonState();
 }
 
 function populateReleaseDropdown() {
@@ -346,10 +389,6 @@ function onReleaseSelected(index) {
   infoReleaseTag.textContent = rel.tag_name;
   infoReleaseAssets.textContent = (rel.assets || []).map(a => a.name).join(', ') || 'No binary assets attached';
 
-  if (activeSource === 'github') {
-    sourceBadge.textContent = rel.prerelease ? 'Pre-release' : 'Release';
-    sourceBadge.className = 'badge';
-  }
   updateFlashButtonState();
 }
 
@@ -365,10 +404,6 @@ function onPrBuildSelected(index) {
   infoPrBuildTag.textContent = rel.tag_name;
   infoPrBuildAssets.textContent = (rel.assets || []).map(a => a.name).join(', ') || 'No binary assets attached';
 
-  if (activeSource === 'pr') {
-    sourceBadge.textContent = prNumber !== null ? `PR #${prNumber}` : 'PR Build';
-    sourceBadge.className = 'badge badge-danger';
-  }
   updateFlashButtonState();
 }
 
@@ -381,6 +416,9 @@ function updateFlashButtonState() {
   if (activeSource === 'github') {
     const idx = parseInt(selectRelease.value, 10);
     btnFlash.disabled = !Number.isInteger(idx) || !githubReleases[idx];
+  } else if (activeSource === 'alpha') {
+    const idx = parseInt(selectAlphaBuild.value, 10);
+    btnFlash.disabled = !Number.isInteger(idx) || !githubAlphaBuilds[idx];
   } else if (activeSource === 'pr') {
     const idx = parseInt(selectPrBuild.value, 10);
     btnFlash.disabled = !Number.isInteger(idx) || !githubPrBuilds[idx];
@@ -402,13 +440,16 @@ function getSelectedRemoteBuild() {
       packageType: selectPrPackageType.value
     };
   }
+  if (activeSource === 'alpha') {
+    return { release: githubAlphaBuilds[parseInt(selectAlphaBuild.value, 10)], packageType: selectAlphaPackageType.value };
+  }
   return { release: null, packageType: null };
 }
 
 function findApplicationAsset(assets) {
   // GitHub returns release assets in upload order. Never use the first .bin:
   // bootloader.bin is commonly uploaded before the application image.
-  return assets.find(asset => /^c5vrx(?:3)?\.bin$/i.test(asset.name || '')) ||
+  return assets.find(asset => /^c5vrx(?:[34])?\.bin$/i.test(asset.name || '')) ||
     assets.find(asset => {
       const name = (asset.name || '').toLowerCase();
       return name.endsWith('.bin') &&
@@ -420,6 +461,7 @@ function findApplicationAsset(assets) {
 
 // Connect / Disconnect Handler
 btnConnect.addEventListener('click', async () => {
+  if (isFlashing || isConnecting) return;
   if (isConnected) {
     await disconnectDevice();
   } else {
@@ -428,7 +470,9 @@ btnConnect.addEventListener('click', async () => {
 });
 
 async function connectDevice() {
-  if (!checkSerialSupport()) return;
+  if (isConnecting || isConnected || isFlashing || serialConsole.state !== 'disconnected' || !checkSerialSupport()) return;
+  isConnecting = true;
+  syncDeviceControls();
 
   try {
     log('Opening Web Serial port selector...');
@@ -454,25 +498,13 @@ async function connectDevice() {
     await esploader.main("usb_reset");
 
     isConnected = true;
-    portIndicator.className = 'indicator indicator-on';
+
     btnConnectText.textContent = 'Disconnect';
-    btnConnect.disabled = false;
-    btnConnect.classList.remove('btn-primary');
-    btnConnect.classList.add('btn-secondary');
+    syncDeviceControls();
 
     const chipName = esploader.chip ? esploader.chip.CHIP_NAME : 'ESP32-C5';
-    statChip.textContent = chipName;
-    chipBadge.textContent = chipName;
-    chipBadge.className = 'badge';
 
-    try {
-      const mac = await esploader.chip.readMac(esploader);
-      statMac.textContent = mac || 'Unknown';
-    } catch (e) {
-      statMac.textContent = '—';
-    }
-
-    statStatus.textContent = 'Ready';
+    statStatus.textContent = `${chipName} connected · Ready to flash`;
     log(`Connected successfully to ${chipName}!`);
     updateFlashButtonState();
 
@@ -480,6 +512,9 @@ async function connectDevice() {
     log(`Connection failed: ${err.message || err}`, 'error');
     alert(`Failed to connect: ${err.message || err}\n\nTroubleshooting Tip:\nIf port timed out, hold BOOT (B) on the XIAO board, tap RESET (R), and release BOOT to force ROM bootloader mode.`);
     await disconnectDevice();
+  } finally {
+    isConnecting = false;
+    syncDeviceControls();
   }
 }
 
@@ -496,25 +531,19 @@ async function disconnectDevice() {
   esploader = null;
   isConnected = false;
 
-  portIndicator.className = 'indicator indicator-off';
-  btnConnectText.textContent = 'Connect Device';
-  btnConnect.disabled = false;
-  btnConnect.classList.remove('btn-secondary');
-  btnConnect.classList.add('btn-primary');
+  btnConnectText.textContent = 'Connect device';
+  syncDeviceControls();
 
-  statChip.textContent = 'ESP32-C5';
-  statMac.textContent = '—';
-  statStatus.textContent = 'Disconnected';
-  chipBadge.textContent = 'No Device';
-  chipBadge.className = 'badge badge-secondary';
+  statStatus.textContent = 'No device connected';
 
+  syncDeviceControls();
   log('Device disconnected.');
   updateFlashButtonState();
 }
 
 // Flashing Handler
 btnFlash.addEventListener('click', async () => {
-  if (!isConnected || !esploader || isFlashing) return;
+  if (!isConnected || !esploader || isFlashing || serialConsole.state !== 'disconnected') return;
 
   if (activeSource === 'pr') {
     const selectedBuild = githubPrBuilds[parseInt(selectPrBuild.value, 10)];
@@ -530,7 +559,11 @@ btnFlash.addEventListener('click', async () => {
     }
   }
 
+  if (activeSource === 'alpha' && !window.confirm('Flash C5VRX-4 Alpha? This experimental firmware may fail to boot or produce broken video. Use Full firmware when switching generations.')) return;
+
   isFlashing = true;
+  syncDeviceControls();
+  document.getElementById('flashLog').open = true;
   btnFlash.disabled = true;
   btnConnect.disabled = true;
   progressContainer.style.display = 'block';
@@ -541,7 +574,7 @@ btnFlash.addEventListener('click', async () => {
   try {
     const fileArray = [];
 
-    if (activeSource === 'github' || activeSource === 'pr') {
+    if (activeSource !== 'local') {
       const selected = getSelectedRemoteBuild();
       const rel = selected.release;
       if (!rel) throw new Error(activeSource === 'pr' ? 'No PR build selected' : 'No release selected');
@@ -648,7 +681,7 @@ btnFlash.addEventListener('click', async () => {
     progressStatusText.textContent = 'Flash Failed';
   } finally {
     isFlashing = false;
-    btnConnect.disabled = false;
+    syncDeviceControls();
     updateFlashButtonState();
   }
 });
@@ -722,5 +755,111 @@ btnClearConsole.addEventListener('click', () => {
 document.addEventListener('DOMContentLoaded', () => {
   log('C5VRX Web Flasher initialized.');
   checkSerialSupport();
+  syncDeviceControls();
   fetchReleases();
+});
+
+// Firmware and terminal own separate transports and never open concurrently.
+const serialOutput = document.getElementById('output');
+const commandInput = document.getElementById('commandInput');
+const btnTerminalConnect = document.getElementById('btnTerminalConnect');
+const terminalBaud = document.getElementById('terminalBaud');
+const terminalStatus = document.getElementById('terminalStatus');
+const shortcutButtons = [...document.querySelectorAll('[data-command]')];
+const MAX_LOG_CHARS = 120000;
+let commandBusy = false;
+
+function appendSerial(text) {
+  serialOutput.textContent = (serialOutput.textContent + text).slice(-MAX_LOG_CHARS);
+  if (document.getElementById('autoScroll').checked) serialOutput.scrollTop = serialOutput.scrollHeight;
+}
+
+const serialConsole = new SerialTerminal({
+  serial: navigator.serial,
+  onData: appendSerial,
+  onState: (state) => {
+    const labels = { connected: 'Connected', connecting: 'Connecting…', disconnecting: 'Disconnecting…', disconnected: 'No device connected' };
+    terminalStatus.textContent = labels[state];
+    if (state === 'connecting') serialOutput.textContent = '';
+    syncDeviceControls();
+  },
+  onError: (error) => {
+    appendSerial(`\n${error.message || error}\n`);
+  }
+});
+
+function syncDeviceControls() {
+  const supported = 'serial' in navigator;
+  for (const control of [tabGithub, tabPr, tabAlpha, tabLocal, selectAlphaBuild, selectAlphaPackageType, btnRefreshAlphaBuilds, selectRelease, selectPrBuild, selectPackageType, selectPrPackageType, selectBaud, chkEraseAll, inputLocalFile, inputFlashOffset, btnRefreshReleases, btnRefreshPrBuilds, document.getElementById('btnBrowseFile')]) {
+    control.disabled = isFlashing;
+  }
+  const terminalConnected = serialConsole.state === 'connected';
+  const terminalIdle = serialConsole.state === 'disconnected';
+  const flashBusy = isConnected || isConnecting || isFlashing;
+  btnConnect.disabled = !supported || isConnecting || isFlashing || !terminalIdle;
+  btnConnect.title = terminalIdle ? '' : 'Disconnect the terminal before connecting the flasher';
+  btnTerminalConnect.disabled = !supported || flashBusy || (!terminalIdle && !terminalConnected);
+  btnTerminalConnect.textContent = terminalConnected ? 'Disconnect' : serialConsole.state === 'connecting' ? 'Connecting…' : 'Connect';
+  btnTerminalConnect.title = flashBusy ? 'Disconnect the flasher before connecting the terminal' : '';
+  terminalBaud.disabled = !terminalIdle;
+  commandInput.disabled = !terminalConnected || commandBusy;
+  document.getElementById('btnSendCommand').disabled = !terminalConnected || commandBusy;
+  for (const button of shortcutButtons) button.disabled = !terminalConnected || commandBusy;
+}
+
+btnTerminalConnect.addEventListener('click', async () => {
+  if (isConnected || isConnecting || isFlashing) return;
+  if (serialConsole.state === 'connected') await serialConsole.disconnect();
+  else if (serialConsole.state === 'disconnected' && checkSerialSupport()) await serialConsole.connect(Number(terminalBaud.value));
+});
+
+async function sendTerminalCommand(command) {
+  if (commandBusy || serialConsole.state !== 'connected') return false;
+  commandBusy = true;
+  syncDeviceControls();
+  try { return await serialConsole.send(command); }
+  finally { commandBusy = false; syncDeviceControls(); }
+}
+
+for (const button of shortcutButtons) {
+  button.addEventListener('click', async () => {
+    if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
+    await sendTerminalCommand(button.dataset.command);
+  });
+}
+
+document.getElementById('commandForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const command = commandInput.value;
+  if (!command) return;
+  const ending = document.getElementById('ending').value;
+  const suffix = ending === 'lf' ? '\n' : ending === 'crlf' ? '\r\n' : '';
+  if (await sendTerminalCommand(command + suffix)) commandInput.value = '';
+});
+document.getElementById('clear').addEventListener('click', () => { serialOutput.textContent = ''; });
+
+for (const [buttonId, terminalView] of [['firmwareTab', false], ['terminalTab', true]]) {
+  document.getElementById(buttonId).addEventListener('click', () => {
+    document.getElementById('firmwareView').hidden = terminalView;
+    document.getElementById('terminalView').hidden = !terminalView;
+    for (const [id, active] of [['firmwareTab', !terminalView], ['terminalTab', terminalView]]) {
+      const button = document.getElementById(id);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+  });
+}
+
+navigator.serial?.addEventListener('disconnect', async (event) => {
+  if (event.target === serialConsole.port) await serialConsole.disconnect();
+  if (event.target === port && !isFlashing && !isConnecting) await disconnectDevice();
+});
+
+
+// Keep docs visible on desktop and collapsible on smaller screens.
+const docsBreakpoint = window.matchMedia('(min-width:801px)');
+const docsNav = document.getElementById('docsNav');
+docsNav.open = docsBreakpoint.matches;
+docsBreakpoint.addEventListener('change', (event) => {
+  docsNav.open = event.matches;
 });

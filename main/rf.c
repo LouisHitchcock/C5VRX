@@ -11,6 +11,7 @@
  */
 
 #include "rf.h"
+#include "phy_rx_lab.h"
 #ifdef C5VRX4_EXPERIMENT
 #include "c5vrx4.h"
 #endif
@@ -127,6 +128,15 @@ static uint32_t s_arc_generation;
 static uint8_t s_current_gain_val = 52u;
 
 static void arc_capture_vendor_state(void);
+static void analog_phy_restore_lock(void);
+extern void phy_wifi_fbw_sel(uint32_t val);
+extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
+extern void phy_disable_agc(void);
+extern void phy_rfagc_disable(void);
+extern void phy_set_freq(uint16_t freq_mhz, int offset);
+extern void phy_chip_set_chan_offset(int offset_khz);
+extern void phy_fft_scale_force(bool force_en, int8_t force_value);
+
 
 /**
  * Disable all 5 LMAC MAC TX hardware queues.
@@ -252,6 +262,18 @@ typedef struct {
 static tracked_timer_t s_tracked_timers[MAX_TRACKED_TIMERS];
 static size_t s_num_tracked_timers = 0;
 static wifi_osi_funcs_t s_custom_osi_funcs;
+
+static void tracked_phy_enable(void)
+{
+    phy_rx_lab_osi_event(true);
+    g_wifi_osi_funcs._phy_enable();
+}
+
+static void tracked_phy_disable(void)
+{
+    phy_rx_lab_osi_event(false);
+    g_wifi_osi_funcs._phy_disable();
+}
 
 static tracked_timer_t *find_or_create_timer_slot(void *timer)
 {
@@ -425,6 +447,8 @@ esp_err_t rf_start(void)
 
     /* Install tracked OSI functions to inventory all Wi-Fi vendor timers */
     s_custom_osi_funcs = g_wifi_osi_funcs;
+    s_custom_osi_funcs._phy_enable = tracked_phy_enable;
+    s_custom_osi_funcs._phy_disable = tracked_phy_disable;
     s_custom_osi_funcs._timer_setfn = tracked_timer_setfn;
     s_custom_osi_funcs._timer_arm = tracked_timer_arm;
     s_custom_osi_funcs._timer_arm_us = tracked_timer_arm_us;
@@ -466,8 +490,8 @@ esp_err_t rf_start(void)
     if ((err = esp_wifi_set_protocols(WIFI_IF_STA, &protocols)) != ESP_OK)
         return err;
 
-    /* Set BW40 on 5 GHz. Hard failure if not available -- NO BW20 fallback.
-     * BW40 is a fixed hardware requirement for MODEM_DIAG IQ precision. */
+    /* Boot with the hardware-tested wide profile. Runtime front-end BW20
+     * is a separate opt-in probe, not proof of a full vendor BW20 chain. */
     wifi_bandwidths_t bandwidths = {
         .ghz_2g = WIFI_BW20,
         .ghz_5g = RF_BANDWIDTH,
@@ -503,38 +527,10 @@ esp_err_t rf_start(void)
     /* Route MODEM_DIAG to PARLIO RX GPIO pins. */
     if ((err = route_modem_iq()) != ESP_OK) return err;
 
-    /* Un-gate modem ADC clock and force continuous sampling. */
-    rf_enable_continuous_modem();
-
-    /* Keep the vendor Wi-Fi packet AGC out of the analog-FM receive path.
-     * C5VRX has its own slow analog-video gain controller below; leaving the
-     * packet AGC enabled lets the closed PHY hunt/recalibrate independently,
-     * which invalidates our gain model and can desensitize weak-signal receive.
-     * The native-AGC experiment is the single exception: it never disables the
-     * vendor loop and C5VRX makes zero gain decisions or writes. */
-    extern void phy_disable_agc(void);
-    extern void phy_rfagc_disable(void);
-    if (!s_native_agc) {
-        phy_disable_agc();
-        phy_rfagc_disable();
-    }
-
-    /* Boot wide for full analog-FM video bandwidth. Runtime BW20/AUTO is
-     * explicitly opt-in from the native menu; BW40 remains the safe default. */
-    extern void phy_wifi_fbw_sel(uint32_t val);
-    phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
-
-    /* Force high-sensitivity sweet-spot gain (index 52).
-     * Provides sensitive reception of weak carriers out of the box while
-     * active AGC dynamically manages gain tracking and overload protection. */
-    extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
-    extern void phy_fft_scale_force(bool force_en, int8_t force_value);
+    phy_rx_lab_begin("boot");
+    analog_phy_restore_lock();
     if (s_native_agc) {
-        /* Release, never choose: the vendor loop owns RF/BB/fine gain. */
-        phy_force_rx_gain(false, 0);
         phy_fft_scale_force(false, 0);
-    } else {
-        phy_force_rx_gain(true, 52);
     }
 
     /* Vendor PHY initialization has now generated both valid RX gain tables
@@ -550,19 +546,31 @@ esp_err_t rf_start(void)
     phy_track_pll_deinit();
 #endif
 
+    phy_rx_lab_end();
+
     ESP_EARLY_LOGW(TAG, "RF ready: 5865 MHz / ch%u / BW40 / gain=%s / sta_disconnected_pm=0 / pll_track=disabled",
                    RF_CHANNEL_NUMBER,
                    s_native_agc ? "NATIVE_HW_AGC(zero firmware writes)" : "forced(52)");
     return ESP_OK;
 }
 
-extern void phy_wifi_fbw_sel(uint32_t val);
-extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
-extern void phy_disable_agc(void);
-extern void phy_rfagc_disable(void);
-extern void phy_set_freq(uint16_t freq_mhz, int offset);
-extern void phy_chip_set_chan_offset(int offset_khz);
-extern void phy_fft_scale_force(bool force_en, int8_t force_value);
+
+/* Every supported tuning/bandwidth transaction restores the same receive
+ * policy. In native mode never disable AGC or select a forced gain. No unknown
+ * filter, IQ/DC, ADC or calibration state is replayed from another channel. */
+static void analog_phy_restore_lock(void)
+{
+    phy_rx_lab_capture_vendor();
+    rf_enable_continuous_modem();
+    ESP_ERROR_CHECK(lock_rx_only());
+    if (!s_native_agc) {
+        phy_disable_agc();
+        phy_rfagc_disable();
+    }
+    phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
+    if (s_native_agc) phy_force_rx_gain(false, 0);
+    else phy_force_rx_gain(true, s_current_gain_val);
+}
 
 /* Read-only C5 PHY observations. Estimator/calibration routines are not called
  * while live because they reconfigure clocks and receive state. */
@@ -656,8 +664,10 @@ void rf_set_analog_bandwidth(bool bw40)
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
 #endif
+    phy_rx_lab_begin("bandwidth");
     s_analog_bw40 = bw40;
-    phy_wifi_fbw_sel(bw40 ? 1u : 0u);
+    analog_phy_restore_lock();
+    phy_rx_lab_end();
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
 #endif
@@ -676,10 +686,20 @@ void rf_set_rx_gain(bool force, uint8_t gain_idx)
         ++s_native_agc_blocked_writes;
         return;
     }
-    if (force) {
-        s_current_gain_val = gain_idx;
+    (void)rf_try_set_rx_gain(force, gain_idx, phy_rx_lab_generation());
+}
+
+bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generation)
+{
+    if (s_native_agc) {
+        ++s_native_agc_blocked_writes;
+        return false;
     }
+    if (!phy_rx_lab_try_actuator(expected_generation)) return false;
     phy_force_rx_gain(force, gain_idx);
+    if (force) s_current_gain_val = gain_idx;
+    phy_rx_lab_end_actuator();
+    return true;
 }
 
 uint32_t rf_get_rx_gain_reg(void)
@@ -732,7 +752,10 @@ void rf_set_fft_scale_force(bool force, int8_t value)
     /* The symbol is exported by the ESP32-C5 ROM PHY and is also used by
      * Espressif's CSI gain-control design. Keep it lab-only: whether it is
      * upstream of raw MODEM_DIAG is exactly what the FFT probe measures. */
+    phy_rx_lab_begin("fft_scale_lab");
     phy_fft_scale_force(force, value);
+    analog_phy_restore_lock();
+    phy_rx_lab_end();
 }
 
 
@@ -820,12 +843,17 @@ void rf_set_frequency_offset_khz(int offset_khz)
     if (offset_khz < -1500) offset_khz = -1500;
     if (offset_khz > 1500)  offset_khz = 1500;
 
-    s_current_offset_khz = offset_khz;
+    if (offset_khz == s_current_offset_khz) return;
+
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
 #endif
+    phy_rx_lab_begin("offset");
+    s_current_offset_khz = offset_khz;
     phy_chip_set_chan_offset(offset_khz);
-    if (!s_native_agc) phy_force_rx_gain(true, s_current_gain_val);
+    /* The pinned helper unconditionally enables BB AGC before returning. */
+    analog_phy_restore_lock();
+    phy_rx_lab_end();
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
 #endif
@@ -875,18 +903,7 @@ static esp_err_t rf_set_channel_impl(size_t index)
         phy_set_freq(requested_mhz, 0);
     }
 
-    rf_enable_continuous_modem();
-
-    /* Public/undocumented retune paths can touch PHY receive state. Re-assert
-     * the currently selected analog bandwidth after every channel change. */
-    if (s_native_agc) {
-        phy_force_rx_gain(false, 0);
-    } else {
-        phy_disable_agc();
-        phy_rfagc_disable();
-    }
-    phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
-    if (!s_native_agc) phy_force_rx_gain(true, s_current_gain_val);
+    analog_phy_restore_lock();
 
     /* A channel change may make the vendor PHY regenerate its active RX gain
      * table and calibrated receive state. Recapture only after the retune and
@@ -905,10 +922,17 @@ static esp_err_t rf_set_channel_impl(size_t index)
 
 esp_err_t rf_set_channel(size_t index)
 {
+    if (index >= FPV_BAND_COUNT * 8u) return ESP_ERR_INVALID_ARG;
+    if (!plan_wifi5_center(s_fpv_channels[index / 8u][index % 8u].freq_mhz,
+                           NULL, NULL)) return rf_set_channel_impl(index);
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
 #endif
+    phy_rx_lab_begin("channel");
     esp_err_t err = rf_set_channel_impl(index);
+    /* Even a failed public verification can follow an actual hardware tune. */
+    if (err != ESP_OK) analog_phy_restore_lock();
+    phy_rx_lab_end();
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
 #endif
@@ -949,4 +973,36 @@ void rf_cycle_channel_in_band(void)
         if (err == ESP_OK) return;
         if (err != ESP_ERR_NOT_SUPPORTED) return;
     }
+}
+
+esp_err_t rf_get_vendor_bandwidth_lab(bool *bw40)
+{
+    if (!bw40) return ESP_ERR_INVALID_ARG;
+    wifi_bandwidths_t bw;
+    esp_err_t err=esp_wifi_get_bandwidths(WIFI_IF_STA, &bw);
+    if (err != ESP_OK) return err;
+    if (bw.ghz_5g != WIFI_BW20 && bw.ghz_5g != WIFI_BW40)
+        return ESP_ERR_NOT_SUPPORTED;
+    *bw40=bw.ghz_5g == WIFI_BW40;
+    return ESP_OK;
+}
+
+esp_err_t rf_set_vendor_bandwidth_lab(bool bw40)
+{
+    if (s_native_agc) return ESP_ERR_NOT_SUPPORTED;
+    wifi_bandwidths_t bw;
+    esp_err_t err=esp_wifi_get_bandwidths(WIFI_IF_STA, &bw);
+    if (err != ESP_OK) return err;
+    phy_rx_lab_begin("vendor_bandwidth_lab");
+    bw.ghz_5g=bw40 ? WIFI_BW40 : WIFI_BW20;
+    err=esp_wifi_set_bandwidths(WIFI_IF_STA, &bw);
+    if (err == ESP_OK) {
+        s_analog_bw40=bw40;
+        /* Public API is the ABI authority; never invent a private cbw tuple.
+         * The vendor pre-overlay registers are captured by restore_lock(). */
+        err=rf_set_channel_impl(rf_get_channel_index());
+    }
+    if (err != ESP_OK) analog_phy_restore_lock();
+    phy_rx_lab_end();
+    return err;
 }

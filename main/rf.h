@@ -46,6 +46,8 @@ void rf_set_analog_bandwidth(bool bw40);
 bool rf_get_analog_bandwidth(void);
 
 void rf_set_rx_gain(bool force, uint8_t gain_idx);
+/* True only when vendor gain write ran under the expected PHY generation. */
+bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generation);
 uint32_t rf_get_rx_gain_reg(void);
 
 /**
@@ -156,3 +158,8 @@ uint16_t rf_get_frequency_mhz(void);
 int rf_get_frequency_offset_khz(void);
 void rf_set_frequency_offset_khz(int offset_khz);
 void rf_step_frequency_offset_khz(int delta_khz);
+
+/* Explicit lab only: use public vendor bandwidth setup plus complete retune.
+ * Caller must save/restore public width, front-end width and carrier offset. */
+esp_err_t rf_get_vendor_bandwidth_lab(bool *bw40);
+esp_err_t rf_set_vendor_bandwidth_lab(bool bw40);

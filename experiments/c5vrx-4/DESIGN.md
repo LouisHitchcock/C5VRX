@@ -65,6 +65,13 @@ lanes, native AGC with a 1 ms cadence and 20 us acquisition window, and setting
 127. The follow-up uses main's Direct Gain V5 by default, including its lane
 policy; native remains optional with the original gate settings. None of these
 choices establishes a measured optimum for the new demodulator.
+
+revisions and corrected assumptions. The initial prototype used coarse I4/Q4
+lanes and native AGC with a 1 ms hold cadence, 20 us acquisition window and
+acquisition setting127. PR #154 now shares Direct Gain V5 and the analog PHY lab
+with C5VRX-3; native pacing remains an opt-in comparison. The receiver controller
+may select the established finer IQ lanes. These are experimental settings,
+not measured range optima.
 No external processor or claimed sensitivity gain is selected yet. See
 [README.md](README.md) for the implementation and build instructions.
 

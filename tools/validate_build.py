@@ -56,7 +56,7 @@ c_names = [f.name for f in c_files]
 video_c = read(MAIN / "video.c")
 menu_lifecycle = video_c.split("static void video_set_menu_mode", 1)[1].split("static void menu_cycle_standard_mode", 1)[0]
 
-check("production receiver and dedicated menu/auto-lab modules", set(c_names) == {"main.c", "bs_relative_worker_probe.c", "bs_relative_middle_probe.c", "bs_addctia_probe.c", "phy_phase_tap_probe.c", "arc_phy.c", "arc_v3_controller.c", "arc_v5_autotune.c", "rx_auto_lab.c", "rf.c", "video.c", "direct_gain.c", "direct_gain_v2.c", "direct_gain_v3.c", "analog_video_detect.c", "menu_raster.c"},
+check("production receiver and dedicated menu/auto-lab modules", set(c_names) == {"main.c", "bs_relative_worker_probe.c", "bs_relative_middle_probe.c", "bs_addctia_probe.c", "phy_phase_tap_probe.c", "arc_phy.c", "arc_v3_controller.c", "arc_v5_autotune.c", "rx_auto_lab.c", "rf.c", "phy_rx_lab.c", "video.c", "direct_gain.c", "direct_gain_v2.c", "direct_gain_v3.c", "analog_video_detect.c", "menu_raster.c"},
       f"found: {c_names}")
 check("main.c present", "main.c" in c_names)
 check("rf.c present", "rf.c" in c_names)
@@ -201,7 +201,7 @@ check("FFT placement probe is bounded and restores automatic FFT scaling",
       "rf_set_fft_scale_force(false, 0)" in all_c)
 check("fixed-gain BW40/BW20 A/B probe present",
       "C5VRX_BW_PROBE_BEGIN" in all_c and
-      'lab_print_row("BW_SWEEP"' in all_c and
+      '"BW_SWEEP"' in all_c and 'lab_run_bandwidth_probe(false)' in all_c and
       "LAB_BW_SETTLE_MS" in all_c)
 check("PRE-Q4 self-noise probe physically removes TX and restores live pipeline",
       "C5VRX_PREQ4_TXNOISE_BEGIN" in all_c and
@@ -552,7 +552,7 @@ check("web flasher prefers same-origin Pages firmware mirror",
       "corsproxy.io" not in web_app)
 check("Pages deploy builds firmware mirror from trusted main",
       'workflow_run:' in web_workflow and
-      'workflows: ["C5VRX-3 Production CI"]' in web_workflow and
+      '"C5VRX-3 Production CI"' in web_workflow and '"C5VRX-4 Experimental Build"' in web_workflow and
       "ref: main" in web_workflow and
       "tools/prepare_pages_site.sh pages-site" in web_workflow and
       "path: pages-site/" in web_workflow)

@@ -154,7 +154,11 @@ The continuous pixel path runs in AHB GDMA, BitScrambler, and PARLIO TX. A backg
 ### 1. The Breakthrough: Zero-EOF Circular GDMA
 - **The Problem**: In continuous loop mode, the stock ESP-IDF PARLIO TX driver injected a GDMA EOF (`suc_eof = 1`) on every cyclic ring wrap (confirmed in [espressif/esp-idf#19091](https://github.com/espressif/esp-idf/issues/19091)). This triggered periodic hardware stalls, causing a 1-second vertical sync drop and jagged horizontal line jitter ("kartels").
 - **The Solution**: C5VRX-3 patches `dw0.suc_eof = 0` across the descriptor ring in SRAM after driver initialization, paired with 64-byte aligned cache synchronization (`sync_dma_c2m`).
-- **The Result**: Truly gapless, infinite circular streaming with zero wrap bubbles, rock-solid vertical sync lock, and crystal-clear horizontal alignment.
+- **The Result**: Removing the cyclic EOF markers eliminated the observed wrap seams, periodic vertical drops and horizontal jitter in the tested live pipeline. This addresses transport boundaries; RF noise and demodulation artifacts remain separate quality limits.
+
+**Public report and Espressif confirmation:** Twotoz reported the continuous-stream problem in [espressif/esp-idf#19091](https://github.com/espressif/esp-idf/issues/19091) on **16 September 2026**, with a live-hardware A/B comparison. On **17 September**, Espressif's maintainer [confirmed: “Your analysis is correct.”](https://github.com/espressif/esp-idf/issues/19091#issuecomment-5712811733) and supplied a driver patch. The maintainer explained that BitScrambler interprets cyclic `suc_eof` as a real stream boundary: a steady-state loop should have no EOF, while buffer switching still needs a one-time EOF notification.
+
+This records C5VRX's concrete contribution to a continuous ESP32-C5 RF → IQ → hardware WBFM → CVBS pipeline. The issue concerns **PARLIO/GDMA/BitScrambler stream continuity**, not finite `adctrig` capture or proof that every RF acquisition path is gapless. The earlier autonomous RF-writer and live NTSC milestones are recorded separately in [continuous IQ hardware findings](docs/continuous-iq-findings.md).
 
 ### 2. Direct Gain V5 default gain controller
 - V5 = V4 plus a 200 us observer cadence (timer-driven, each completed RX descriptor measured at most once) and anti-hunt damping: two direction reversals of consecutive writes within 20 ms make out-of-band decisions need 8 windows (~1.6 ms) for 200 ms. Saturation is never damped.
@@ -339,3 +343,11 @@ C5VRX/
 C5VRX is open-source software licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`).
 
 See [LICENSE](LICENSE) for full licensing terms. The C5VRX name and logos have separate terms; see [assets/BRANDING.md](assets/BRANDING.md).
+
+### Analog Lock / receive-state investigations
+
+Issues #150–153 now have an [Analog Lock and bounded PHY lab workflow](docs/analog-lock-phy-lab.md):
+Direct Gain ownership restoration after tuning, opt-in RX/ADC/watchdog monitoring,
+individual reversible filter/packet-control tests, and public vendor-bandwidth A/B.
+Hardware attenuation/passband results remain pending; these experiments do not
+claim a measured range gain or change the production filter defaults.
