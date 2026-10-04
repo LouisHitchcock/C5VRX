@@ -179,7 +179,16 @@ This records C5VRX's concrete contribution to a continuous ESP32-C5 RF â†’ IQ â†
 - The mapping preserves direction across the signed range. A phase step that crosses the +/-180 degree representation boundary remains ambiguous and can alias.
 - Phase8 is selected by default in the current build and was viewed live with Direct Gain V4.
 
+### 5. Pre-demodulation correction and output options
+Ported from the C5VRX-4 pre-demodulation work (#165, PR #166); hardware acceptance is pending for each item.
+- **Digital IQ DC recentring (default on, `%` opts out).** The RX DC calibration runs once at boot, has no calibration point above 5855 MHz and is never refreshed (PLL tracking is off). The Direct Gain observer averages the raw I/Q centre of settled, unclipped windows; after two agreeing evaluations and a move of at least 0.12 cell (at most every 2 s) the Phase8 FULL decode table is rewritten around that centre through a verified LUT path. A lane change rewrites it at the new lane's scale. No PHY write and no raw-ring change; HC and GOLDEN are untouched. It corrects decode geometry only: samples that folded or clipped before Q4 stay lost.
+- **First-lock sampling-phase check (default on, `&` opts out).** PARLIO RX samples the ~80 MS/s MODEM_DIAG bus at a phase fixed at reset (zerowidth/C5VRX PR #3 saw about 3 bad boots in 10). At the first stable lock the mid-transition read rate is measured once; only >=5000 ppm runs the RX clock-slip scan (`@`).
+- **Severe overload (#158).** Clipping >=50 % with P95 >=95 on the coarse lane (VTX very close) goes straight to the G20 floor instead of hunting one emergency drop at a time.
+- **GOLDEN is selectable again.** `P` cycles PHASE8 FULL -> HC -> GOLDEN (reboot). Phase8 FULL maps 0.25 DAC code per Phase8 bin, about a third of Golden's CVBS swing; GOLDEN keeps the v3.18.1 transfer for AV inputs that need standard amplitude. Phase8 FULL stays the default; this build keeps 6BIT@40 for all three.
+- **Tuning reaches 5945 MHz** (R8, E6..E8) through `phy_set_freq` from the 5885 MHz centre, as zerowidth/C5VRX PR #3 decoded R8.
+
 ### Known limits
+- Phase8 FULL cannot reach standard CVBS amplitude in its two bundles: a larger slope wraps modulo 256 into sync and bright pixels, and a saturating DAC lookup needs a third bundle (C5VRX-4's STD150 route, 13.333 MS/s unique). Use GOLDEN or C5VRX-4 where the AV input needs ~1 V sync-to-white.
 - A signed adjacent-phase estimate cannot distinguish an actual step beyond 180 degrees from its wrapped equivalent.
 - The hardware observation documented above covers a working live picture at the tested VTX and receiver setup. It does not establish performance at all distances, channels, antenna orientations, or gain transitions.
 
@@ -226,6 +235,10 @@ Connecting to the USB serial console (115200 baud) provides live telemetry and s
 | `N` | Toggle native hardware AGC (opt-in) / Direct Gain V4 and reboot |
 | `E` | Print one P8ENV row (Q4 envelope, native AGC state, transport) |
 | `Q` / `T` | Raw Q4/I4 dump (4 x 64 consecutive samples) / read-only AGC register dump |
+| `P` | Live demodulator PHASE8 FULL -> HC -> GOLDEN (standard CVBS swing), reboot |
+| `!` | Pre-demod status: glitch ppm, IQ DC, RX DC-cal point, recentring table, severe overloads |
+| `@` | Sampling-phase scan: RX clock slips, settles on a clean position |
+| `%` / `&` | Toggle default-on DC recentring / first-lock sampling-phase check, reboot |
 
 ---
 

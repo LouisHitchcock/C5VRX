@@ -262,6 +262,16 @@ older `docs/realtime-iq-plan.md` every-adjacent/RX-BS wording describes a design
 stage; inspect the later findings and actual TX program before claiming the
 middle sample participates in production output.
 
+C5VRX-3 pre-demodulation correction (2026-10-04, ported from C5VRX-4 #165/
+PR #166, hardware-pending): default-on digital IQ DC recentring rewrites only
+the Phase8 FULL decode LUT around the measured raw centre (verified pristine
+table, stopped-engine probe, read-back checked, lane-rescaled, re-applied on
+program reload, NVS `c5vrx/dc_recenter`); a first-lock sampling-phase check
+may slip the PARLIO RX divider once (NVS `c5vrx/sphase_auto`); severe
+coarse-lane clipping drops to G20 (#158); GOLDEN is runtime-selectable via
+`P` in the Phase8 build. Phase8 FULL's 2-bundle transfer cannot reach standard
+CVBS amplitude without modulo wrap; do not raise its slope.
+
 Control research also belongs to this lineage: fixed/manual gain, adaptive
 active/shadow modes, Range/ARC V2-V5, Direct Gain V1-V5, native packet AGC,
 paced native hold windows, IQ/DC calibration, finer-lane selection, bandwidth,

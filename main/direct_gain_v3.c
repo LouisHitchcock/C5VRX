@@ -636,6 +636,20 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         ++v3->verified;
     }
     if (saturated) {
+        /* #158: severe clipping on the coarse lane is real quantizer
+         * overdrive (VTX very close). Do not hunt through RF/BB stages one
+         * drop at a time; go straight to the G20 floor. Finer-lane clipping
+         * first follows the fold escape above; manual/native stay untouched.
+         * The settle freshness check above still rejects stale post-drop IQ.
+         * Same rule as C5VRX-4 (experiments/c5vrx-4, PR #159). */
+        if (v3->lane == 0u && o->clip_pm >= 500u && o->p95 >= 95u &&
+            v3->current_gain > DG3_SEVERE_OVERLOAD_GAIN) {
+            ++v3->overloads;
+            ++v3->severe_overloads;
+            v3->high_windows = v3->weak_windows = 0;
+            v3->virtual_gain_q8 = 0;
+            return start_write(v3, o, &prior, DG3_SEVERE_OVERLOAD_GAIN);
+        }
         ++v3->overloads;
         v3->high_windows = v3->weak_windows = 0;
         v3->virtual_gain_q8 = 0;

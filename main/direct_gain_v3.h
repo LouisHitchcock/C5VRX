@@ -6,6 +6,8 @@
 #include "arc_phy.h"
 
 #define DG3_STATES (ARC_VENDOR_GAIN_MAX + 1u)
+/* #158 severe coarse-lane overload floor (same as C5VRX-4). */
+#define DG3_SEVERE_OVERLOAD_GAIN 20u
 
 typedef enum {
     DG3_ACQUIRE = 0,
@@ -48,7 +50,7 @@ typedef struct {
     dg3_observation_t before, before_previous, previous, last_tracking;
     uint8_t stable_windows;
     uint64_t write_us;
-    uint32_t writes, holds, verified, learned, overloads;
+    uint32_t writes, holds, verified, learned, overloads, severe_overloads;
     /* V5 anti-hunt: direction reversals of consecutive writes. */
     int8_t last_write_dir;
     uint8_t reversals;

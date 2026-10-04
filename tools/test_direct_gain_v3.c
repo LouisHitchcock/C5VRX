@@ -93,6 +93,18 @@ int main(void)
     /* A strong carrier appearing at maximum gain is dropped at once. */
     dg3_observation_t strong = obs(60, 110, 0, 300, 90, lost.observed_us + 5000u);
     assert(direct_gain_v3_tick(&v3, &strong) < table.max_index);
+    /* #158: severe coarse-lane overdrive (VTX very close) goes straight to
+     * the G20 floor instead of hunting one emergency drop at a time. */
+    direct_gain_v3_reset(&v3, &table, 60u, 62u);
+    dg3_observation_t severe = obs(65, 110, 0, 738, 10, 900000u);
+    assert(direct_gain_v3_tick(&v3, &severe) == DG3_SEVERE_OVERLOAD_GAIN);
+    assert(v3.severe_overloads == 1u && v3.state == DG3_SETTLE);
+    /* Ordinary saturation keeps the measured emergency drop. */
+    direct_gain_v3_reset(&v3, &table, 60u, 62u);
+    dg3_observation_t ordinary = obs(50, 105, 0, 200, 90, 950000u);
+    uint8_t ordinary_drop = direct_gain_v3_tick(&v3, &ordinary);
+    assert(ordinary_drop < 60u && ordinary_drop != DG3_SEVERE_OVERLOAD_GAIN &&
+           v3.severe_overloads == 0u);
 
     /* Measured tuple response wins over numeric index order. G34 is marked
      * stronger than G35; G33 is the useful measured gain-down destination. */

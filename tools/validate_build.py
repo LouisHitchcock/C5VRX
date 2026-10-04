@@ -56,8 +56,25 @@ c_names = [f.name for f in c_files]
 video_c = read(MAIN / "video.c")
 menu_lifecycle = video_c.split("static void video_set_menu_mode", 1)[1].split("static void menu_cycle_standard_mode", 1)[0]
 
-check("production receiver and dedicated menu/auto-lab modules", set(c_names) == {"main.c", "bs_relative_worker_probe.c", "bs_relative_middle_probe.c", "bs_addctia_probe.c", "phy_phase_tap_probe.c", "arc_phy.c", "arc_v3_controller.c", "arc_v5_autotune.c", "rx_auto_lab.c", "rf.c", "video.c", "direct_gain.c", "direct_gain_v2.c", "direct_gain_v3.c", "analog_video_detect.c", "menu_raster.c"},
+check("production receiver and dedicated menu/auto-lab modules", set(c_names) == {"main.c", "bs_relative_worker_probe.c", "bs_relative_middle_probe.c", "bs_addctia_probe.c", "phy_phase_tap_probe.c", "arc_phy.c", "arc_v3_controller.c", "arc_v5_autotune.c", "rx_auto_lab.c", "rf.c", "video.c", "direct_gain.c", "direct_gain_v2.c", "direct_gain_v3.c", "decoder_lut.c", "analog_video_detect.c", "menu_raster.c"},
       f"found: {c_names}")
+# ---- C5VRX-3 pre-demodulation correction and output options ----
+decoder_c = read(MAIN / "decoder_lut.c")
+dg3_c = read(MAIN / "direct_gain_v3.c")
+rf_c = read(MAIN / "rf.c")
+check("DC recentring verifies the pristine Phase8 FULL table before any write",
+      "predemod_hr_live_word((uint8_t)(i & 255u), 0, 0)" in decoder_c and "unexpected_table" in decoder_c)
+check("DC recentring never reloads the LUT width or halts the engine",
+      "load_lut" not in decoder_c.split("*/", 1)[1] and "bitscrambler_reset" not in decoder_c)
+check("DC recentring stops before every flight BitScrambler disable",
+      video_c.count("decoder_lut_stop();") >= video_c.count("bitscrambler_disable(s_flight_bs)"))
+check("DC recentring and phase check have NVS opt-outs",
+      '"dc_recenter"' in video_c and '"sphase_auto"' in video_c)
+check("GOLDEN stays selectable in the Phase8 build (P cycles PHASE8/HC/GOLDEN)",
+      "LIVE_DEMOD_GOLDEN ? golden_6bit_program()" in video_c)
+check("#158 severe coarse-lane overload goes straight to the G20 floor",
+      "DG3_SEVERE_OVERLOAD_GAIN" in dg3_c and "o->clip_pm >= 500u && o->p95 >= 95u" in dg3_c)
+check("tuning ceiling reaches E8 (5945 MHz)", "#define C5_WIFI5_MAX_MHZ 5945u" in rf_c)
 check("main.c present", "main.c" in c_names)
 check("rf.c present", "rf.c" in c_names)
 check("video.c present", "video.c" in c_names)
