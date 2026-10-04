@@ -61,6 +61,48 @@ static void native_observe(const char *stage,unsigned cycle)
     } else assert(!(REG(0x600A7030)&PHYBIT(29)));
     clock_us+=40000;
 }
+static unsigned pbus[4][3];
+static bool pbus_debug, corrupt_workmode, fail_measure;
+uint16_t phy_pbus_rd(uint32_t block, uint32_t bank) { return (uint16_t)pbus[block][bank]; }
+void phy_pbus_force_test(uint32_t block, uint32_t bank, uint32_t value)
+{
+    assert(pbus_debug && block < 4 && bank >= 1 && bank <= 2 && value <= 511);
+    pbus[block][bank] = value;
+}
+void phy_pbus_debugmode(void) { pbus_debug = true; }
+void phy_pbus_workmode(void) { pbus_debug = false; if (corrupt_workmode) pbus[2][2] ^= 1u; }
+/* Linear DC model with cross-coupling: block 2 bank 2 mainly I, block 3 bank 2 mainly Q. */
+static bool dco_measure(int dc[2])
+{
+    assert(phy_rx_lab_busy());
+    if (fail_measure) return false;
+    int a = (int)pbus[2][2] - 200, b = (int)pbus[3][2] - 300;
+    dc[0] = 1500 + 25 * a + 3 * b;
+    dc[1] = -900 + 30 * b - 2 * a;
+    return true;
+}
+static unsigned dco_stages;
+static void dco_observe(const char *stage)
+{
+    int dc[2];
+    if (fail_measure) { assert(!strcmp(stage, "RESTORED")); ++dco_stages; return; }
+    assert(dco_measure(dc));
+    if (!strcmp(stage, "CORRECTED")) assert(dc[0] * dc[0] + dc[1] * dc[1] <= 100 * 100 && pbus_debug);
+    if (!strcmp(stage, "RESTORED")) assert(dc[0] == 1500 && dc[1] == -900 && !pbus_debug);
+    ++dco_stages;
+}
+static unsigned filter_stages;
+static void filter_observe(const char *stage, int offset)
+{
+    assert(phy_rx_lab_busy());
+    for (unsigned r = 6; r <= 13; ++r) {
+        unsigned base = 0xC0u | (r + 10u);
+        unsigned code = offset ? ((r + 10u + (unsigned)offset) > 60u ? 60u : r + 10u + (unsigned)offset) : r + 10u;
+        assert(analog_regs[r] == ((base & ~63u) | code));
+    }
+    if (!strcmp(stage, "NARROW")) assert(offset > 0); else assert(offset == 0);
+    ++filter_stages;
+}
 static unsigned stages;
 static void observe(const char *stage)
 {
@@ -237,6 +279,44 @@ int main(void)
 #else
     assert(phy_rx_lab_run_native_hold(100,native_observe)==ESP_ERR_NOT_SUPPORTED);
     assert(!native_holds && !native_releases);
+#endif
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    /* DCO lab: measured 2x2 response, bounded correction, exact restore. */
+    for (unsigned b = 0; b < 4; ++b) { pbus[b][1] = 100 + b; pbus[b][2] = 150 + b; }
+    pbus[2][2] = 200; pbus[3][2] = 300;
+    assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_OK);
+    assert(dco_stages == 3 && !phy_rx_lab_busy() && !pbus_debug);
+    assert(pbus[2][2] == 200 && pbus[3][2] == 300 && pbus[0][1] == 100 && pbus[1][2] == 151);
+    native = true; dco_stages = 0;
+    assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_INVALID_STATE && !dco_stages);
+    native = false;
+    assert(phy_rx_lab_run_dco_probe(NULL, dco_observe) == ESP_ERR_INVALID_STATE);
+    fail_measure = true;
+    assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_INVALID_RESPONSE);
+    assert(!pbus_debug && !phy_rx_lab_busy());
+    /* A restore that does not read back exactly reports a reboot. */
+    fail_measure = false; corrupt_workmode = true; dco_stages = 0;
+    assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_FAIL);
+    assert(dco_stages == 2 && !phy_rx_lab_busy());
+    corrupt_workmode = false; pbus[2][2] = 200;
+
+    /* Filter lab: relative codes saturating at 60, exact restore. */
+    for (unsigned r = 6; r <= 13; ++r) analog_regs[r] = 0xC0u | (r + 10u);
+    assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_OK);
+    assert(filter_stages == 7 && !phy_rx_lab_busy());
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 10u)));
+    native = true;
+    assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_INVALID_STATE);
+    native = false;
+    /* Writes that do not take are reported, never observed as NARROW. */
+    fail_restore = true; filter_stages = 0;
+    assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_INVALID_RESPONSE);
+    assert(filter_stages == 2 && !phy_rx_lab_busy()); fail_restore = false;
+    phy_rx_lab_predemod_status();
+#else
+    assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_NOT_SUPPORTED);
+    assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_NOT_SUPPORTED);
+    phy_rx_lab_predemod_status();
 #endif
     for (unsigned i=0; i<100; ++i) { ++clock_us; phy_rx_lab_osi_event(false); }
     assert(s_disables==100);

@@ -34,6 +34,7 @@
 #include "cvbs_level_hw.h"
 #include "cvbs_level.h"
 #include "cvbs_snapshot.h"
+#include "predemod.h"
 #endif
 #include "rf.h"
 #include "phy_rx_lab.h"
@@ -92,6 +93,7 @@
 #include "soc/bitscrambler_struct.h"
 #include "soc/ahb_dma_struct.h"
 #include "soc/pcr_struct.h"
+#include "hal/misc.h"
 #include "modem/modem_syscon_reg.h"
 #include "hal/dma_types.h"
 #include "esp_clock_output.h"
@@ -332,6 +334,8 @@ static volatile int s_v3_p50, s_v3_p90, s_v3_p95, s_v3_origin_pm;
 static volatile int s_v3_dc_i_mstep, s_v3_dc_q_mstep;
 static volatile uint32_t s_v3_bw_switches;
 static volatile int s_v3_clip_pm, s_v3_coherence;
+/* Sampling-phase evidence: mid-transition reads per observed sample. */
+static volatile uint32_t s_predemod_glitches, s_predemod_samples;
 static TaskHandle_t s_v3_observer_task_handle;
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
 /* History-conditioned demodulator (fm_hc.bsasm), chosen per boot from NVS
@@ -1802,6 +1806,11 @@ static void direct_gain_v3_observer_task(void *arg)
             s_direct_gain_v3.lane, sample, sizeof(sample), observation.observed_us);
         direct_gain_v3_apply_target(target, profile, phy);
         direct_gain_v5_dc_observe(sample, sizeof(sample), &observation);
+        /* Regions are separate 64-byte spans: never pair across them. */
+        for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r)
+            s_predemod_glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
+                                                     RX_PROBE_REGION_BYTES, 6);
+        s_predemod_samples += RX_PROBE_REGIONS * (RX_PROBE_REGION_BYTES - 2u);
         direct_gain_v5_bw_gear(&observation);
     }
 }
@@ -2769,6 +2778,194 @@ static void lab_run_11p_probe(void)
     s_agc_mode=saved_mode;
     s_rssi_probe_active=false;
     printf("PHY11P done status=%d\n",(int)result);
+}
+
+/* ---- Pre-demodulation labs (#165) -------------------------------------
+ * Observers over completed DMA regions only; the 40 MS/s path is unchanged.
+ * Each lab pauses the gain controller exactly like the 11p A/B above. */
+typedef struct {
+    uint32_t glitches, samples;
+    int dc_i, dc_q;             /* milli-cells of the current lane */
+    unsigned windows;
+    control_metrics_t m;
+} predemod_window_t;
+
+static bool predemod_collect(unsigned windows, predemod_window_t *out)
+{
+    uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+    int64_t si = 0, sq = 0;
+    memset(out, 0, sizeof(*out));
+    for (unsigned tries = 0; tries < windows * 3u && out->windows < windows; ++tries) {
+        vTaskDelay(1);
+        if (!rx_probe_copy_completed(sample)) continue;
+        for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r)
+            out->glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
+                                               RX_PROBE_REGION_BYTES, 6);
+        out->samples += RX_PROBE_REGIONS * (RX_PROBE_REGION_BYTES - 2u);
+        int di, dq;
+        predemod_dc_mcells(sample, sizeof(sample), &di, &dq);
+        si += di; sq += dq;
+        out->m = analyze_control_window(sample, sizeof(sample), 0);
+        ++out->windows;
+    }
+    if (!out->windows) return false;
+    out->dc_i = (int)(si / (int64_t)out->windows);
+    out->dc_q = (int)(sq / (int64_t)out->windows);
+    return out->windows * 2u >= windows;
+}
+
+static unsigned predemod_ppm(uint32_t glitches, uint32_t samples)
+{
+    return samples ? (unsigned)((uint64_t)glitches * 1000000u / samples) : 0u;
+}
+
+static void predemod_print(const char *tag, const char *stage, int extra,
+                           const predemod_window_t *w)
+{
+    unsigned step = 64u >> rf_get_iq_lanes();
+    printf("%s stage=%s arg=%d freq=%u G=%u lane=%u windows=%u glitch_ppm=%u "
+           "dc_mcells=%d/%d dc_codes=%d/%d P50=%d Q_phase=%d outer_pm=%d origin_pm=%d "
+           "video=hardware_pending\n",
+           tag, stage, extra, rf_get_frequency_mhz(), s_current_gain, rf_get_iq_lanes(),
+           w->windows, predemod_ppm(w->glitches, w->samples), w->dc_i, w->dc_q,
+           w->dc_i * (int)step / 1000, w->dc_q * (int)step / 1000, w->m.p_median,
+           w->m.q_phase, w->m.clip_permille, w->m.origin_permille);
+}
+
+static bool predemod_pause(const char *tag, analog_agc_mode_t *saved_mode)
+{
+    if (rf_native_agc_active() || s_gain_sweep.active || s_menu_active ||
+        s_pre_q4_probe_active || s_rssi_probe_active) {
+        printf("%s refused=other_lab_menu_or_native_owner\n", tag);
+        return false;
+    }
+    *saved_mode = s_agc_mode;
+    s_rssi_probe_active = true;
+    s_agc_mode = ANALOG_AGC_MANUAL;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    return true;
+}
+
+static void predemod_resume(analog_agc_mode_t saved_mode)
+{
+    ++s_profile_generation;
+    s_agc_mode = saved_mode;
+    s_rssi_probe_active = false;
+}
+
+static void lab_predemod_status(void)
+{
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    uint32_t glitches = s_predemod_glitches, samples = s_predemod_samples;
+    int dc_i = s_v3_dc_i_mstep, dc_q = s_v3_dc_q_mstep;
+#else
+    uint32_t glitches = 0, samples = 0;
+    int dc_i = 0, dc_q = 0;
+#endif
+    printf("PREDEMOD lanes=%s lane=%u adc_step=%u gain=%u table_max=%u freq=%u "
+           "observer_glitch_ppm=%u observer_samples=%lu receiver_dc_lane0_msteps=%d/%d\n",
+           c5vrx4_lane_mode_name(), rf_get_iq_lanes(), 64u >> rf_get_iq_lanes(),
+           s_current_gain, table ? table->max_index : 0u, rf_get_frequency_mhz(),
+           predemod_ppm(glitches, samples), (unsigned long)samples, dc_i, dc_q);
+    phy_rx_lab_predemod_status();
+}
+
+/* Sampling phase (#165 P0). PARLIO RX runs PLL_F240M/6 while MODEM_DIAG
+ * changes every 3 ticks of 240 MHz; their relation is fixed at reset. Holding
+ * the divider one count higher for ~1 us moves the RX edge by a few 4.17-ns
+ * ticks (zerowidth PR #3 does this on its PARLIO TX sample clock). The ring
+ * loses a few samples once; producer/consumer block separation is kept. */
+static portMUX_TYPE s_slip_mux = portMUX_INITIALIZER_UNLOCKED;
+static void rx_clock_slip(uint32_t us)
+{
+    portENTER_CRITICAL(&s_slip_mux);
+    uint32_t div = PCR.parl_clk_rx_conf.parl_clk_rx_div_num;
+    HAL_FORCE_MODIFY_U32_REG_FIELD(PCR.parl_clk_rx_conf, parl_clk_rx_div_num, div + 1u);
+    esp_rom_delay_us(us);
+    HAL_FORCE_MODIFY_U32_REG_FIELD(PCR.parl_clk_rx_conf, parl_clk_rx_div_num, div);
+    portEXIT_CRITICAL(&s_slip_mux);
+}
+
+#define SPHASE_POSITIONS 9u
+#define SPHASE_SETTLE_TRIES 12u
+static void lab_run_sample_phase_scan(void)
+{
+    analog_agc_mode_t saved_mode;
+    if (!predemod_pause("SPHASE", &saved_mode)) return;
+    printf("SPHASE begin rx_div=%lu lane=%u slip_us=1 positions=%u "
+           "metric=mid_transition_reads hardware_acceptance=pending\n",
+           (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul,
+           rf_get_iq_lanes(), SPHASE_POSITIONS);
+    predemod_window_t w;
+    unsigned best = UINT32_MAX;
+    for (unsigned pos = 0; pos < SPHASE_POSITIONS; ++pos) {
+        if (pos) { rx_clock_slip(1); vTaskDelay(pdMS_TO_TICKS(20)); }
+        if (!predemod_collect(48, &w)) { printf("SPHASE slip=%u sample=unavailable\n", pos); continue; }
+        unsigned ppm = predemod_ppm(w.glitches, w.samples);
+        if (ppm < best) best = ppm;
+        predemod_print("SPHASE", "SCAN", (int)pos, &w);
+    }
+    /* Positions repeat every three ticks: stop on one near the cleanest seen. */
+    bool settled = false;
+    for (unsigned n = 0; best != UINT32_MAX && n < SPHASE_SETTLE_TRIES; ++n) {
+        if (!predemod_collect(48, &w)) break;
+        unsigned ppm = predemod_ppm(w.glitches, w.samples);
+        unsigned margin = best / 4u > 300u ? best / 4u : 300u;
+        if (ppm <= best + margin) { settled = true; break; }
+        rx_clock_slip(1);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (w.windows) predemod_print("SPHASE", settled ? "FINAL" : "UNSETTLED", (int)best, &w);
+    predemod_resume(saved_mode);
+    printf("SPHASE done best_ppm=%u settled=%u persistent=0\n", best, settled);
+}
+
+static bool lab_dco_measure(int dc[2])
+{
+    predemod_window_t w;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (!predemod_collect(64, &w)) return false;
+    dc[0] = w.dc_i;
+    dc[1] = w.dc_q;
+    return true;
+}
+
+static void lab_dco_observe(const char *stage)
+{
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    predemod_window_t w;
+    if (!predemod_collect(64, &w)) { printf("DCO stage=%s sample=unavailable\n", stage); return; }
+    predemod_print("DCO", stage, 0, &w);
+}
+
+static void lab_run_dco_probe(void)
+{
+    analog_agc_mode_t saved_mode;
+    if (!predemod_pause("DCO", &saved_mode)) return;
+    esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_observe);
+    /* A failed exact rollback must not resume control over an unknown PHY. */
+    if (result == ESP_FAIL) { printf("DCO rollback_failed rebooting\n"); esp_restart(); }
+    predemod_resume(saved_mode);
+    printf("DCO done status=%d\n", (int)result);
+}
+
+static void lab_filter_observe(const char *stage, int offset)
+{
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    predemod_window_t w;
+    if (!predemod_collect(48, &w)) { printf("FILTER stage=%s sample=unavailable\n", stage); return; }
+    predemod_print("FILTER", stage, offset, &w);
+}
+
+static void lab_run_filter_sweep(void)
+{
+    analog_agc_mode_t saved_mode;
+    if (!predemod_pause("FILTER", &saved_mode)) return;
+    esp_err_t result = phy_rx_lab_run_filter_sweep(lab_filter_observe);
+    if (result == ESP_FAIL) { printf("FILTER rollback_failed rebooting\n"); esp_restart(); }
+    predemod_resume(saved_mode);
+    printf("FILTER done status=%d\n", (int)result);
 }
 
 static unsigned s_native_hold_cycles;
@@ -5882,6 +6079,14 @@ static void console_diag_task(void *arg)
                     lab_run_native_hold(c == '(' ? 1u : 100u);
                 } else if (c == ':') {
                     lab_run_11p_probe();
+                } else if (c == '!') {
+                    lab_predemod_status();
+                } else if (c == '@') {
+                    lab_run_sample_phase_scan();
+                } else if (c == '#') {
+                    lab_run_dco_probe();
+                } else if (c == '$') {
+                    lab_run_filter_sweep();
                 } else if (c == 'R') {
                     lab_run_rssi_gain_probe();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
@@ -6214,6 +6419,10 @@ static void console_diag_task(void *arg)
                     printf("  '}':         Toggle 50ms PHY monitor (L dumps bounded events)\n");
                     printf("  '('/')':     Native BB hold A/B / 100 reversible cycles (native only)\n");
                     printf("  ':':         Reversible phy_11p_set(1,0) A/B (three fresh Q4 rows)\n");
+                    printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
+                    printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
+                    printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");
+                    printf("  '$':         Reversible RX filter-cap sweep 0x67/6..13: +4/+8/+16/+24/60 (pinned PHY)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

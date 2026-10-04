@@ -47,6 +47,7 @@ def main():
         ("afc_state", []), ("afc_v2", ["-lm"]), ("afc_v2_ctrl", ["-lm"]),
         ("integration", ["-DC5VRX4_EXPERIMENT=1", "-I.", "-Itools/phy_lab_stubs", "main/direct_gain_v3.c", "main/arc_phy.c"]),
         ("c5vrx4_gate", ["-pthread", "-I.", "-Itools/phy_lab_stubs"]),
+        ("predemod", ["-I.", "-lm"]),
     ]
     with tempfile.TemporaryDirectory(prefix="c5vrx4-verify-") as td:
         for name, extra in cases:
@@ -57,7 +58,7 @@ def main():
         for pinned in (False, True):
             target = str(Path(td) / f"phy_{pinned}")
             run([cc, "-pthread", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                 "-Itools/phy_lab_stubs", "-Imain",
+                 "-Itools/phy_lab_stubs", "-Imain", "-I.",
                  *(["-DC5VRX_PHY_RX_LAB_PINNED=1"] if pinned else []),
                  "tools/test_phy_rx_lab.c", "-o", target])
             run([target])
@@ -67,7 +68,7 @@ def main():
     for name in ("test_unwrap.py", "test_cvbs.py", "tools/test_phase8_hr_live.py",
                  "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
         run([sys.executable, name])
-    print("PASS: isolated C5VRX-4 integration, 21 C regressions, exhaustive unwrap and source-driven DSP tests")
+    print("PASS: isolated C5VRX-4 integration, 22 C regressions, exhaustive unwrap and source-driven DSP tests")
 
 if __name__ == "__main__":
     main()

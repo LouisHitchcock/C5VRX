@@ -51,6 +51,10 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   off**: transmitter reference/sign still need physical calibration.
 - PR154 PHY ownership restoration, serialized generation-checked gain writes,
   stale-overload mailbox rejection, reversible pinned PHY/BW/11p/native-hold labs.
+- Tuning reaches 5945 MHz (R8, E6..E8) through `phy_set_freq` from the 5885 MHz
+  centre, as zerowidth decoded R8; the old 5885 MHz ceiling is gone.
+- Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
+  and filter width before any production policy changes. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
   They identify candidate channels; a confident scan is not range proof.
 
@@ -67,6 +71,10 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `N` | Direct Gain / native AGC, reboot |
 | `H`, `{}`, `[]`, `W`, `B`, `A`, `:`, `L` | PR154 shared PHY diagnostics/labs |
 | `(`, `)` | Explicit native-only BB hold / 100-cycle reversible lab |
+| `!` | Pre-demod status: lane policy, glitch ppm, DC centre, DC-cal point, DCO words, filter caps |
+| `@` | Sampling-phase scan: RX clock slips, mid-transition glitch ppm, settles on a clean position |
+| `#` | Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B, pinned PHY only |
+| `$` | Reversible RX filter-capacitor sweep (0x67 regs 6..13), pinned PHY only |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

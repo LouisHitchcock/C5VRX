@@ -31,3 +31,17 @@ esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage));
  * destruction or forced gain. Observer must yield; 1 or 100 cycles only. */
 esp_err_t phy_rx_lab_run_native_hold(unsigned cycles,
     void (*observe)(const char *stage, unsigned cycle));
+
+/* Pre-demodulation labs (#165). Read-only status; the two A/B labs below
+ * require the pinned PHY archive, pause nothing themselves (the caller pauses
+ * all controllers), restore every owned field and return ESP_FAIL only when
+ * that restore cannot be verified (reboot required). */
+void phy_rx_lab_predemod_status(void);
+/* RX DC DACs (PBUS blocks 2/3): baseline, 2x2 response, bounded closed-loop
+ * correction, then exact restore and PBUS work mode. measure() returns the
+ * I/Q centre in milli-cells of the current lane. */
+esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
+                                   void (*observe)(const char *stage));
+/* BBTOP 0x67 registers 6..13 (RX RC filter capacitors): calibrated baseline,
+ * +4/+8/+16/+24 codes and the 11p-equivalent 60, then exact restore. */
+esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int offset));
