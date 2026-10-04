@@ -90,10 +90,10 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   with the native acquisition mask, which decodes Q3 in every CPU snapshot),
   so VTX deviation and carrier offset are corrected in every gain mode. See
   HDZERO.md for the HDZero cause analysis.
-- V5 strong-signal radius boost (default on): on a strong, tight, rail-free
+- V5 strong-signal radius boost (opt-in, `y`): on a strong, tight, rail-free
   carrier the healthy P50 band moves from 13..32 to 30..46 (IQ ring ~200
   instead of ~150 codes), so the 4-bit phase is finer. The first rail code,
-  P95 or level jump returns to the normal band at once. `y` opts out. See
+  P95 or level jump returns to the normal band at once. `y` enables it. See
   RADIUS_BOOST.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.

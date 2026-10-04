@@ -84,6 +84,29 @@ sync regeneration, which the AGENTS invariant parks. A cheap BitScrambler
 the class is known only one bundle before the DAC byte is formed, and both
 counter-op bundles are already occupied.
 
+## Fewer live disturbances (2026-10-04)
+
+The goggle decoder loses lock on brief output disturbances that a Fatshark
+ignores. Every live LUT write, gain write and TX owner switch is a potential
+disturbance, so their rate is now reduced at the source:
+
+- **Level servo, settled hold** (`cvbs_level.c`).
+  - Host test: with ±1-bin evidence jitter the old servo rewrote the live
+    even-bank LUT 247 times in 5 s, every 20-ms update. After a pass that
+    finds nothing beyond 8 mV it is now "settled": it writes again only for
+    an entry more than 24 mV off target, at most every 250 ms.
+  - Same test: 0 writes in 5 s of jitter. A real ~30 mV black shift is still
+    corrected.
+  - A context change or reacquisition unsettles it, so initial and
+    gain-step convergence are unchanged.
+- **DC recentring:** at least 10 s between decoder-bank rewrites (was 2 s).
+- **Radius boost:** opt-in (`y`). It adds gain writes for a benefit an
+  earlier lane/radius A/B did not show.
+- **Idle raster:** it leaves on a sync, or on two consecutive carrier windows
+  instead of one. Each exit holds off the next entry for 5 s, doubling to
+  10 s and 20 s for repeated exits; 60 s of live video resets this. A fringe
+  carrier can no longer toggle the TX owner every ~2 s.
+
 ## TP2825 status and how to read it on the goggles
 
 Register 0x01 (video input status), per the Techpoint TP9950 datasheet, the

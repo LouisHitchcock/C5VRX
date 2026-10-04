@@ -23,10 +23,18 @@
 #define IDLE_RASTER_QUIET_Q     25  /* carrier coherence below: receiver noise */
 #define IDLE_RASTER_CARRIER_Q   40  /* at or above: a carrier, return to live */
 #define IDLE_RASTER_SYNC_TICKS  40u /* no sync for at least 2 s before entry */
+/* Every TX owner switch is a timing break for the goggle decoder, so a
+ * fringe carrier must not toggle the raster: leaving needs a sync or two
+ * consecutive carrier windows, and each exit holds off the next entry for
+ * 5 s, doubling for repeated exits (max 20 s); 60 s of live video clears it. */
+#define IDLE_RASTER_EXIT_WINDOWS 2u
+#define IDLE_RASTER_REENTRY_TICKS 100u
+#define IDLE_RASTER_STREAK_CLEAR_TICKS 1200u
 
 typedef struct {
     bool active;
-    uint16_t quiet_ticks;
+    uint16_t quiet_ticks, carrier_windows, holdoff_ticks, live_ticks;
+    uint8_t streak;
     uint32_t entries, exits;
 } idle_raster_t;
 
@@ -45,16 +53,24 @@ typedef enum { IDLE_RASTER_STAY, IDLE_RASTER_ENTER, IDLE_RASTER_EXIT } idle_rast
 static inline idle_raster_action_t idle_raster_step(idle_raster_t *s, const idle_raster_obs_t *o)
 {
     if (s->active) {
-        /* Leave at the first sign of a transmitter: a weak picture is
+        /* Leave at the first real sign of a transmitter: a weak picture is
          * always preferred over the idle raster. */
-        if (!o->enabled || o->fresh_sync || o->q_phase >= IDLE_RASTER_CARRIER_Q) {
+        s->carrier_windows = o->q_phase >= IDLE_RASTER_CARRIER_Q ?
+            (uint16_t)(s->carrier_windows + 1u) : 0u;
+        if (!o->enabled || o->fresh_sync || s->carrier_windows >= IDLE_RASTER_EXIT_WINDOWS) {
             s->active = false;
-            s->quiet_ticks = 0;
+            s->quiet_ticks = s->carrier_windows = 0;
+            s->holdoff_ticks = (uint16_t)(IDLE_RASTER_REENTRY_TICKS << (s->streak < 2u ? s->streak : 2u));
+            if (s->streak < 255u) ++s->streak;
+            s->live_ticks = 0;
             ++s->exits;
             return IDLE_RASTER_EXIT;
         }
         return IDLE_RASTER_STAY;
     }
+    if (s->live_ticks < IDLE_RASTER_STREAK_CLEAR_TICKS && ++s->live_ticks == IDLE_RASTER_STREAK_CLEAR_TICKS)
+        s->streak = 0;
+    if (s->holdoff_ticks) { --s->holdoff_ticks; s->quiet_ticks = 0; return IDLE_RASTER_STAY; }
     bool quiet = o->enabled && o->owner_free && o->survival_gain && !o->settling &&
                  !o->fresh_sync && o->sync_age_ticks >= IDLE_RASTER_SYNC_TICKS &&
                  o->q_phase < IDLE_RASTER_QUIET_Q;
@@ -71,5 +87,5 @@ static inline idle_raster_action_t idle_raster_step(idle_raster_t *s, const idle
 static inline void idle_raster_abandon(idle_raster_t *s)
 {
     s->active = false;
-    s->quiet_ticks = 0;
+    s->quiet_ticks = s->carrier_windows = 0;
 }

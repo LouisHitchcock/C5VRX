@@ -5502,7 +5502,9 @@ static void cvbs_level_task(void *arg)
 #define DC_AGREE_MCELLS    150
 #define DC_STEP_MCELLS     120
 #define DC_LIMIT_MCELLS    3000
-#define DC_MIN_GAP_US      2000000
+/* Every decoder-bank rewrite is a live LUT write (HDZero, 2026-10-04): DC
+ * drifts thermally over minutes, so 10 s between writes loses nothing. */
+#define DC_MIN_GAP_US      10000000
 #define SPHASE_AUTO_PPM    5000u
 static predemod_dc_filter_t s_dc_filter;
 static uint32_t s_dc_filter_epoch, s_dc_evaluations, s_dc_refusals;
@@ -7082,7 +7084,7 @@ static void console_diag_task(void *arg)
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
-                    printf("  'y':         Toggle the V5 strong-signal radius boost (P50 30..46 on a strong steady ring), reboot\n");
+                    printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

@@ -28,15 +28,31 @@ int main(void)
     /* Hysteresis: coherence between the thresholds keeps the raster ... */
     o.q_phase = IDLE_RASTER_CARRIER_Q - 1;
     assert(idle_raster_step(&s, &o) == IDLE_RASTER_STAY && s.active);
-    /* ... a carrier returns to live on the first window ... */
+    /* ... a single carrier window is not enough (fringe flicker) ... */
     o.q_phase = IDLE_RASTER_CARRIER_Q;
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_STAY && s.active);
+    o.q_phase = 10;
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_STAY && s.active);
+    /* ... two consecutive carrier windows return to live ... */
+    o.q_phase = IDLE_RASTER_CARRIER_Q;
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_STAY);
     assert(idle_raster_step(&s, &o) == IDLE_RASTER_EXIT && !s.active && s.exits == 1);
+    /* ... and the next entry is held off 5 s (+2 s quiet). */
+    assert(ticks_to_enter(&s, noise(), 1000) == IDLE_RASTER_REENTRY_TICKS + IDLE_RASTER_ENTER_TICKS);
+    o = noise(); o.fresh_sync = true;
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_EXIT);
+    /* Repeated exits double the hold-off (10 s, then 20 s). */
+    assert(ticks_to_enter(&s, noise(), 2000) == 2u * IDLE_RASTER_REENTRY_TICKS + IDLE_RASTER_ENTER_TICKS);
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_EXIT);
+    assert(ticks_to_enter(&s, noise(), 2000) == 4u * IDLE_RASTER_REENTRY_TICKS + IDLE_RASTER_ENTER_TICKS);
+    assert(idle_raster_step(&s, &o) == IDLE_RASTER_EXIT);
+    assert(ticks_to_enter(&s, noise(), 2000) == 4u * IDLE_RASTER_REENTRY_TICKS + IDLE_RASTER_ENTER_TICKS);
     /* ... and the same coherence never enters from live. */
     s = (idle_raster_t){0};
     o = noise(); o.q_phase = IDLE_RASTER_QUIET_Q;
     assert(ticks_to_enter(&s, o, 1000) == 0);
 
-    /* A sync alone (weak carrier, low coherence) also returns to live. */
+    /* A sync alone (weak carrier, low coherence) returns to live at once. */
     s = (idle_raster_t){0};
     assert(ticks_to_enter(&s, noise(), 200));
     o = noise(); o.fresh_sync = true;
@@ -89,6 +105,6 @@ int main(void)
     assert(!s.active && s.exits == 0);
     assert(ticks_to_enter(&s, noise(), 200) == IDLE_RASTER_ENTER_TICKS && s.entries == 2);
 
-    puts("PASS idle_raster: 2-s quiet entry, immediate carrier/sync exit, hysteresis, blockers");
+    puts("PASS idle_raster: 2-s quiet entry, sync / 2-window carrier exit, doubling re-entry hold-off, hysteresis, blockers");
     return 0;
 }

@@ -228,7 +228,9 @@ bool c5vrx4_idle_raster_enabled(void)
 static int8_t s_radius_boost = -1;
 bool c5vrx4_radius_boost_enabled(void)
 {
-    if (s_radius_boost < 0) s_radius_boost = nvs_flag("radius_boost", true);
+    /* Opt-in since 2026-10-04: extra gain writes for a benefit that an earlier
+     * lane/radius hardware A/B did not show (RADIUS_BOOST.md). */
+    if (s_radius_boost < 0) s_radius_boost = nvs_flag("radius_boost", false);
     return s_radius_boost;
 }
 

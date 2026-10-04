@@ -43,6 +43,9 @@ def main():
     level_task = video.split("static void cvbs_level_task", 1)[1].split("\n}\n", 1)[0]
     assert "rf_native_agc_active" not in level_task
     assert "c5v4_cvbs_set_mask_decode(c5vrx4_agc_mask_active())" in video
+    level_c = (ROOT / "cvbs_level.c").read_text()
+    assert "s->settled ? C5V4_LEVEL_SETTLED_DEADBAND_UV" in level_c and "DC_MIN_GAP_US      10000000" in video
+    assert 'nvs_flag("radius_boost", false)' in pipeline
     # Radius boost: normal band constants unchanged, opt-out wired.
     dg3 = (ROOT / "main/direct_gain_v3.c").read_text()
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3

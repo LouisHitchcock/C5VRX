@@ -41,16 +41,22 @@ unsigned c5v4_level_period(c5v4_level_t *s, uint32_t context, uint64_t now)
     if (!s->context_valid || s->context != context) {
         s->context = context; s->context_valid = true; s->good = 0;
         s->recovery_until_us = now + C5V4_LEVEL_RECOVERY_US;
+        s->settled = false;
     }
     return now < s->recovery_until_us ? C5V4_LEVEL_FAST_US : C5V4_LEVEL_PERIOD_US;
 }
 uint8_t c5v4_level_slew(uint8_t current, uint8_t target, const uint32_t volts[64])
 {
+    return c5v4_level_slew_band(current, target, volts, C5V4_LEVEL_DEADBAND_UV);
+}
+uint8_t c5v4_level_slew_band(uint8_t current, uint8_t target, const uint32_t volts[64],
+                             uint32_t deadband_uv)
+{
     uint8_t best = current;
     int64_t goal = volts[target], from = volts[current];
     int64_t distance = goal - from;
     if (distance < 0) distance = -distance;
-    if (distance <= 8000) return current;
+    if (distance <= (int64_t)deadband_uv) return current;
     for (unsigned c = 0; c < 64; ++c) {
         int64_t step = (int64_t)volts[c] - from;
         if ((goal > from && step < 0) || (goal < from && step > 0)) continue;
@@ -93,6 +99,7 @@ bool c5v4_level_observe(c5v4_level_t *s, const c5v4_cvbs_stats_t *v,
     if (!s->good) {
         s->recovery_until_us = now + C5V4_LEVEL_RECOVERY_US;
         period = C5V4_LEVEL_FAST_US;
+        s->settled = false;
     }
     s->blank = v->blank_bins; s->span = v->span_bins;
     if (!s->good) s->evidence_slot = 0;
@@ -101,6 +108,8 @@ bool c5v4_level_observe(c5v4_level_t *s, const c5v4_cvbs_stats_t *v,
     s->evidence_us = now; s->evidence_valid = true;
     if (s->good < 3) ++s->good;
     if (s->good < 3 || (s->updates && now - s->last_us < period)) return false;
+    if (s->settled && s->updates && now - s->last_us < C5V4_LEVEL_SETTLED_US) return false;
+    uint32_t deadband = s->settled ? C5V4_LEVEL_SETTLED_DEADBAND_UV : C5V4_LEVEL_DEADBAND_UV;
     int blank = middle(s->evidence_blank[0], s->evidence_blank[1], s->evidence_blank[2]);
     int span = middle(s->evidence_span[0], s->evidence_span[1], s->evidence_span[2]);
     s->target_depth_mv = depth / 1000u;
@@ -113,9 +122,10 @@ bool c5v4_level_observe(c5v4_level_t *s, const c5v4_cvbs_stats_t *v,
         uint8_t target = nearest(uv);
         /* Numeric code distance is not a voltage bound at resistor carries or
          * with measured calibration. Always move electrically toward target. */
-        uint8_t current = c5v4_level_slew(s->codes[i], target, c5v4_dac_uv);
+        uint8_t current = c5v4_level_slew_band(s->codes[i], target, c5v4_dac_uv, deadband);
         if (s->codes[i] != current) { s->codes[i] = current; changed = true; }
     }
-    if (changed) { ++s->updates; s->last_us = now; }
+    if (changed) { ++s->updates; s->last_us = now; s->settled = false; }
+    else s->settled = true;
     return changed;
 }

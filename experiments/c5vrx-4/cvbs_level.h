@@ -5,6 +5,14 @@
 #define C5V4_LEVEL_FAST_US 5000u
 #define C5V4_LEVEL_RECOVERY_US 100000u
 #define C5V4_LEVEL_STEP_UV 32000u
+/* Settled hold (HDZero, 2026-10-04): every live LUT write is a possible
+ * output disturbance, so once a full update pass finds nothing beyond the
+ * 8-mV deadband the servo only writes again for an entry >24 mV off target,
+ * and at most every 250 ms. A context change or reacquisition unsettles it,
+ * so recovery speed is unchanged. */
+#define C5V4_LEVEL_DEADBAND_UV 8000u
+#define C5V4_LEVEL_SETTLED_DEADBAND_UV 24000u
+#define C5V4_LEVEL_SETTLED_US 250000u
 typedef struct {
     unsigned good, updates, refusals;
     int blank, span;
@@ -14,7 +22,7 @@ typedef struct {
     int evidence_blank[3], evidence_span[3];
     unsigned target_depth_mv;
     unsigned evidence_slot, evidence_depth;
-    bool context_valid, evidence_valid;
+    bool context_valid, evidence_valid, settled;
     uint8_t codes[256];
 } c5v4_level_t;
 void c5v4_level_init(c5v4_level_t *state);
@@ -29,3 +37,5 @@ uint16_t c5v4_level_word(uint16_t original, unsigned code);
 unsigned c5v4_level_period(c5v4_level_t *, uint32_t context, uint64_t now_us);
 /* Slew in electrical volts, including measured/nonmonotonic code tables. */
 uint8_t c5v4_level_slew(uint8_t current, uint8_t target, const uint32_t volts[64]);
+uint8_t c5v4_level_slew_band(uint8_t current, uint8_t target, const uint32_t volts[64],
+                             uint32_t deadband_uv);

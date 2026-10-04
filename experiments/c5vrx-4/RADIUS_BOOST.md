@@ -65,7 +65,7 @@ V5 already measures P50 as a power in cells², about r².
 
 | Key | Action |
 |---|---|
-| `y` | Toggle the boost (NVS `c5vrx4/radius_boost`, default on), reboot |
+| `y` | Toggle the boost (NVS `c5vrx4/radius_boost`, opt-in since 2026-10-04: off by default), reboot |
 | `!` | `RADIUS_BOOST` line: enabled/active, entries/exits, streak, live P50/P95/rail/coherence |
 
 ## Evidence (host)
