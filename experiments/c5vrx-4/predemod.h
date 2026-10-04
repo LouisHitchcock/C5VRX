@@ -3,6 +3,7 @@
  * signed). Observers only: nothing here touches the 40 MS/s path. */
 #pragma once
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 static inline int predemod_i(uint8_t b) { return (int8_t)(b & 0xf0u) >> 4; }
@@ -202,7 +203,7 @@ static inline void predemod_psd_accumulate(const uint8_t *s, float psd[PREDEMOD_
  * bins 1.25..5 MHz from DC (DC and its neighbour excluded), each side ends
  * after two consecutive bins below half of it. 40000 means wider than the
  * 40 MS/s span; 0 means no usable reference. */
-static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
+static inline float predemod_psd_ref(const float psd[PREDEMOD_FFT_N])
 {
     const unsigned c = PREDEMOD_FFT_N / 2;
     float ref[14];
@@ -212,7 +213,13 @@ static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
         for (unsigned j = i; j > 0 && ref[j - 1] > ref[j]; --j) {
             float t = ref[j]; ref[j] = ref[j - 1]; ref[j - 1] = t;
         }
-    float half = (ref[n / 2 - 1] + ref[n / 2]) / 4;
+    return (ref[n / 2 - 1] + ref[n / 2]) / 2;
+}
+
+static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
+{
+    const unsigned c = PREDEMOD_FFT_N / 2;
+    float half = predemod_psd_ref(psd) / 2;
     if (!(half > 0)) return 0;
     unsigned edge[2];
     for (unsigned side = 0; side < 2; ++side) {
@@ -227,6 +234,50 @@ static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
     }
     if (edge[0] >= c - 2 && edge[1] >= c - 2) return 40000u;
     return (edge[0] + edge[1] + 1) * PREDEMOD_BIN_KHZ;
+}
+
+/* Equivalent noise bandwidth in kHz of a centred PSD: total power divided by
+ * the in-band reference density (the same 1.25..5 MHz median as the width),
+ * DC bin replaced by the mean of its neighbours. PARLIO keeps every second
+ * sample of the ~80 MS/s MODEM_DIAG bus with no filter in between, so noise
+ * from 20..40 MHz is already folded into this view: the result is the
+ * pre-detection noise bandwidth the discriminator actually sees, alias
+ * included (a brick wall of width W reads W; flat noise reads 40000). The
+ * Q4 quantization floor adds a roughly constant bias. 0: no reference. */
+static inline unsigned predemod_psd_nbw_khz(const float psd[PREDEMOD_FFT_N])
+{
+    const unsigned c = PREDEMOD_FFT_N / 2;
+    float ref = predemod_psd_ref(psd);
+    if (!(ref > 0)) return 0;
+    double sum = 0.5 * ((double)psd[c - 1] + psd[c + 1]);
+    for (unsigned k = 0; k < PREDEMOD_FFT_N; ++k)
+        if (k != c) sum += psd[k];
+    double khz = sum / ref * PREDEMOD_BIN_KHZ;
+    return khz > 4e6 ? 4000000u : (unsigned)(khz + 0.5);
+}
+
+/* Two-stage filter choice by noise bandwidth: entry k is one stage-2 setting
+ * (entry 0 the current single-stage choice) with stage 1 re-opened until the
+ * -3 dB width covers the target again. Only valid entries (width >= target,
+ * noise still incoherent) compete; another entry must lower the noise
+ * bandwidth by >= 7 % (0.3 dB) or entry 0 is kept. Returns the index, or -1
+ * when entry 0 itself is invalid. */
+static inline int predemod_skirt_choose(const unsigned *nbw_khz, const unsigned *width_khz,
+                                        const bool *quiet, unsigned count, unsigned target_khz)
+{
+    if (!count || !quiet[0] || !nbw_khz[0] || width_khz[0] < target_khz) return -1;
+    unsigned best = 0;
+    for (unsigned k = 1; k < count; ++k)
+        if (quiet[k] && nbw_khz[k] && width_khz[k] >= target_khz && nbw_khz[k] < nbw_khz[best])
+            best = k;
+    return (uint64_t)nbw_khz[best] * 100u <= (uint64_t)nbw_khz[0] * 93u ? (int)best : 0;
+}
+
+/* Noise-bandwidth excess over the -3 dB width, in 0.1 dB. */
+static inline int predemod_nbw_excess_db_x10(unsigned nbw_khz, unsigned width_khz)
+{
+    if (!nbw_khz || !width_khz) return 0;
+    return (int)lround(100.0 * log10((double)nbw_khz / (double)width_khz));
 }
 
 /* Narrowest filter setting whose measured width still covers the target.

@@ -118,6 +118,40 @@ int main(void)
         }
         unsigned ww = predemod_psd_width_khz(wide), wn = predemod_psd_width_khz(narrow);
         assert(ww == 40000u && wn > 5000u && wn < 30000u);
+        /* Noise bandwidth: flat noise fills the whole 40 MHz view; the
+         * 1-pole low-pass has a wider noise bandwidth than its -3 dB width. */
+        unsigned nw = predemod_psd_nbw_khz(wide), nn = predemod_psd_nbw_khz(narrow);
+        assert(nw > 36000u && nw < 44000u);
+        assert(nn > wn && nn < nw);
+        assert(predemod_nbw_excess_db_x10(nn, wn) > 0);
+    }
+    /* NBW of exact shapes: a brick wall reads its width, a DC spike is
+     * ignored, skirts and folded noise add to it. */
+    {
+        float psd[64];
+        for (unsigned k = 0; k < 64; ++k) psd[k] = (abs((int)k - 32) <= 19) ? 1.f : 0.f;
+        psd[32] = 50.f;
+        assert(predemod_psd_nbw_khz(psd) == 39u * 625u);
+        for (unsigned k = 0; k < 64; ++k) psd[k] = (abs((int)k - 32) <= 19) ? 1.f : 0.25f;
+        assert(predemod_psd_nbw_khz(psd) == 39u * 625u + 25u * 625u / 4u);
+        for (unsigned k = 0; k < 64; ++k) psd[k] = 0.f;
+        assert(predemod_psd_nbw_khz(psd) == 0u);
+        assert(predemod_nbw_excess_db_x10(48000, 24000) == 30);
+        assert(predemod_nbw_excess_db_x10(0, 24000) == 0);
+    }
+    /* Two-stage choice: lowest valid noise bandwidth, >= 7 % better than
+     * the single-stage entry, width still >= target, noise incoherent. */
+    {
+        unsigned nbw[] = {30000, 28500, 26000, 25000, 24000};
+        unsigned width[] = {24400, 24400, 25000, 23000, 24600};
+        bool quiet[] = {true, true, true, true, false};
+        assert(predemod_skirt_choose(nbw, width, quiet, 5, 24000) == 2);
+        unsigned small[] = {30000, 28500};
+        assert(predemod_skirt_choose(small, width, quiet, 2, 24000) == 0); /* 5 %: keep */
+        bool q0[] = {false, true};
+        assert(predemod_skirt_choose(small, width, q0, 2, 24000) == -1);
+        unsigned narrow0[] = {23000, 24400};
+        assert(predemod_skirt_choose(nbw, narrow0, quiet, 2, 24000) == -1);
     }
     {
         unsigned widths[] = {40000, 33000, 27500, 24400, 21000, 0};

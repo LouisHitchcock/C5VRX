@@ -128,6 +128,7 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `'` | sigRSSI mode A/B (live signal RSSI, exact AGC-word restore) |
 | `"` | `phy_param_track_tot` temperature-tracking A/B |
 | `/` | Digital RX filter mode 0..15 and other ADC rate A/B (is a digital filter ahead of the tap?), exact restore |
+| `;` | BW20 channel setup with the analog filter wide open (codes 0/8/16) vs BW40: width, noise bandwidth, clicks; 1 s per stage |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

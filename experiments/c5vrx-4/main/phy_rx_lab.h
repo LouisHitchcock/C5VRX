@@ -83,4 +83,12 @@ esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int off
 bool phy_rx_lab_filter_capture_base(void);
 bool phy_rx_lab_filter_set_code(int code);
 int phy_rx_lab_filter_code(void);
+/* Second stage: regs 8..13 = calibrated bytes + offset (0..60, saturating at
+ * 60, upper bits kept; 0 = the calibrated bytes), verified; on a mismatch the
+ * calibrated bytes are written back. */
+bool phy_rx_lab_filter_set_skirt(int offset);
+int phy_rx_lab_filter_skirt(void);
+/* Lab only: regs 6/7 low six bits over the current (channel-mode) bytes,
+ * verified. No bookkeeping; end with a normal retune. */
+bool phy_rx_lab_filter_poke_live(int code);
 int phy_rx_lab_filter_calibrated_code(void);

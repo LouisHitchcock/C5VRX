@@ -398,6 +398,29 @@ int main(void)
     assert(phy_rx_lab_filter_code() == PHY_RX_LAB_FILTER_CALIBRATED);
     assert(phy_rx_lab_filter_set_code(PHY_RX_LAB_FILTER_CALIBRATED));
     for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 10u)));
+    /* Second stage: regs 8..13 relative to the calibrated bytes, regs 6/7
+     * untouched, saturating at 60; 0 restores the calibration exactly. */
+    assert(phy_rx_lab_filter_set_code(52) && phy_rx_lab_filter_set_skirt(16));
+    assert(phy_rx_lab_filter_skirt() == 16);
+    assert(analog_regs[6] == (0xC0u | 52u) && analog_regs[7] == (0xC0u | 52u));
+    for (unsigned r = 8; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 26u)));
+    assert(phy_rx_lab_filter_set_skirt(60));
+    for (unsigned r = 8; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | 60u));
+    assert(!phy_rx_lab_filter_set_skirt(-1) && !phy_rx_lab_filter_set_skirt(61));
+    assert(phy_rx_lab_filter_skirt() == 60);
+    fail_restore = true;
+    assert(!phy_rx_lab_filter_set_skirt(8) && phy_rx_lab_filter_skirt() == 0);
+    fail_restore = false;
+    assert(phy_rx_lab_filter_set_skirt(0));
+    for (unsigned r = 8; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 10u)));
+    assert(phy_rx_lab_filter_set_code(PHY_RX_LAB_FILTER_CALIBRATED));
+    /* Live poke keeps the current upper bits (another channel mode). */
+    analog_regs[6] = 0x80u | 5u; analog_regs[7] = 0x40u | 9u;
+    assert(phy_rx_lab_filter_poke_live(0));
+    assert(analog_regs[6] == 0x80u && analog_regs[7] == 0x40u);
+    assert(!phy_rx_lab_filter_poke_live(64));
+    fail_restore = true; assert(!phy_rx_lab_filter_poke_live(8)); fail_restore = false;
+    assert(phy_rx_lab_filter_set_code(PHY_RX_LAB_FILTER_CALIBRATED));
     assert(!phy_rx_lab_busy());
     phy_rx_lab_predemod_status();
 
@@ -440,6 +463,8 @@ int main(void)
     assert(phy_rx_lab_run_sigrssi_probe(NULL,NULL)==ESP_ERR_NOT_SUPPORTED);
     assert(phy_rx_lab_run_track_probe(NULL)==ESP_ERR_NOT_SUPPORTED);
     assert(!phy_rx_lab_filter_capture_base() && !phy_rx_lab_filter_set_code(52));
+    assert(!phy_rx_lab_filter_set_skirt(8) && phy_rx_lab_filter_skirt() == 0);
+    assert(!phy_rx_lab_filter_poke_live(0));
     assert(phy_rx_lab_filter_calibrated_code() == -1);
     assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_NOT_SUPPORTED);
     assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_NOT_SUPPORTED);

@@ -878,6 +878,57 @@ bool phy_rx_lab_filter_set_code(int code)
 #endif
 }
 
+/* Second filter stage (2026-10-04): regs 8..13 relative to the calibrated
+ * bytes, for a steeper skirt at the same -3 dB width. 0 restores them. */
+static int s_filter_skirt;
+bool phy_rx_lab_filter_set_skirt(int offset)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)offset;
+    return false;
+#else
+    if (offset < 0 || offset > 60) return false;
+    transaction_take();
+    bool ok = s_filter_base_valid;
+    for (uint8_t i = 2; ok && i < 8; ++i) {
+        uint8_t value = offset ? predemod_filter_code(s_filter_base[i], offset) : s_filter_base[i];
+        phy_i2c_writeReg(0x67, 1, 6 + i, value);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == value;
+    }
+    if (ok) s_filter_skirt = offset;
+    else if (s_filter_base_valid) {
+        for (uint8_t i = 2; i < 8; ++i) phy_i2c_writeReg(0x67, 1, 6 + i, s_filter_base[i]);
+        s_filter_skirt = 0;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+int phy_rx_lab_filter_skirt(void) { return s_filter_skirt; }
+
+/* BW20-wide lab: regs 6/7 low six bits on top of whatever the current channel
+ * setup wrote (another PHY channel mode may calibrate other upper bits).
+ * Bookkeeping is untouched: the caller ends with a normal retune, whose
+ * restore re-applies the stored fixed-BW code. */
+bool phy_rx_lab_filter_poke_live(int code)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)code;
+    return false;
+#else
+    if (code < 0 || code > 63) return false;
+    transaction_take();
+    bool ok = true;
+    for (uint8_t i = 0; ok && i < 2; ++i) {
+        uint8_t value = (uint8_t)((phy_i2c_readReg(0x67, 1, 6 + i) & ~63u) | (unsigned)code);
+        phy_i2c_writeReg(0x67, 1, 6 + i, value);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == value;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+
 int phy_rx_lab_filter_code(void) { return s_filter_code; }
 
 int phy_rx_lab_filter_calibrated_code(void)

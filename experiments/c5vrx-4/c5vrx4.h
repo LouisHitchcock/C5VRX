@@ -46,6 +46,12 @@ uint8_t c5vrx4_bw_code(void);
 unsigned c5vrx4_bw_width_khz(void);
 unsigned c5vrx4_bw_target_khz(void);
 bool c5vrx4_bw_store(uint8_t code, unsigned width_khz);
+/* Second filter stage (regs 8..13 offset, 0 = calibrated bytes) chosen by the
+ * same measurement for the lowest noise bandwidth at the target width, alias
+ * included; NVS bw_skirt and bw_nbw (measured noise bandwidth, kHz). */
+unsigned c5vrx4_bw_skirt(void);
+unsigned c5vrx4_bw_nbw_khz(void);
+bool c5vrx4_bw_skirt_store(unsigned skirt, unsigned nbw_khz);
 /* Native AGC acquisition mask (native mode only, '|' opts out with a
  * reboot). PARLIO data bit 0 (fine Q LSB) carries a MODEM_DIAG AGC state bit
  * found by the witness calibration ('*'); the static program holds the DAC

@@ -3061,6 +3061,7 @@ static void lab_run_filter_sweep(void)
 static const char *s_bw_cal_result = "never";
 static unsigned s_bw_cal_runs;
 
+static unsigned s_bw_last_nbw_khz;
 static bool bw_noise_measure(unsigned windows, unsigned *width_khz, int *q_phase, int *clip_pm)
 {
     float psd[PREDEMOD_FFT_N] = {0};
@@ -3079,6 +3080,7 @@ static bool bw_noise_measure(unsigned windows, unsigned *width_khz, int *q_phase
     }
     if (got * 2u < windows) return false;
     *width_khz = predemod_psd_width_khz(psd);
+    s_bw_last_nbw_khz = predemod_psd_nbw_khz(psd);
     *q_phase = q_sum / (int)got;
     *clip_pm = clip_max;
     return true;
@@ -3095,6 +3097,59 @@ static bool bw_quiet(const char *stage, unsigned width, int q_phase, int clip_pm
 
 static int s_bw_mode_fit = -1;
 static unsigned s_bw_fit_err_khz, s_bw_calibrated_width_khz;
+
+/* Second stage (2026-10-04). PARLIO keeps every second sample of the ~80 MS/s
+ * bus unfiltered, so what the 40 MS/s view loses is the noise bandwidth, not
+ * the -3 dB width: a single RC stage at 24 MHz still folds its skirt into the
+ * band (host model: +0.2..1.1 dB at 24 MHz, +1.8..3.2 dB at 35..48 MHz,
+ * 1st..3rd order). Narrow regs 8..13 as well, re-open regs 6/7 until the
+ * width covers the target again, and keep the lowest measured noise
+ * bandwidth (folded noise included) if it is >= 0.3 dB better. If those
+ * registers are not in this receive path, nothing changes and skirt 0 stays.
+ * Called with the stored single-stage code applied, VTX off. */
+#define BW_SKIRT_STAGES 5u
+static void bw_skirt_stage(uint8_t code0, unsigned target)
+{
+    static const uint8_t skirts[BW_SKIRT_STAGES] = {0, 8, 16, 24, 32};
+    unsigned nbw[BW_SKIRT_STAGES] = {0}, width[BW_SKIRT_STAGES] = {0};
+    bool quiet[BW_SKIRT_STAGES] = {false};
+    uint8_t code[BW_SKIRT_STAGES] = {0};
+    unsigned measured = 0;
+    for (unsigned k = 0; k < BW_SKIRT_STAGES; ++k) {
+        if (!phy_rx_lab_filter_set_skirt(skirts[k])) { printf("BW_SKIRT skirt=%u refused=filter_write\n", skirts[k]); break; }
+        int c = code0;
+        unsigned w = 0; int q = 0, clip = 0;
+        for (;;) {
+            if (!phy_rx_lab_filter_set_code(c)) { c = -1; break; }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            if (!bw_noise_measure(BW_CAL_WINDOWS, &w, &q, &clip)) { c = -1; break; }
+            if (w >= target || c == 0) break;
+            c = c > 4 ? c - 4 : 0; /* lower code = wider */
+        }
+        if (c < 0) { printf("BW_SKIRT skirt=%u refused=sample_or_write\n", skirts[k]); break; }
+        code[k] = (uint8_t)c; width[k] = w; nbw[k] = s_bw_last_nbw_khz;
+        quiet[k] = q < BW_CAL_QUIET_QPHASE && clip < BW_CAL_QUIET_CLIP;
+        ++measured;
+        printf("BW_SKIRT skirt=%u code=%d width_khz=%u nbw_khz=%u excess_db_x10=%d Q_phase=%d clip_pm=%d\n",
+               skirts[k], c, w, nbw[k], predemod_nbw_excess_db_x10(nbw[k], w), q, clip);
+        if (clip >= BW_CAL_QUIET_CLIP) break; /* a carrier or overload appeared */
+    }
+    int choice = predemod_skirt_choose(nbw, width, quiet, measured, target);
+    bool stored = false;
+    if (choice >= 0) {
+        stored = phy_rx_lab_filter_set_code(code[choice]) && phy_rx_lab_filter_set_skirt(skirts[choice]) &&
+                 c5vrx4_bw_store(code[choice], width[choice]) && c5vrx4_bw_skirt_store(skirts[choice], nbw[choice]);
+        printf("BW_SKIRT chosen skirt=%u code=%u width_khz=%u nbw_khz=%u gain_vs_single_db_x10=%d stored=%u\n",
+               skirts[choice], code[choice], width[choice], nbw[choice],
+               predemod_nbw_excess_db_x10(nbw[0], nbw[choice]), stored);
+    }
+    if (!stored) {
+        /* Back to the single-stage code that was just stored. */
+        bool ok = phy_rx_lab_filter_set_code(code0) && phy_rx_lab_filter_set_skirt(0) &&
+                  c5vrx4_bw_skirt_store(0, measured ? nbw[0] : 0);
+        printf("BW_SKIRT kept=single_stage code=%u restore_verified=%u\n", code0, ok);
+    }
+}
 
 /* Returns true when a code was measured and stored. Caller context: a task
  * that may block for a few seconds (console or predemod_task). */
@@ -3137,8 +3192,8 @@ static bool lab_run_bw_calibration(bool automatic)
         applied = bw_noise_measure(BW_CAL_WINDOWS, &width, &q_phase, &clip_pm);
         if (applied) {
             s_bw_calibrated_width_khz = width;
-            printf("BW_CAL code=calibrated(%d) width_khz=%u Q_phase=%d clip_pm=%d\n",
-                   phy_rx_lab_filter_calibrated_code(), width, q_phase, clip_pm);
+            printf("BW_CAL code=calibrated(%d) width_khz=%u nbw_khz=%u Q_phase=%d clip_pm=%d\n",
+                   phy_rx_lab_filter_calibrated_code(), width, s_bw_last_nbw_khz, q_phase, clip_pm);
             quiet = bw_quiet("CALIBRATED", width, q_phase, clip_pm);
         }
     }
@@ -3147,8 +3202,10 @@ static bool lab_run_bw_calibration(bool automatic)
         if (!applied) { printf("BW_CAL code=%d refused=filter_write\n", code); break; }
         vTaskDelay(pdMS_TO_TICKS(20));
         if (!bw_noise_measure(BW_CAL_WINDOWS, &width, &q_phase, &clip_pm)) { applied = false; break; }
-        printf("BW_CAL code=%d width_khz=%u ref_mode0_khz=%u ref_mode1_khz=%u Q_phase=%d clip_pm=%d\n",
-               code, width, predemod_bw_reference_khz(0, (unsigned)code),
+        printf("BW_CAL code=%d width_khz=%u nbw_khz=%u excess_db_x10=%d ref_mode0_khz=%u ref_mode1_khz=%u "
+               "Q_phase=%d clip_pm=%d\n",
+               code, width, s_bw_last_nbw_khz, predemod_nbw_excess_db_x10(s_bw_last_nbw_khz, width),
+               predemod_bw_reference_khz(0, (unsigned)code),
                predemod_bw_reference_khz(1, (unsigned)code), q_phase, clip_pm);
         quiet = bw_quiet("SWEEP", width, 0, clip_pm);
         codes[count] = (uint8_t)code;
@@ -3180,13 +3237,15 @@ static bool lab_run_bw_calibration(bool automatic)
                codes[choice], widths[choice], noise_q[choice], target, reason,
                s_bw_mode_fit, s_bw_fit_err_khz, stored);
         s_bw_cal_result = stored ? "stored" : "store_failed";
+        if (stored) bw_skirt_stage(codes[choice], target);
     } else {
         s_bw_cal_result = !applied ? "filter_or_sample_failure" : "carrier_present";
     }
     if (!stored) {
         /* Back to what was in force before the calibration. */
-        bool ok = phy_rx_lab_filter_set_code(restore);
-        printf("BW_CAL kept_previous=%d restore_verified=%u\n", restore, ok);
+        bool ok = phy_rx_lab_filter_set_code(restore) &&
+                  phy_rx_lab_filter_set_skirt((int)c5vrx4_bw_skirt());
+        printf("BW_CAL kept_previous=%d skirt=%u restore_verified=%u\n", restore, c5vrx4_bw_skirt(), ok);
     }
     phy_rx_lab_end();
     lab_apply_vendor_gain(saved_gain);
@@ -3198,11 +3257,13 @@ static bool lab_run_bw_calibration(bool automatic)
 static void bw_status_print(void)
 {
     uint8_t stored = c5vrx4_bw_code();
-    printf("PREDEMOD_BW fixed=%u stored_code=%d width_khz=%u target_khz=%u applied_code=%d "
+    printf("PREDEMOD_BW fixed=%u stored_code=%d width_khz=%u nbw_khz=%u skirt=%u applied_skirt=%d "
+           "target_khz=%u applied_code=%d "
            "calibrated_code=%d calibrated_width_khz=%u esp_sdr_mode_fit=%d fit_error_khz=%u "
            "digital=%s gear=%s apply_failures=%lu calibrations=%u last=%s\n",
            c5vrx4_fixed_bw_enabled(), stored == C5VRX4_BW_UNCALIBRATED ? -1 : (int)stored,
-           c5vrx4_bw_width_khz(), c5vrx4_bw_target_khz(), phy_rx_lab_filter_code(),
+           c5vrx4_bw_width_khz(), c5vrx4_bw_nbw_khz(), c5vrx4_bw_skirt(), phy_rx_lab_filter_skirt(),
+           c5vrx4_bw_target_khz(), phy_rx_lab_filter_code(),
            phy_rx_lab_filter_calibrated_code(), s_bw_calibrated_width_khz, s_bw_mode_fit,
            s_bw_fit_err_khz, s_current_bw40 ? "BW40" : "BW20",
            c5vrx4_fixed_bw_enabled() ? "retired" : "v5",
@@ -3384,9 +3445,9 @@ static void lab_run_phy_track(void)
  * a steady weak VTX, winding (clicks) and Q_phase show what it does to the
  * picture. Direct Gain only, fixed gain. */
 #define DFILT_WINDOWS 48u
-static void lab_observe_dfilt(const char *stage, int arg)
+static void lab_observe_rf(const char *tag, const char *stage, int arg, unsigned hold_ms)
 {
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(hold_ms));
     float psd[PREDEMOD_FFT_N] = {0};
     uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
     uint32_t glitches = 0, samples = 0;
@@ -3408,12 +3469,62 @@ static void lab_observe_dfilt(const char *stage, int arg)
         if (m.clip_permille > clip_max) clip_max = m.clip_permille;
         ++got;
     }
-    if (!got) { printf("DFILT stage=%s arg=%d sample=unavailable\n", stage, arg); return; }
-    printf("DFILT stage=%s arg=%d freq=%u G=%u lane=%u windows=%u width_khz=%u glitch_ppm=%u "
+    if (!got) { printf("%s stage=%s arg=%d sample=unavailable\n", tag, stage, arg); return; }
+    printf("%s stage=%s arg=%d freq=%u G=%u lane=%u windows=%u width_khz=%u nbw_khz=%u glitch_ppm=%u "
            "P50=%d Q_phase=%d wind_pm=%d strong_wind_pm=%d clip_pm=%d video=hardware_pending\n",
-           stage, arg, rf_get_frequency_mhz(), s_current_gain, rf_get_iq_lanes(), got,
-           predemod_psd_width_khz(psd), predemod_ppm(glitches, samples), p_sum / (int)got,
+           tag, stage, arg, rf_get_frequency_mhz(), s_current_gain, rf_get_iq_lanes(), got,
+           predemod_psd_width_khz(psd), predemod_psd_nbw_khz(psd), predemod_ppm(glitches, samples), p_sum / (int)got,
            q_sum / (int)got, wind_sum / (int)got, strong_sum / (int)got, clip_max);
+}
+
+static void lab_observe_dfilt(const char *stage, int arg) { lab_observe_rf("DFILT", stage, arg, 20); }
+
+/* ';' : BW20 channel setup with the analog filter wide open (2026-10-04).
+ * esp-sdr (ESPARGOS, rx_bandwidth.h) measured on the same 80 MS/s dump that
+ * PHY channel mode 0 (BW20) tops out at ~23 MHz even at RX0 code 0, while
+ * mode 1 (BW40) reaches 48 MHz, and notes that the curves include the
+ * digital-filter response; the vendor BW20 path also selects digital filter
+ * mode 4. If that ~23 MHz edge is a steep digital filter ahead of the tap,
+ * BW20 + wide analog removes the folded skirt that an RC filter leaves
+ * (compare nbw_khz). C5VRX-3 rejected BW20 only with the calibrated, much
+ * narrower analog codes. Public API for the width change; every stage holds
+ * 1 s for a picture comparison; ends with the normal BW40 retune, which
+ * re-applies the stored fixed-BW code. Direct Gain, current gain. */
+static void lab_run_bw20_wide(void)
+{
+    bool vendor40 = false;
+    if (rf_get_vendor_bandwidth_lab(&vendor40) != ESP_OK || !vendor40 || !s_current_bw40) {
+        printf("BW20WIDE refused=not_in_bw40\n");
+        return;
+    }
+    analog_agc_mode_t saved;
+    if (!predemod_pause("BW20WIDE", &saved)) return;
+    const afc_mode_t saved_afc = s_afc_mode;
+    const int saved_offset = rf_get_frequency_offset_khz();
+    s_afc_mode = AFC_MODE_OFF;
+    if (saved_offset) apply_frequency_offset_khz_tracked(0);
+    printf("BW20WIDE begin freq=%u G=%u fixed_bw=%u code=%d skirt=%d reference=ESPARGOS_esp-sdr\n",
+           rf_get_frequency_mhz(), s_current_gain, c5vrx4_fixed_bw_enabled(),
+           phy_rx_lab_filter_code(), phy_rx_lab_filter_skirt());
+    lab_observe_rf("BW20WIDE", "BW40_CURRENT", phy_rx_lab_filter_code(), 1000);
+    esp_err_t err = rf_set_vendor_bandwidth_lab(false);
+    if (err == ESP_OK) {
+        s_current_bw40 = false;
+        lab_observe_rf("BW20WIDE", "BW20_AFTER_RESTORE", phy_rx_lab_filter_code(), 1000);
+        static const int codes[] = {0, 8, 16};
+        for (unsigned k = 0; k < sizeof(codes) / sizeof(codes[0]); ++k) {
+            if (phy_rx_lab_filter_poke_live(codes[k])) lab_observe_rf("BW20WIDE", "BW20_CODE", codes[k], 1000);
+            else printf("BW20WIDE code=%d refused=filter_write\n", codes[k]);
+        }
+    } else printf("BW20WIDE vendor_bw20_error=%s\n", esp_err_to_name(err));
+    /* A failed return to BW40 must not resume a mixed receiver. */
+    ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));
+    s_current_bw40 = true;
+    s_afc_mode = saved_afc;
+    if (saved_offset) apply_frequency_offset_khz_tracked(saved_offset);
+    lab_observe_rf("BW20WIDE", "RESTORED", phy_rx_lab_filter_code(), 200);
+    predemod_resume(saved);
+    printf("BW20WIDE done\n");
 }
 
 static void lab_run_dfilt(void)
@@ -5688,7 +5799,9 @@ static bool s_bw_autocal_tried;
 static bool bw_autocal_waiting(void)
 {
     return !s_bw_autocal_tried && c5vrx4_fixed_bw_enabled() &&
-           c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED &&
+           /* Also once for a code stored before the second stage existed
+            * (no measured noise bandwidth yet). */
+           (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz()) &&
            phy_rx_lab_filter_calibrated_code() >= 0;
 }
 
@@ -5697,7 +5810,8 @@ static void predemod_bw_autocal(void)
     static unsigned quiet_ticks;
     static int64_t last_try_us;
     const arc_gain_table_t *table = rf_get_arc_gain_table();
-    bool want = c5vrx4_fixed_bw_enabled() && c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED &&
+    bool want = c5vrx4_fixed_bw_enabled() &&
+                (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz()) &&
                 phy_rx_lab_filter_calibrated_code() >= 0 &&
                 table && predemod_quiet_owner() && s_current_bw40 &&
                 s_direct_gain_v3.current_gain == table->max_index &&
@@ -6844,6 +6958,8 @@ static void console_diag_task(void *arg)
                     lab_run_phy_track();
                 } else if (c == '/') {
                     lab_run_dfilt();
+                } else if (c == ';') {
+                    lab_run_bw20_wide();
                 } else if (c == '!') {
                     lab_predemod_status();
                 } else if (c == '@') {
@@ -7196,6 +7312,7 @@ static void console_diag_task(void *arg)
                     printf("  '\\'':        sigRSSI mode A/B: live signal RSSI for ~1 s, exact AGC-word restore\n");
                     printf("  '\"':         phy_param_track_tot(1,0) A/B: temperature-tracked RX recalibration\n");
                     printf("  '/':         Digital RX filter mode 0..15 + other ADC rate A/B: noise width, clicks, exact restore\n");
+                    printf("  ';':         BW20 channel setup + analog filter wide (codes 0/8/16) vs BW40: width, noise BW, clicks\n");
                     printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");

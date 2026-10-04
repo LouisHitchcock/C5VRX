@@ -70,6 +70,24 @@ and h0m3us3r/eSpDR (S3 DC DACs).
   after 3 s of no-carrier table-maximum listening (retry at most once a
   minute); the stored code is re-applied at boot and in every tune/bandwidth
   transaction. Range and picture benefit are hardware-pending.
+- **Second filter stage, chosen by noise bandwidth** (2026-10-04). The
+  40 MS/s view loses noise *bandwidth*, not −3 dB width: the unfiltered 2:1
+  capture folds the RC skirt into the band. Every BW_CAL row now also
+  prints `nbw_khz`, which is the total noise of the 40 MS/s PSD divided by
+  the in-band density. The folded noise is already inside that sum, so this
+  is the pre-detection noise the discriminator sees. It also prints
+  `excess_db_x10` over the width.
+  - After storing the regs 6/7 code, `BW_SKIRT` narrows regs 8..13 by
+    +8/+16/+24/+32 and re-opens regs 6/7 in steps of 4 until the width covers
+    the target again.
+  - It keeps the lowest noise bandwidth that is still incoherent for V5,
+    only if that is ≥ 0.3 dB (7 %) below single stage. NVS `bw_skirt`, `bw_nbw`.
+  - If regs 8..13 are not in this receive path, nothing improves and skirt
+    0 stays.
+  - Stored codes without a measured noise bandwidth recalibrate once
+    automatically. `!` shows `nbw_khz`/`skirt`.
+  - Host model of the stake: at 24 MHz, a 1st-order skirt costs +1.1 dB vs
+    +0.2 dB at 3rd order.
 
 ## Commands
 
@@ -145,7 +163,7 @@ from the archive; nothing here is a hardware measurement yet.
 | Suspect | Static finding | Expected effect |
 |---|---|---|
 | Spur notch | `phy_spur_coef_cfg` (slot 0 at the nearest 40 MHz harmonic, ±20 MHz in BW40, bit 13 of `0x600A7C14+4·slot`) has **no caller** in `libphy`, `libpp`, `libnet80211` or the ROM linker scripts. Only `librftest` `set_spur_reg` calls `phy_spur_cal`/`phy_spur_reg_write`, and C5VRX does not link the RF test library. | No loss expected. `/` prints slots 0–3 so hardware can confirm bit 13 is clear. |
-| Unfiltered 2:1 decimation | PARLIO takes every second sample of the ~80 MS/s MODEM_DIAG bus (`docs/continuous-iq-findings.md`), so all noise out to ±40 MHz folds into the ±20 MHz view. | Host model: pre-detection noise vs. a 24 MHz brick wall. With a 35–48 MHz analog width: +1.8 to +3.2 dB (1st–3rd order). With a 24 MHz analog width: +0.2 to +1.1 dB. Fixed analog BW (`=`) already recovers most of it. |
+| Unfiltered 2:1 decimation | PARLIO takes every second sample of the ~80 MS/s MODEM_DIAG bus (`docs/continuous-iq-findings.md`), so all noise out to ±40 MHz folds into the ±20 MHz view. | Host model: pre-detection noise vs. a 24 MHz brick wall. With a 35–48 MHz analog width: +1.8 to +3.2 dB (1st–3rd order). With a 24 MHz analog width: +0.2 to +1.1 dB. Fixed analog BW (`=`) recovers most of it, and its second stage (`BW_SKIRT`) targets the rest by measured noise bandwidth. |
 | Digital filter ahead of the tap? | `phy_rx_filter_mode(m)` = `0x600A0430[21:18]`. On 5 GHz, `phy_rfpll_set_adc_rate` writes mode 0 (mode 4 if the stored width is BW20), then mode 8 with ADC rate 1 above 5830 MHz. The earlier BW20 rejection (`docs/static-reduction-and-filtering.md`: narrower, detail and chroma lost) hints that some digital width control precedes the tap. | Unknown, measured by `/`. A digital filter ahead of the tap would be a steep, free pre-detection filter. Its value is the remaining 0.2–1 dB plus adjacent-pilot rejection, and only if a mode near 24 MHz exists. |
 | ADC rate at 5830 MHz | `phy_adc_rate_set(r)` writes I2C block 0x66 host 0 reg 4 bit 2 = !r and `0x600A0448[1:0]` = r,r. On 5 GHz the selector is 0 up to 5830 MHz and 1 above (R6/R7/R8, F7/F8, A1/A2, B8, E-high). The `analog-lock-phy-lab.md` row "ADC selector remains 1" reads only the >5830 state. | Unknown. If the rate changes the bus clock, PARLIO's free-running 40 MHz could sample asynchronously on one side of 5830 MHz (watch `glitch_ppm`). `/` measures the other rate on the current channel. |
 | LO buffer cap | `phy_get_dcap_degen(f)` = 10 + (5880 − f)/36, clamped 10..31. It is written to I2C block 0x63 (PLL/LO block) reg 21 [4:0] by `phy_set_freq_i2c_new`. Above 5880 MHz it pins at 10. | The vendor's own truncating formula gives 9 at 5917/5945 MHz: one code short. Expected < 0.1 dB. Not worth a lab. |
@@ -153,6 +171,65 @@ from the archive; nothing here is a hardware measurement yet.
 | RX IQ / DC cal points | `phy_set_rx_gain_cal_iq` loops 7 points on 5 GHz. RX DC tops out at 5855 MHz (known). | Small. IQ correction helps only at strong signal; DC recentring covers the rest. |
 | Packet-detector tweaks | `phy_rx_11b_opt`, `phy_rx_pkdet_dc_cal`, `phy_rx_sense_set`, the CCA/NF-auto bits: packet-detection and AGC-trigger registers. | Not in the MODEM_DIAG sample path. They matter only for native AGC acquisition (covered by the mask). |
 | Temperature tracking | Disabled by config (`"` exercises it). | Measured by `"`. |
+
+### Is there a digital filter ahead of the tap? (research, 2026-10-04)
+
+**The tap.** MODEM_DIAG carries the dump word selected by `0x600A70B8[2:0]`.
+C5VRX writes code 1. Espressif's older test tooling uses the same mux at the
+same 0xB8 offset:
+- code 0 = "fe_dump_data", raw `ADC_OUT[12:0]`, 13 bit;
+- code 1 = "bb dump", 10 bit (`reg_rx_way3_en=1`).
+
+Source: [`adc_dump.py`](https://github.com/qiuzhi12345/eagletest/blob/19c5ddacddeb53ff245f65f206a3bfd7106e03cf/eagletest/py_script/rftest/rflib/adc_dump.py)
+`set_dump_mode`. So the tap is the BB dump at the ~80 MS/s rate, not raw
+ADC. It is still before the 40 MS/s Wi-Fi decimation.
+
+**Dump rate divider.** C5 `adctrig` writes its fourth argument / 2 into
+`0x600A9008[23:21]`. esp-sdr uses this as its 80/40/20/10/8/4 MS/s divider
+and documents it as "direct subsampling, not filtered decimation". A lower
+dump rate would only drop more samples, so it is not a fix.
+- C5VRX writes 0 there (80 MS/s).
+- The trigger modes live in `[20:17]`. Vendor mode 0 ORs `0x001E0000`,
+  **not** `0x01E00000`. So `[23:21]` survives, contrary to
+  `legacy/c5vrx1/research/rf-dump-source-mux.md`.
+
+**Width evidence.** [ESPARGOS esp-sdr](https://github.com/ESPARGOS/esp-sdr)
+(`main/common/rx_bandwidth.h`) measured on this dump:
+- PHY channel mode 1 (BW40): 48 → 22 MHz over RX0 codes 0..60. Nothing
+  narrower than ~48 MHz is ahead of the tap in BW40.
+- Channel mode 0 (BW20): only 23 → 11 MHz, already 23 MHz at code 0. Their
+  note: "Its curves include the digital-filter response".
+- Single digital register writes do not update the PHY's PBUS analog
+  tables. The analog branch changes only with a full channel setup.
+
+The vendor BW20 path also selects digital filter mode 4. C5VRX-3 rejected
+BW20 with the calibrated, much narrower analog codes. **BW20 + wide analog
+was never tested.**
+
+If the ~23 MHz BW20 edge is a steep digital filter, it removes the folded
+skirt that the RC filter leaves. `;` measures that by `nbw_khz`. `/`
+isolates the filter-mode register at BW40.
+
+### `;` BW20-wide lab
+
+Direct Gain only, at the current gain. Each stage holds 1 s so the picture
+can be compared.
+
+1. `BW40_CURRENT`.
+2. Public `esp_wifi_set_bandwidths(BW20)` plus a normal retune:
+   `BW20_AFTER_RESTORE`, which has the BW40 fixed code re-applied.
+3. RX0 codes 0/8/16 over the current BW20 bytes: `BW20_CODE`.
+4. Back to BW40 through the same public path. A failure reboots.
+5. `RESTORED`.
+
+Rows match `/` (`BW20WIDE ... width_khz nbw_khz glitch_ppm P50 Q_phase
+wind_pm`).
+
+Reading the result:
+- **VTX off, BW20 code 0 width ≥ ~22 MHz and `nbw_khz` close to its width,
+  while BW40 shows a clear excess:** a steep filter exists.
+- **Then VTX on:** compare chroma, detail and clicks against BW40 at a weak,
+  steady level. Only a better picture there justifies a production change.
 
 ### `/` digital RX filter / ADC-rate lab
 

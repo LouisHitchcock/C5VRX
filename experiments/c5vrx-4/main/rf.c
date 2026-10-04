@@ -685,6 +685,9 @@ void rf_apply_fixed_bw(void)
     if (code == C5VRX4_BW_UNCALIBRATED) return;
     if (!phy_rx_lab_filter_set_code(code) && ++s_fixed_bw_failures == 1u)
         ESP_EARLY_LOGW(TAG, "fixed BW code=%u not applied (no baseline or read-back mismatch)", code);
+    unsigned skirt = c5vrx4_bw_skirt();
+    if (skirt && !phy_rx_lab_filter_set_skirt((int)skirt) && ++s_fixed_bw_failures == 1u)
+        ESP_EARLY_LOGW(TAG, "fixed BW skirt=%u not applied", skirt);
 }
 uint32_t rf_fixed_bw_failures(void) { return s_fixed_bw_failures; }
 #endif

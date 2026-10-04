@@ -51,6 +51,9 @@ def main():
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
     assert '"radius_boost"' in pipeline and "direct_gain_v3_enable_boost(&s_direct_gain_v3" in video
     assert "phy_rx_lab_run_dfilt_probe(lab_observe_dfilt)" in video and "lab_run_dfilt();" in video
+    assert "if (stored) bw_skirt_stage(codes[choice], target);" in video and '"bw_skirt"' in pipeline
+    assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
+    assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

@@ -138,7 +138,8 @@ bool c5vrx4_fixed_bw_enabled(void)
 
 static bool s_bw_loaded;
 static uint8_t s_bw_code = C5VRX4_BW_UNCALIBRATED, s_bw_target_mhz = 24;
-static uint16_t s_bw_width_khz;
+static uint16_t s_bw_width_khz, s_bw_nbw_khz;
+static uint8_t s_bw_skirt;
 static void bw_load(void)
 {
     if (s_bw_loaded) return;
@@ -147,8 +148,11 @@ static void bw_load(void)
         (void)nvs_get_u8(handle, "bw_code", &s_bw_code);
         (void)nvs_get_u16(handle, "bw_width", &s_bw_width_khz);
         (void)nvs_get_u8(handle, "bw_target", &s_bw_target_mhz);
+        (void)nvs_get_u8(handle, "bw_skirt", &s_bw_skirt);
+        (void)nvs_get_u16(handle, "bw_nbw", &s_bw_nbw_khz);
         nvs_close(handle);
     }
+    if (s_bw_skirt > 60u) s_bw_skirt = 0;
     if (s_bw_code != C5VRX4_BW_UNCALIBRATED && s_bw_code > 63u) s_bw_code = C5VRX4_BW_UNCALIBRATED;
     if (s_bw_target_mhz < 12u || s_bw_target_mhz > 40u) s_bw_target_mhz = 24u;
     s_bw_loaded = true;
@@ -156,6 +160,25 @@ static void bw_load(void)
 uint8_t c5vrx4_bw_code(void) { bw_load(); return s_bw_code; }
 unsigned c5vrx4_bw_width_khz(void) { bw_load(); return s_bw_width_khz; }
 unsigned c5vrx4_bw_target_khz(void) { bw_load(); return s_bw_target_mhz * 1000u; }
+unsigned c5vrx4_bw_skirt(void) { bw_load(); return s_bw_code == C5VRX4_BW_UNCALIBRATED ? 0u : s_bw_skirt; }
+unsigned c5vrx4_bw_nbw_khz(void) { bw_load(); return s_bw_nbw_khz; }
+bool c5vrx4_bw_skirt_store(unsigned skirt, unsigned nbw_khz)
+{
+    bw_load();
+    if (skirt > 60u) return false;
+    uint16_t nbw = (uint16_t)(nbw_khz > 65535u ? 65535u : nbw_khz);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "bw_skirt", (uint8_t)skirt);
+        if (err == ESP_OK) err = nvs_set_u16(handle, "bw_nbw", nbw);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) { s_bw_skirt = (uint8_t)skirt; s_bw_nbw_khz = nbw; }
+    else printf("C5VRX4 bw_skirt_store err=%s\n", esp_err_to_name(err));
+    return err == ESP_OK;
+}
 bool c5vrx4_bw_store(uint8_t code, unsigned width_khz)
 {
     bw_load();
