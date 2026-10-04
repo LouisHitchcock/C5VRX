@@ -138,3 +138,106 @@ static inline int predemod_dc_decide(predemod_dc_filter_t *f, const int measured
     out[0] = target[0]; out[1] = target[1];
     return 1;
 }
+
+/* ---- Fixed analog bandwidth calibration ---------------------------------
+ * The RC filter capacitor codes are calibrated per chip, so "code X = N MHz"
+ * is not portable. Measure instead: at maximum gain without a carrier the
+ * receiver noise is shaped by the analog filter. A 64-point complex FFT of
+ * 40 MS/s Q4/I4 regions (625 kHz bins, +-20 MHz span) is averaged and the
+ * full -3 dB width estimated. Q4 quantization adds a flat floor ~12 dB down
+ * at the measured noise level, below the -3 dB threshold. */
+#define PREDEMOD_FFT_N 64
+#define PREDEMOD_BIN_KHZ 625
+static inline void predemod_fft64(float re[PREDEMOD_FFT_N], float im[PREDEMOD_FFT_N])
+{
+    for (unsigned i = 1, j = 0; i < PREDEMOD_FFT_N; ++i) {
+        unsigned bit = PREDEMOD_FFT_N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            float t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (unsigned len = 2; len <= PREDEMOD_FFT_N; len <<= 1) {
+        double ang = -2 * M_PI / len;
+        float wr = (float)cos(ang), wi = (float)sin(ang);
+        for (unsigned i = 0; i < PREDEMOD_FFT_N; i += len) {
+            float cr = 1, ci = 0;
+            for (unsigned k = 0; k < len / 2; ++k) {
+                unsigned a = i + k, b = a + len / 2;
+                float tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+                re[b] = re[a] - tr; im[b] = im[a] - ti;
+                re[a] += tr; im[a] += ti;
+                float nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr; cr = nr;
+            }
+        }
+    }
+}
+
+/* Add one region's Hann-windowed, mean-removed power spectrum to psd[],
+ * stored centred: psd[32] is DC, psd[0] is -20 MHz. */
+static inline void predemod_psd_accumulate(const uint8_t *s, float psd[PREDEMOD_FFT_N])
+{
+    float re[PREDEMOD_FFT_N], im[PREDEMOD_FFT_N], mi = 0, mq = 0;
+    for (unsigned k = 0; k < PREDEMOD_FFT_N; ++k) {
+        re[k] = predemod_i(s[k]) + 0.5f; im[k] = predemod_q(s[k]) + 0.5f;
+        mi += re[k]; mq += im[k];
+    }
+    mi /= PREDEMOD_FFT_N; mq /= PREDEMOD_FFT_N;
+    static float hann[PREDEMOD_FFT_N];
+    if (hann[1] == 0.f) /* hann[0] is 0; the others are computed once */
+        for (unsigned k = 0; k < PREDEMOD_FFT_N; ++k)
+            hann[k] = (float)(0.5 - 0.5 * cos(2 * M_PI * k / PREDEMOD_FFT_N));
+    for (unsigned k = 0; k < PREDEMOD_FFT_N; ++k) {
+        re[k] = (re[k] - mi) * hann[k]; im[k] = (im[k] - mq) * hann[k];
+    }
+    predemod_fft64(re, im);
+    for (unsigned k = 0; k < PREDEMOD_FFT_N; ++k)
+        psd[(k + PREDEMOD_FFT_N / 2) % PREDEMOD_FFT_N] += re[k] * re[k] + im[k] * im[k];
+}
+
+/* Full -3 dB width in kHz of a centred PSD: reference is the median of the
+ * bins 1.25..5 MHz from DC (DC and its neighbour excluded), each side ends
+ * after two consecutive bins below half of it. 40000 means wider than the
+ * 40 MS/s span; 0 means no usable reference. */
+static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
+{
+    const unsigned c = PREDEMOD_FFT_N / 2;
+    float ref[14];
+    unsigned n = 0;
+    for (unsigned d = 2; d <= 8; ++d) { ref[n++] = psd[c - d]; ref[n++] = psd[c + d]; }
+    for (unsigned i = 1; i < n; ++i)
+        for (unsigned j = i; j > 0 && ref[j - 1] > ref[j]; --j) {
+            float t = ref[j]; ref[j] = ref[j - 1]; ref[j - 1] = t;
+        }
+    float half = (ref[n / 2 - 1] + ref[n / 2]) / 4;
+    if (!(half > 0)) return 0;
+    unsigned edge[2];
+    for (unsigned side = 0; side < 2; ++side) {
+        unsigned last = 1;
+        for (unsigned d = 2; d < c; ++d) {
+            unsigned k = side ? c + d : c - d;
+            unsigned k2 = side ? (d + 1 < c ? c + d + 1 : k) : c - d - 1;
+            if (psd[k] < half && psd[k2] < half) break;
+            last = d;
+        }
+        edge[side] = last;
+    }
+    if (edge[0] >= c - 2 && edge[1] >= c - 2) return 40000u;
+    return (edge[0] + edge[1] + 1) * PREDEMOD_BIN_KHZ;
+}
+
+/* Narrowest filter offset whose measured width still covers the target.
+ * widths[] follow offsets[] in increasing order; invalid (0) entries are
+ * skipped. Returns the chosen index, or -1 when even the calibrated filter
+ * is narrower than the target (keep the calibrated base, offset 0). */
+static inline int predemod_bw_choose(const unsigned *widths_khz, unsigned count,
+                                     unsigned target_khz)
+{
+    int best = -1;
+    for (unsigned k = 0; k < count; ++k)
+        if (widths_khz[k] && widths_khz[k] >= target_khz) best = (int)k;
+    return best;
+}

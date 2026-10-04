@@ -1,9 +1,9 @@
 # Pre-demodulation lab (#165)
 
 Purpose: measure what happens to the I/Q *before* Q4/I4 and Phase8, so lane,
-gain and filter policy can be chosen on evidence. Nothing here changes the
-production policy. Every PHY write is reversible, verified and refused on an
-unpinned PHY archive. Credits: zerowidth/C5VRX PR #3 (sampling phase, DC
+gain and filter policy can be chosen on evidence. The labs change nothing
+persistent; the default-on corrections below are listed separately. Every PHY
+write is reversible, verified and refused on an unpinned PHY archive. Credits: zerowidth/C5VRX PR #3 (sampling phase, DC
 centre, 11p, R8), Logicenios/C5VRX (link edge-placement metric), ESPARGOS
 esp-sdr (C5 filter-cap curve, S31 PBUS DC loop) and h0m3us3r/eSpDR (S3 DC DACs).
 
@@ -15,7 +15,7 @@ esp-sdr (C5 filter-cap curve, S31 PBUS DC loop) and h0m3us3r/eSpDR (S3 DC DACs).
 | RX DC calibration | `phy_set_rx_gain_cal_dc()` calibrates 5210, 5290, 5530, 5610, 5690, 5775, 5855 MHz when `phy_param[0x2a] != 0`, otherwise only 2432 MHz | No point above 5855 MHz; FPV upper band uses the nearest one |
 | Temperature tracking | `phy_cal_param_track()` would redo RX DC/IQ cal, gain table and channel live | Correctly disabled (`CONFIG_ESP_PHY_DISABLE_PLL_TRACK`); boot DC is never refreshed, so it can drift as the board warms |
 | RX filter caps | `phy_filter_dcap_set()` writes 0x67 regs 6..20 from `phy_param[0xF5..0xFC]` at RF init; `phy_11p_set(1,0)` writes 60 to regs 6..13 | 11p is mainly a narrower analog filter; sweep relative to the per-chip calibrated value |
-| BW gear | `phy_wifi_fbw_sel()` writes only digital `0x600A0874` | Runtime BW switching may not move the analog filter; verify with `$`/`B` |
+| BW gear | `phy_wifi_fbw_sel()` writes only digital `0x600A0874` | Runtime BW switching may not move the analog filter; replaced by the fixed analog BW below |
 | Dump banks | `HP_SYSTEM_SRAM_USAGE[11:8]` hands whole 128-KiB blocks to the MAC dump | Bank rotation would cost ~256 KiB: not pursued |
 
 ## Default-on corrections
@@ -34,6 +34,26 @@ esp-sdr (C5 filter-cap curve, S31 PBUS DC loop) and h0m3us3r/eSpDR (S3 DC DACs).
   per boot, at the first V5 HOLD with coherence >=80 %, 48 windows are
   measured; only >=5000 ppm mid-transition reads trigger the `@` scan.
 
+- **Fixed optimal analog bandwidth** (`^` opt-out, NVS `fixed_bw`; `=`
+  recalibrates). The RX filter capacitors (0x67 regs 6..13) get one offset over
+  the per-chip baseline captured right after RF init. Calibration: Direct Gain
+  paused, table-maximum gain, digital BW40; for offsets 0, 4 .. 60 a 64-point
+  Hann PSD (625 kHz bins) of 96 observer windows x 4 regions of receiver
+  noise. The -3 dB full width is taken against the median of the 1.25..5 MHz
+  bins (DC excluded), and the narrowest offset whose width is still
+  >=`bw_target` (24 MHz, NVS MHz) is kept; if the baseline is already
+  narrower, offset 0. Narrowed noise is more coherent sample to sample, so the
+  choice also steps back until the noise Q_phase stays <34 (V5 coherence 25):
+  V5 must keep reading noise as NO_CARRIER and return to survival gain.
+  Average Q_phase >=34 at the baseline (first stage or final re-check), or
+  clipping >=5 % at any stage, means a carrier and aborts without storing. It runs automatically once while uncalibrated, after
+  3 s of no-carrier table-maximum listening (retry at most once a minute),
+  then the stored offset is re-applied at boot and in every tune/bandwidth
+  transaction. The 40-MS/s path is unchanged; the measured width is the
+  Q4/I4-observed noise width (aliasing above 20 MHz reads as wider than
+  40 MHz), so only narrowing within the visible span is decided. Range and
+  picture benefit are hardware-pending.
+
 ## Commands
 
 - `!` prints `PREDEMOD` (lane policy, observer glitch ppm, receiver DC) and,
@@ -47,8 +67,12 @@ esp-sdr (C5 filter-cap curve, S31 PBUS DC loop) and h0m3us3r/eSpDR (S3 DC DACs).
   +-16 codes, solves the measured 2x2 response, corrects for up to four bounded
   steps (32 codes per step, 96 from the start), holds it for a one-second look,
   then restores every PBUS word and work mode.
-- `$` steps regs 6..13 by +4/+8/+16/+24 codes and to 60 (11p-equivalent), one
-  second per stage, then restores the calibrated bytes.
+- `$` steps regs 6..13 by +4/+8/+16/+24 codes and to 60 (11p-equivalent)
+  relative to the calibrated baseline, one second per stage, then restores the
+  bytes in force before the sweep (the fixed-BW offset, if any).
+- `=` runs the fixed-BW calibration above and prints `BW_CAL` per offset;
+  `!` adds `PREDEMOD_FILTER_BASE` and `PREDEMOD_BW` (stored/applied offset,
+  measured width, target, gear state, failures, last result).
 
 ## Measurement procedure
 

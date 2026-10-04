@@ -525,6 +525,13 @@ static void dco_apply(int i, int q)
 }
 #endif
 
+/* Fixed analog bandwidth state (see phy_rx_lab_filter_apply). */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static uint8_t s_filter_base[8];
+static bool s_filter_base_valid;
+#endif
+static int s_filter_offset;
+
 void phy_rx_lab_predemod_status(void)
 {
     uint16_t mhz = rf_get_frequency_mhz();
@@ -539,6 +546,10 @@ void phy_rx_lab_predemod_status(void)
     for (uint8_t i = 0; i < 8; ++i) caps[i] = phy_i2c_readReg(0x67, 1, 6 + i);
     transaction_give();
     printf("PREDEMOD_DCO b2k1=%u b3k1=%u b2k2=%u b3k2=%u\n", dco[0], dco[1], dco[2], dco[3]);
+    printf("PREDEMOD_FILTER_BASE valid=%u regs6_13=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x offset=%d\n",
+           s_filter_base_valid, s_filter_base[0], s_filter_base[1], s_filter_base[2],
+           s_filter_base[3], s_filter_base[4], s_filter_base[5], s_filter_base[6],
+           s_filter_base[7], s_filter_offset);
     printf("PREDEMOD_FILTER regs6_13=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x "
            "cal_f5_fc=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x 11p=%02x/%02x\n",
            caps[0], caps[1], caps[2], caps[3], caps[4], caps[5], caps[6], caps[7],
@@ -646,7 +657,10 @@ esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int off
     bool applied = true;
     for (unsigned n = 0; applied && n < sizeof(offsets) / sizeof(offsets[0]); ++n) {
         for (uint8_t i = 0; i < 8; ++i) {
-            uint8_t code = predemod_filter_code(saved[i], offsets[n]);
+            /* Offsets are relative to the calibrated baseline, not to a
+             * fixed-BW offset that may already be applied. */
+            uint8_t code = predemod_filter_code(s_filter_base_valid ? s_filter_base[i] : saved[i],
+                                                offsets[n]);
             phy_i2c_writeReg(0x67, 1, 6 + i, code);
             if (phy_i2c_readReg(0x67, 1, 6 + i) != code) applied = false;
         }
@@ -661,3 +675,49 @@ esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int off
     return restored ? (applied ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
 #endif
 }
+
+/* Fixed analog bandwidth: one owned offset over the calibrated baseline. The
+ * offset is recomputed from the baseline, so re-applying after a retune that
+ * did or did not rewrite the capacitors gives the same codes. */
+
+bool phy_rx_lab_filter_capture_base(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    transaction_take();
+    if (!s_filter_base_valid) {
+        for (uint8_t i = 0; i < 8; ++i) s_filter_base[i] = phy_i2c_readReg(0x67, 1, 6 + i);
+        s_filter_base_valid = true;
+        s_filter_offset = 0;
+    }
+    transaction_give();
+    return true;
+#endif
+}
+
+bool phy_rx_lab_filter_apply(int offset)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)offset;
+    return false;
+#else
+    if (offset < 0 || offset > 60) return false;
+    transaction_take();
+    bool ok = s_filter_base_valid;
+    for (uint8_t i = 0; ok && i < 8; ++i) {
+        uint8_t code = predemod_filter_code(s_filter_base[i], offset);
+        phy_i2c_writeReg(0x67, 1, 6 + i, code);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == code;
+    }
+    if (ok) s_filter_offset = offset;
+    else if (s_filter_base_valid) {
+        for (uint8_t i = 0; i < 8; ++i) phy_i2c_writeReg(0x67, 1, 6 + i, s_filter_base[i]);
+        s_filter_offset = 0;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+
+int phy_rx_lab_filter_offset(void) { return s_filter_offset; }

@@ -62,6 +62,13 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 - Default-on first-lock sampling-phase check: one glitch measurement at the
   first stable carrier HOLD; only >=5000 ppm mid-transition reads trigger the
   RX clock-slip scan. NVS `c5vrx4/sphase_auto=0` (`&`) opts out.
+- Default-on fixed optimal analog bandwidth replaces the BW20/BW40 gear. With
+  no carrier at maximum gain, the receiver noise is measured through the RX
+  filter-capacitor offsets 0..60 (relative to the per-chip calibration) with a
+  64-point PSD; the narrowest offset whose -3 dB width is still >=24 MHz is
+  stored in NVS (`bw_offset`, `bw_width`) and re-applied at boot and on every
+  retune. The digital path stays BW40. Runs automatically once (VTX off);
+  `=` repeats it, NVS `c5vrx4/fixed_bw=0` (`^`) restores the gear.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
@@ -86,6 +93,8 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `$` | Reversible RX filter-capacitor sweep (0x67 regs 6..13), pinned PHY only |
 | `%` | Toggle default-on digital DC recentring of the static decoder, reboot |
 | `&` | Toggle default-on first-lock sampling-phase check, reboot |
+| `=` | Measure the receiver-noise width per filter offset and store the fixed BW (VTX off) |
+| `^` | Toggle default-on fixed analog BW (off restores the V5 BW gear), reboot |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

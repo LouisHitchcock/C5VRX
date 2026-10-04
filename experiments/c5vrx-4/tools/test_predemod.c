@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "predemod.h"
 #include "cvbs_tables.h"
 
@@ -75,6 +76,55 @@ int main(void)
     predemod_dc_filter_t g = {0}; applied[0] = 400; applied[1] = 0;
     assert(!predemod_dc_decide(&g, small, applied, 120, 120, 3000, out));
     assert(predemod_dc_decide(&g, small, applied, 120, 120, 3000, out) && !out[0] && !out[1]);
-    puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring and DC decision");
+    /* FFT: a complex tone at +5 bins lands at psd[32+5]. */
+    {
+        float re[64], im[64];
+        for (unsigned k = 0; k < 64; ++k) { re[k] = (float)cos(2 * M_PI * 5 * k / 64); im[k] = (float)sin(2 * M_PI * 5 * k / 64); }
+        predemod_fft64(re, im);
+        assert(fabsf(re[5] - 64.f) < 1e-3f && fabsf(re[6]) < 1e-3f && fabsf(im[5]) < 1e-3f);
+    }
+    /* Width: flat to +-12 MHz (bins 32+-19), then 20 dB down. */
+    {
+        float psd[64];
+        for (unsigned k = 0; k < 64; ++k) psd[k] = (abs((int)k - 32) <= 19) ? 1.f : 0.01f;
+        psd[32] = 50.f; /* DC spike ignored */
+        unsigned w = predemod_psd_width_khz(psd);
+        assert(w == 39u * 625u); /* 24.375 MHz full width */
+        for (unsigned k = 0; k < 64; ++k) psd[k] = 1.f;
+        assert(predemod_psd_width_khz(psd) == 40000u);
+        for (unsigned k = 0; k < 64; ++k) psd[k] = 0.f;
+        assert(predemod_psd_width_khz(psd) == 0u);
+    }
+    /* Shaped noise through the real PSD path: a 1-pole low-pass narrows it. */
+    {
+        float wide[64] = {0}, narrow[64] = {0};
+        unsigned seed = 12345;
+        float yi = 0, yq = 0;
+        for (unsigned r = 0; r < 600; ++r) {
+            uint8_t a[64], b[64];
+            for (unsigned k = 0; k < 64; ++k) {
+                float gi = 0, gq = 0;
+                for (unsigned m = 0; m < 6; ++m) {
+                    seed = seed * 1103515245u + 12345u; gi += (float)((seed >> 16) & 32767) / 32768.f - 0.5f;
+                    seed = seed * 1103515245u + 12345u; gq += (float)((seed >> 16) & 32767) / 32768.f - 0.5f;
+                }
+                gi *= 2.4f; gq *= 2.4f;
+                yi = 0.55f * yi + 0.45f * gi; yq = 0.55f * yq + 0.45f * gq;
+                a[k] = iq((int)floorf(gi), (int)floorf(gq));
+                b[k] = iq((int)floorf(yi * 2.f), (int)floorf(yq * 2.f));
+            }
+            predemod_psd_accumulate(a, wide);
+            predemod_psd_accumulate(b, narrow);
+        }
+        unsigned ww = predemod_psd_width_khz(wide), wn = predemod_psd_width_khz(narrow);
+        assert(ww == 40000u && wn > 5000u && wn < 30000u);
+    }
+    {
+        unsigned widths[] = {40000, 33000, 27500, 24400, 21000, 0};
+        assert(predemod_bw_choose(widths, 6, 24000) == 3);
+        unsigned narrow_already[] = {20000, 18000};
+        assert(predemod_bw_choose(narrow_already, 2, 24000) == -1);
+    }
+    puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring, DC decision, FFT, noise-width estimate and BW choice");
     return 0;
 }

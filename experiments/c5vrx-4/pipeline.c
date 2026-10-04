@@ -128,6 +128,50 @@ bool c5vrx4_sphase_auto_enabled(void)
     return s_sphase_auto;
 }
 
+/* Fixed analog bandwidth: one calibrated RX filter offset, never geared. */
+static int8_t s_fixed_bw = -1;
+bool c5vrx4_fixed_bw_enabled(void)
+{
+    if (s_fixed_bw < 0) s_fixed_bw = nvs_flag("fixed_bw", true);
+    return s_fixed_bw;
+}
+
+static bool s_bw_loaded;
+static uint8_t s_bw_offset = C5VRX4_BW_UNCALIBRATED, s_bw_target_mhz = 24;
+static uint16_t s_bw_width_khz;
+static void bw_load(void)
+{
+    if (s_bw_loaded) return;
+    nvs_handle_t handle;
+    if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+        (void)nvs_get_u8(handle, "bw_offset", &s_bw_offset);
+        (void)nvs_get_u16(handle, "bw_width", &s_bw_width_khz);
+        (void)nvs_get_u8(handle, "bw_target", &s_bw_target_mhz);
+        nvs_close(handle);
+    }
+    if (s_bw_offset != C5VRX4_BW_UNCALIBRATED && s_bw_offset > 60u) s_bw_offset = C5VRX4_BW_UNCALIBRATED;
+    if (s_bw_target_mhz < 12u || s_bw_target_mhz > 40u) s_bw_target_mhz = 24u;
+    s_bw_loaded = true;
+}
+uint8_t c5vrx4_bw_offset(void) { bw_load(); return s_bw_offset; }
+unsigned c5vrx4_bw_width_khz(void) { bw_load(); return s_bw_width_khz; }
+unsigned c5vrx4_bw_target_khz(void) { bw_load(); return s_bw_target_mhz * 1000u; }
+bool c5vrx4_bw_store(uint8_t offset, unsigned width_khz)
+{
+    bw_load();
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "bw_offset", offset);
+        if (err == ESP_OK) err = nvs_set_u16(handle, "bw_width", (uint16_t)(width_khz > 65535u ? 65535u : width_khz));
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) { s_bw_offset = offset; s_bw_width_khz = (uint16_t)(width_khz > 65535u ? 65535u : width_khz); }
+    else printf("C5VRX4 bw_store err=%s\n", esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
 static bool toggle_flag(const char *key, bool current, const char *name)
 {
     nvs_handle_t handle;
@@ -340,6 +384,7 @@ bool c5vrx4_console(int key)
     }
     if (key == '%') return toggle_flag("dc_recenter", c5vrx4_dc_recenter_enabled(), "dc_recenter");
     if (key == '&') return toggle_flag("sphase_auto", c5vrx4_sphase_auto_enabled(), "sphase_auto");
+    if (key == '^') return toggle_flag("fixed_bw", c5vrx4_fixed_bw_enabled(), "fixed_bw");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

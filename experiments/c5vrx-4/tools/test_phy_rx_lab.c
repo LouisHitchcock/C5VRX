@@ -91,13 +91,13 @@ static void dco_observe(const char *stage)
     if (!strcmp(stage, "RESTORED")) assert(dc[0] == 1500 && dc[1] == -900 && !pbus_debug);
     ++dco_stages;
 }
-static unsigned filter_stages;
+static unsigned filter_stages, filter_held;
 static void filter_observe(const char *stage, int offset)
 {
     assert(phy_rx_lab_busy());
     for (unsigned r = 6; r <= 13; ++r) {
         unsigned base = 0xC0u | (r + 10u);
-        unsigned code = offset ? ((r + 10u + (unsigned)offset) > 60u ? 60u : r + 10u + (unsigned)offset) : r + 10u;
+        unsigned code = offset ? ((r + 10u + (unsigned)offset) > 60u ? 60u : r + 10u + (unsigned)offset) : r + 10u + filter_held;
         assert(analog_regs[r] == ((base & ~63u) | code));
     }
     if (!strcmp(stage, "NARROW")) assert(offset > 0); else assert(offset == 0);
@@ -312,8 +312,30 @@ int main(void)
     fail_restore = true; filter_stages = 0;
     assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_INVALID_RESPONSE);
     assert(filter_stages == 2 && !phy_rx_lab_busy()); fail_restore = false;
+    /* Fixed BW: no base yet -> refused; base captured once; offsets are
+     * always relative to it (idempotent after a retune rewrote the caps). */
+    assert(!phy_rx_lab_filter_apply(8));
+    assert(phy_rx_lab_filter_capture_base());
+    assert(phy_rx_lab_filter_apply(8) && phy_rx_lab_filter_offset() == 8);
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 18u)));
+    assert(phy_rx_lab_filter_capture_base()); /* second capture keeps the base */
+    assert(phy_rx_lab_filter_apply(8));
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 18u)));
+    for (unsigned r = 6; r <= 13; ++r) analog_regs[r] = 0xC0u | (r + 10u); /* retune */
+    assert(phy_rx_lab_filter_apply(8));
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 18u)));
+    /* The sweep stays relative to the calibrated base while an offset is held. */
+    filter_stages = 0; filter_held = 8;
+    assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_OK && filter_stages == 7);
+    filter_held = 0;
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 18u)));
+    assert(!phy_rx_lab_filter_apply(-1) && !phy_rx_lab_filter_apply(61));
+    assert(phy_rx_lab_filter_apply(0) && phy_rx_lab_filter_offset() == 0);
+    for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 10u)));
+    assert(!phy_rx_lab_busy());
     phy_rx_lab_predemod_status();
 #else
+    assert(!phy_rx_lab_filter_capture_base() && !phy_rx_lab_filter_apply(8));
     assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_NOT_SUPPORTED);
     assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_ERR_NOT_SUPPORTED);
     phy_rx_lab_predemod_status();

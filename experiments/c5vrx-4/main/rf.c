@@ -573,6 +573,12 @@ esp_err_t rf_start(void)
     if ((err = route_modem_iq()) != ESP_OK) return err;
 
     phy_rx_lab_begin("boot");
+#ifdef C5VRX4_EXPERIMENT
+    /* The RX filter capacitors still hold the per-chip calibration from
+     * rf_init; keep it as the baseline every fixed-BW offset is computed from.
+     * The restore below then applies the stored offset. */
+    (void)phy_rx_lab_filter_capture_base();
+#endif
     analog_phy_restore_lock();
     if (s_native_agc) {
         phy_fft_scale_force(false, 0);
@@ -615,7 +621,26 @@ static void analog_phy_restore_lock(void)
     phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
     if (s_native_agc) phy_force_rx_gain(false, 0);
     else phy_force_rx_gain(true, s_current_gain_val);
+#ifdef C5VRX4_EXPERIMENT
+    rf_apply_fixed_bw();
+#endif
 }
+
+#ifdef C5VRX4_EXPERIMENT
+/* Fixed analog bandwidth: the stored calibrated filter offset, re-applied in
+ * every tuning/bandwidth transaction (and at boot). Not gain: it is applied in
+ * native-AGC mode too. Before the first calibration nothing is written. */
+static uint32_t s_fixed_bw_failures;
+void rf_apply_fixed_bw(void)
+{
+    if (!c5vrx4_fixed_bw_enabled()) return;
+    uint8_t offset = c5vrx4_bw_offset();
+    if (offset == C5VRX4_BW_UNCALIBRATED) return;
+    if (!phy_rx_lab_filter_apply(offset) && ++s_fixed_bw_failures == 1u)
+        ESP_EARLY_LOGW(TAG, "fixed BW offset=%u not applied (no baseline or read-back mismatch)", offset);
+}
+uint32_t rf_fixed_bw_failures(void) { return s_fixed_bw_failures; }
+#endif
 
 /* Read-only C5 PHY observations. Estimator/calibration routines are not called
  * while live because they reconfigure clocks and receive state. */

@@ -45,3 +45,11 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
 /* BBTOP 0x67 registers 6..13 (RX RC filter capacitors): calibrated baseline,
  * +4/+8/+16/+24 codes and the 11p-equivalent 60, then exact restore. */
 esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int offset));
+/* Fixed analog bandwidth. capture_base reads the vendor-calibrated regs 6..13
+ * once after PHY init (before any offset). filter_apply writes base+offset
+ * (offset 0 restores the base) inside the caller's phy_rx_lab transaction or
+ * its own, and verifies the read-back. False: unpinned PHY, no base, or a
+ * mismatching read-back (then the base is written back). */
+bool phy_rx_lab_filter_capture_base(void);
+bool phy_rx_lab_filter_apply(int offset);
+int phy_rx_lab_filter_offset(void);
