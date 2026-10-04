@@ -56,6 +56,31 @@ static bool s_lut_ready;
  * Each further fold drop within 2 s doubles the hold-off (up to ~1.3 s). */
 #define DG3_LANE_UP_P95     45u
 #define DG3_FOLD_STREAK_US  2000000u
+/* Strong-signal radius boost. With 4 bits per axis the phase step is set by
+ * radius / cell; at strong signal quantization dominates, so a larger ring
+ * is a finer phase (host model, fine lanes, sigma 6 codes: 4.1 deg rms at
+ * r ~150 codes, ~3.2 deg at ~195-200). The outer cells (|v| >= 224) are the
+ * fold warning, so the boost band stops at P50 46 and drops at the first
+ * rail codes. Entry needs 20 ms of strong, tight, rail-free HOLD windows. */
+#define DG3_BOOST_LO            30
+#define DG3_BOOST_HI            46
+#define DG3_BOOST_P95           53
+#define DG3_BOOST_CLIP_PM       10
+/* Moves stop short of the target by the transition hysteresis (up moves
+ * land below it, down moves above), so the aims straddle the band centre. */
+#define DG3_BOOST_WEAK_TARGET   43
+#define DG3_BOOST_HIGH_TARGET   38
+#define DG3_BOOST_ENTRY_TARGET  40
+#define DG3_BOOST_EXIT_P50      50
+#define DG3_BOOST_EXIT_P95      59
+#define DG3_BOOST_EXIT_CLIP_PM  20
+#define DG3_BOOST_EXIT_COH      60
+#define DG3_BOOST_ENTRY_WINDOWS 100u   /* ~20 ms at the 200 us cadence */
+#define DG3_BOOST_ENTRY_COH     75
+#define DG3_BOOST_ENTRY_SPREAD  8      /* P95 - P50: a tight ring */
+#define DG3_BOOST_ENTRY_P95     50     /* predicted P95 at the boost target */
+#define DG3_BOOST_HOLD_US       200000u
+#define DG3_BOOST_STREAK_US     10000000u
 
 static int clamp_i(int value, int low, int high)
 {
@@ -140,10 +165,27 @@ static bool carrier(const dg3_observation_t *o)
     return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650;
 }
 
+/* Amplitude band: zero-write zone, destination limits and targets. */
+typedef struct {
+    int lo, hi, p95, clip_pm, weak_target, high_target;
+    int high_p90, high_p95, schmitt_hi, schmitt_p90, schmitt_p95, schmitt_lo;
+} dg3_band_t;
+
+static const dg3_band_t s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14};
+static const dg3_band_t s_band_boost = {DG3_BOOST_LO, DG3_BOOST_HI, DG3_BOOST_P95,
+    DG3_BOOST_CLIP_PM, DG3_BOOST_WEAK_TARGET, DG3_BOOST_HIGH_TARGET,
+    DG3_BOOST_EXIT_P95 - 2, DG3_BOOST_P95, DG3_BOOST_HI - 2, DG3_BOOST_EXIT_P95 - 4,
+    DG3_BOOST_P95 - 2, DG3_BOOST_LO + 1};
+
+static bool healthy_in(const dg3_observation_t *o, const dg3_band_t *b)
+{
+    return carrier(o) && o->p50 >= b->lo && o->p50 <= b->hi &&
+           o->p95 <= b->p95 && o->clip_pm < b->clip_pm && o->origin_pm <= 250;
+}
+
 static bool healthy(const dg3_observation_t *o)
 {
-    return carrier(o) && o->p50 >= 13 && o->p50 <= 32 &&
-           o->p95 <= 65 && o->clip_pm < 20 && o->origin_pm <= 250;
+    return healthy_in(o, &s_band_normal);
 }
 
 static bool valid_learning(const dg3_observation_t *o)
@@ -303,7 +345,7 @@ static uint8_t emergency_drop(const direct_gain_v3_t *v3)
 
 static uint8_t select_destination(const direct_gain_v3_t *v3,
                                   const dg3_observation_t *o, bool up,
-                                  int32_t desired_q8)
+                                  int32_t desired_q8, const dg3_band_t *band)
 {
     uint8_t best = v3->current_gain;
     int best_class = 4, best_error = 99999, best_uncertainty = 999;
@@ -315,7 +357,7 @@ static uint8_t select_destination(const direct_gain_v3_t *v3,
         if (!predict(v3, (uint8_t)g, &ratio, &uncertainty)) continue;
         int p50 = (int)o->p50 * ratio / 1024;
         int p95_worst = (int)o->p95 * ratio * (1000 + uncertainty) / 1024000;
-        if (p50 < 13 || p50 > 32 || p95_worst > 65) continue;
+        if (p50 < band->lo || p50 > band->hi || p95_worst > band->p95) continue;
         if (up && ratio <= 1024) continue;
         if (!up && ratio >= 1024) continue;
         int kind = transition_kind(v3, v3->current_gain, (uint8_t)g);
@@ -463,6 +505,27 @@ static uint8_t lane_for(const direct_gain_v3_t *v3,
     return 0u;
 }
 
+void direct_gain_v3_enable_boost(direct_gain_v3_t *v3, bool enabled)
+{
+    if (!v3) return;
+    v3->boost_enabled = enabled;
+    if (!enabled) v3->boost = false;
+    v3->boost_ok_windows = 0;
+}
+
+static void boost_exit(direct_gain_v3_t *v3, uint64_t now_us)
+{
+    v3->boost = false;
+    v3->boost_ok_windows = 0;
+    ++v3->boost_exits;
+    if (v3->boost_exit_us && now_us - v3->boost_exit_us > DG3_BOOST_STREAK_US)
+        v3->boost_streak = 0;
+    v3->boost_hold_until_us = now_us +
+        ((uint64_t)DG3_BOOST_HOLD_US << (v3->boost_streak < 4u ? v3->boost_streak : 4u));
+    if (v3->boost_streak < 255u) ++v3->boost_streak;
+    v3->boost_exit_us = now_us;
+}
+
 void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
 {
     if (!v3) return;
@@ -564,6 +627,15 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         return set_lane(v3, o, 0u);
     }
     v3->junk_windows = 0;
+    /* Boost only on the coarse lane or a fixed lane (no lane switching), and
+     * never through no-carrier, saturation or any rail/P95/jump warning. */
+    if (v3->boost &&
+        (!v3->boost_enabled || (!fixed_lane && v3->lane) || no_carrier || saturated ||
+         !carrier(o) || o->clip_pm >= DG3_BOOST_EXIT_CLIP_PM ||
+         o->p95 >= DG3_BOOST_EXIT_P95 || o->p50 >= DG3_BOOST_EXIT_P50 ||
+         o->coherence < DG3_BOOST_EXIT_COH))
+        boost_exit(v3, o->observed_us);
+    const dg3_band_t *band = v3->boost ? &s_band_boost : &s_band_normal;
     /* Listening always uses the finest lane (most sensitive carrier
      * detection, and it measures the noise); with a carrier the lanes stop
      * at the noise-referenced cap. */
@@ -650,7 +722,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         if (o->clip_pm >= 100 || o->origin_pm >= 500 || o->coherence < 30) {
             if (v3->bad_state[v3->current_gain] < 15u)
                 ++v3->bad_state[v3->current_gain];
-        } else if (healthy(o)) v3->bad_state[v3->current_gain] = 0u;
+        } else if (healthy_in(o, band)) v3->bad_state[v3->current_gain] = 0u;
         learn_transition(v3, o);
         v3->state = DG3_VERIFY;
         ++v3->verified;
@@ -685,7 +757,20 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         if (lane == v3->lane) return v3->current_gain;
         return set_lane(v3, o, lane);
     }
-    if (healthy(o)) {
+    if (!v3->boost && healthy(o) && v3->boost_enabled && (fixed_lane || !v3->lane) &&
+        v3->state != DG3_SETTLE && o->observed_us >= v3->boost_hold_until_us &&
+        o->observed_us >= v3->damp_until_us &&
+        o->coherence >= DG3_BOOST_ENTRY_COH && o->clip_pm == 0u &&
+        o->origin_pm <= 100u && (int)o->p95 - (int)o->p50 <= DG3_BOOST_ENTRY_SPREAD &&
+        (int)o->p95 * DG3_BOOST_ENTRY_TARGET <= DG3_BOOST_ENTRY_P95 * (int)o->p50) {
+        if (++v3->boost_ok_windows >= DG3_BOOST_ENTRY_WINDOWS) {
+            v3->boost = true;
+            v3->boost_ok_windows = 0;
+            ++v3->boost_entries;
+            band = &s_band_boost;
+        }
+    } else if (!v3->boost) v3->boost_ok_windows = 0;
+    if (healthy_in(o, band)) {
         v3->state = DG3_HOLD;
         v3->corrections = 0;
         v3->high_windows = v3->weak_windows = 0;
@@ -696,14 +781,15 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     }
     /* Act as soon as the envelope leaves the healthy band (13..32), before
      * it reaches the grainy/collapsing region, not after noise appeared. */
-    bool high = o->p50 > 32 || o->p90 >= 53 || o->p95 > 72 ||
-                o->clip_pm >= 20;
-    bool weak = o->p50 < 13 && carrier(o);
+    bool high = o->p50 > band->hi || o->p90 >= band->high_p90 || o->p95 > band->high_p95 ||
+                o->clip_pm >= band->clip_pm;
+    bool weak = o->p50 < band->lo && carrier(o);
     /* Schmitt bands retain the previous direction through small envelope
      * fluctuations; they release only after crossing the inner boundary. */
     if (v3->last_direction == 2 &&
-        (o->p50 > 30 || o->p90 > 47 || o->p95 > 65)) high = true;
-    if (v3->last_direction == 1 && o->p50 < 14 && carrier(o)) weak = true;
+        (o->p50 > band->schmitt_hi || o->p90 > band->schmitt_p90 ||
+         o->p95 > band->schmitt_p95)) high = true;
+    if (v3->last_direction == 1 && o->p50 < band->schmitt_lo && carrier(o)) weak = true;
     if (high) {
         v3->weak_windows = 0;
         v3->last_direction = 2;
@@ -727,7 +813,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
      * the analog gain trims down instead (continuous total gain). */
     if (!fixed_lane && high && v3->lane && scale_power(o->p50, -1) >= 13u)
         return set_lane(v3, o, lane_for(v3, o, false));
-    int target_power = weak ? 17 : 27;
+    int target_power = weak ? band->weak_target : band->high_target;
     int error_q8 = power_db_q8((unsigned)target_power) -
                    power_db_q8(o->p50);
     /* Direct: request the full relative correction in one step, both ways. */
@@ -735,7 +821,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     v3->virtual_gain_q8 = clamp_i(v3->virtual_gain_q8,
                                   -12 * 256, 12 * 256);
     uint8_t target = select_destination(v3, o, weak,
-                                        v3->virtual_gain_q8);
+                                        v3->virtual_gain_q8, band);
     /* No analog state predicts into the band: a lane step still does. */
     if (target == v3->current_gain && high && v3->lane)
         return set_lane(v3, o, (uint8_t)(v3->lane - 1u));

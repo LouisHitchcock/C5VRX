@@ -15,6 +15,52 @@ static dg3_observation_t obs(int p50, int p95, int origin, int clip,
     };
 }
 
+/* Radius-boost plant: every state is measured (0.5 dB per index), the ring
+ * power follows the gain exactly, spread and rail codes are scenario input. */
+static int boost_p50(const direct_gain_v3_t *v3, double base)
+{
+    double r = (double)v3->relative_power_q10[v3->current_gain] / 1024.0;
+    int p = (int)(base * r + 0.5);
+    return p > 113 ? 113 : p < 1 ? 1 : p;
+}
+
+static void boost_plant(direct_gain_v3_t *v3)
+{
+    for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
+        double db = ((double)g - 40.0) * 0.5;
+        double r = 1.0;
+        for (int k = 0; k < (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); ++k) r *= 1.0023052;
+        for (int k = 0; k > (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); --k) r /= 1.0023052;
+        v3->relative_power_q10[g] = (uint16_t)(r * 1024.0 + 0.5);
+        v3->confidence[g] = 3u;
+        v3->uncertainty_pm[g] = 40u;
+    }
+}
+
+static dg3_observation_t boost_window(direct_gain_v3_t *v3, double base, int spread,
+                                      int clip, int coherence, uint64_t us)
+{
+    int p50 = boost_p50(v3, base);
+    int p95 = p50 + spread > 113 ? 113 : p50 + spread;
+    dg3_observation_t o = obs(p50, p95, 0, clip, coherence, us);
+    o.p90 = (uint8_t)(p50 + spread * 3 / 4);
+    return o;
+}
+
+/* Run windows at 200 us; returns the number of gain writes. */
+static unsigned boost_run(direct_gain_v3_t *v3, double base, int spread, int clip,
+                          int coherence, unsigned windows, uint64_t *t)
+{
+    uint32_t w0 = v3->writes;
+    for (unsigned w = 0; w < windows; ++w) {
+        dg3_observation_t o = boost_window(v3, base, spread, clip, coherence, *t += 200u);
+        uint8_t g = direct_gain_v3_tick(v3, &o);
+        if (g != o.p50 && v3->state == DG3_SETTLE && v3->write_us == *t)
+            direct_gain_v3_sync_applied(v3, g, *t);
+    }
+    return v3->writes - w0;
+}
+
 int main(void)
 {
     arc_gain_table_t table;
@@ -303,6 +349,79 @@ int main(void)
         printf("hunting regression: %u lane changes in 1 s, fold_streak %u\n",
                (unsigned)(v3.lane_changes - changes0), v3.fold_streak);
         assert(v3.lane_changes - changes0 < 60u);
+    }
+
+    /* Strong-signal radius boost. */
+    {
+        uint64_t t = 90000000u;
+        /* Disabled: a strong tight ring at P50 ~22 is never boosted. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 2000u, &t) == 0u && !v3.boost);
+
+        /* Enabled: 20 ms of strong, tight HOLD, then one move into 30..46. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 99u, &t) == 0u && !v3.boost);
+        unsigned moves = boost_run(&v3, 22.0, 4, 0, 90, 400u, &t);
+        int p50 = boost_p50(&v3, 22.0);
+        printf("radius boost: entries=%u moves=%u gain=%u p50=%d\n",
+               (unsigned)v3.boost_entries, moves, v3.current_gain, p50);
+        assert(v3.boost && v3.boost_entries == 1u && moves >= 1u && moves <= 2u);
+        assert(p50 >= 30 && p50 <= 46);
+        /* Steady boosted carrier: zero writes for 1 s. */
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 5000u, &t) == 0u && v3.boost);
+
+        /* First rail codes: boost off at once, gain back into 13..32. */
+        uint8_t boosted_gain = v3.current_gain;
+        assert(boost_run(&v3, 22.0, 4, 25, 90, 1u, &t) == 1u);
+        assert(!v3.boost && v3.boost_exits == 1u && v3.current_gain < boosted_gain);
+        boost_run(&v3, 22.0, 4, 0, 90, 50u, &t);
+        p50 = boost_p50(&v3, 22.0);
+        assert(p50 >= 13 && p50 <= 32);
+        /* Hold-off: no re-entry within 200 ms even on a clean ring. */
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 900u, &t) == 0u && !v3.boost);
+        boost_run(&v3, 22.0, 4, 0, 90, 600u, &t);
+        assert(v3.boost && v3.boost_entries == 2u);
+
+        /* A sudden level jump (fade recovery, +3 dB) exits through P50/P95. */
+        assert(boost_run(&v3, 44.0, 4, 0, 90, 1u, &t) == 1u && !v3.boost);
+        /* Second exit within 10 s: the hold-off doubles to 400 ms. */
+        assert(v3.boost_streak == 2u &&
+               v3.boost_hold_until_us - v3.boost_exit_us == 400000u);
+
+        /* Saturation inside the boost takes the emergency path. */
+        t += 20000000u;
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);
+        assert(v3.boost);
+        dg3_observation_t sat = obs(80, 110, 0, 300, 90, t += 200u);
+        assert(direct_gain_v3_tick(&v3, &sat) < 40u && !v3.boost && v3.overloads == 1u);
+
+        /* Never entered: a wide ring (noisy), low coherence, rail codes or a
+         * P95 that would not fit the boost band. */
+        static const int spread[] = {12, 4, 4, 9};
+        static const int coh[] = {90, 70, 90, 90};
+        static const int clip[] = {0, 0, 5, 0};
+        for (unsigned k = 0; k < 4u; ++k) {
+            direct_gain_v3_reset(&v3, &table, 40u, 62u);
+            boost_plant(&v3);
+            direct_gain_v3_enable_boost(&v3, true);
+            double base = k == 3u ? 14.0 : 22.0; /* P95/P50 = 23/14 > 1.35 */
+            boost_run(&v3, base, spread[k], clip[k], coh[k], 3000u, &t);
+            assert(!v3.boost && v3.boost_entries == 0u);
+        }
+        /* Disabling drops an active boost. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);
+        assert(v3.boost);
+        direct_gain_v3_enable_boost(&v3, false);
+        assert(!v3.boost);
     }
 
     puts("direct gain v3 core: OK");

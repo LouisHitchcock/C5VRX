@@ -225,6 +225,13 @@ bool c5vrx4_idle_raster_enabled(void)
     return s_idle_raster;
 }
 
+static int8_t s_radius_boost = -1;
+bool c5vrx4_radius_boost_enabled(void)
+{
+    if (s_radius_boost < 0) s_radius_boost = nvs_flag("radius_boost", true);
+    return s_radius_boost;
+}
+
 static int16_t s_last_std = -1;
 uint8_t c5vrx4_last_standard(void)
 {
@@ -471,6 +478,7 @@ bool c5vrx4_console(int key)
     if (key == '^') return toggle_flag("fixed_bw", c5vrx4_fixed_bw_enabled(), "fixed_bw");
     if (key == '|') return toggle_flag("agc_mask", c5vrx4_agc_mask_enabled(), "agc_mask");
     if (key == '_') return toggle_flag("idle_raster", c5vrx4_idle_raster_enabled(), "idle_raster");
+    if (key == 'y') return toggle_flag("radius_boost", c5vrx4_radius_boost_enabled(), "radius_boost");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

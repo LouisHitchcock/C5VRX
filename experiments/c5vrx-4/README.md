@@ -86,6 +86,11 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   goggles neither show green nor switch PAL/NTSC. The first carrier or sync
   returns to live video. The last stable standard is kept in NVS. `_` opts
   out. See HDZERO.md.
+- V5 strong-signal radius boost (default on): on a strong, tight, rail-free
+  carrier the healthy P50 band moves from 13..32 to 30..46 (IQ ring ~200
+  instead of ~150 codes), so the 4-bit phase is finer. The first rail code,
+  P95 or level jump returns to the normal band at once. `y` opts out. See
+  RADIUS_BOOST.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
@@ -115,6 +120,7 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `*` | Native AGC witness calibration (VTX on, native mode): find the acquisition state bit, store, reboot |
 | `\|` | Toggle the native AGC acquisition mask, reboot |
 | `_` | Toggle the no-carrier idle raster (HDZero), reboot |
+| `y` | Toggle the V5 strong-signal radius boost, reboot |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

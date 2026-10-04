@@ -1782,6 +1782,9 @@ static void direct_gain_v3_observer_task(void *arg)
                                  s_current_gain, rf_get_arc_survival_gain());
             direct_gain_v3_enable_lanes(&s_direct_gain_v3,
                                         (uint8_t)(RF_IQ_LANE_SETS - 1u));
+#ifdef C5VRX4_EXPERIMENT
+            direct_gain_v3_enable_boost(&s_direct_gain_v3, c5vrx4_radius_boost_enabled());
+#endif
             if (rf_get_iq_lanes()
 #ifdef C5VRX4_EXPERIMENT
                 && c5vrx4_fixed_lane() == C5VRX4_LANE_ADAPTIVE
@@ -2927,6 +2930,15 @@ static void lab_predemod_status(void)
     bw_status_print();
     agc_mask_status_print();
     idle_raster_status_print();
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    printf("RADIUS_BOOST enabled=%u active=%u entries=%lu exits=%lu streak=%u "
+           "band_p50=30..46 normal_p50=13..32 gain=%u p50=%d p95=%d clip_pm=%d coherence=%d "
+           "hardware_acceptance=pending\n",
+           s_direct_gain_v3.boost_enabled, s_direct_gain_v3.boost,
+           (unsigned long)s_direct_gain_v3.boost_entries,
+           (unsigned long)s_direct_gain_v3.boost_exits, s_direct_gain_v3.boost_streak,
+           s_current_gain, s_v3_p50, s_v3_p95, s_v3_clip_pm, s_v3_coherence);
+#endif
 }
 
 /* Sampling phase (#165 P0). PARLIO RX runs PLL_F240M/6 while MODEM_DIAG
@@ -7066,6 +7078,7 @@ static void console_diag_task(void *arg)
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
+                    printf("  'y':         Toggle the V5 strong-signal radius boost (P50 30..46 on a strong steady ring), reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

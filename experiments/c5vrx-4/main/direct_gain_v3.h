@@ -68,10 +68,21 @@ typedef struct {
     uint64_t lane_us, lane_hold_until_us, last_fold_us;
     uint8_t fold_streak;      /* consecutive fold drops -> longer hold-off */
     uint32_t lane_changes, fold_drops;
+    /* Strong-signal radius boost: on a strong, steady carrier the healthy
+     * band moves from P50 13..32 (r ~3.5..5.6 cells) to 30..46 (r ~5.4..6.8)
+     * for finer phase quantization; any clip/P95/jump warning drops it at
+     * once, with a doubling hold-off. Off unless enabled. */
+    bool boost_enabled, boost;
+    uint8_t boost_streak;
+    uint16_t boost_ok_windows;
+    uint64_t boost_hold_until_us, boost_exit_us;
+    uint32_t boost_entries, boost_exits;
 } direct_gain_v3_t;
 
 void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
                           uint8_t current_gain, uint8_t survival_gain);
+/* Strong-signal radius boost on/off (cleared by reset). */
+void direct_gain_v3_enable_boost(direct_gain_v3_t *v3, bool enabled);
 /* Allow lanes 0..lane_max (0 disables range lanes). Resets to lane 0. */
 void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max);
 

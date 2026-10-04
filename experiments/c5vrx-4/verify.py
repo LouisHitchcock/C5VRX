@@ -39,6 +39,10 @@ def main():
     # timeout, last stable standard persisted, '_' opt-out.
     assert "idle_raster_service(q_phase, fresh_sync" in video and '"idle_raster"' in pipeline
     assert "menu_was_active && !IDLE_RASTER_ACTIVE()" in video and '"last_std"' in pipeline
+    # Radius boost: normal band constants unchanged, opt-out wired.
+    dg3 = (ROOT / "main/direct_gain_v3.c").read_text()
+    assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
+    assert '"radius_boost"' in pipeline and "direct_gain_v3_enable_boost(&s_direct_gain_v3" in video
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

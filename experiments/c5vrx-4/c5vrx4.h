@@ -67,5 +67,10 @@ bool c5vrx4_idle_raster_enabled(void);
 #define C5VRX4_STD_UNKNOWN UINT8_MAX
 uint8_t c5vrx4_last_standard(void);
 void c5vrx4_last_standard_store(uint8_t standard);
+/* V5 strong-signal radius boost (default on, 'y' opts out with a reboot):
+ * on a strong, tight, rail-free carrier the healthy P50 band moves from
+ * 13..32 to 30..46 for finer phase quantization; the first rail code, P95
+ * or level jump drops it. NVS radius_boost. */
+bool c5vrx4_radius_boost_enabled(void);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);
