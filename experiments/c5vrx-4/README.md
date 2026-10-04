@@ -22,13 +22,20 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 - Direct Gain V5 by default: first-window physical correction, 200-us observer,
   descriptor dedupe, table-maximum listening, measured noise lane cap and
   anti-hunt damping. Native AGC remains a separate opt-in gain owner.
-- Protected adaptive lanes by default: two fresh overlap windows before a
-  one-step finer upgrade; immediate fold escape, 210-us post-switch observation
-  exclusion, retained phase state, magnitude-only GPIO routing updates.
-  This is not an atomic or tagged hardware handover.
-- Severe coarse-lane clipping (>=50%, P95>=95) sends active Direct Gain to G20,
-  its existing controller floor. Moderate overload uses staged RF/BB cuts.
-  Finer-lane saturation first escapes to coarse. No native/manual gain writes.
+- Fixed fine IQ lanes by default: ADC bits {9,7,6,5} on I and Q (step 32
+  codes, signed window +-256), selected before PARLIO RX starts and never
+  switched at runtime, for every gain owner. Analog gain does all amplitude
+  tracking; its 13..32 P50 band is ~3.6-5.7 fine cells (~115-180 codes). With
+  the measured ~35-code receiver noise at maximum gain, one fine step is close
+  to one noise sigma: finer lanes add no phase information there but fold
+  sooner, and coarse loses ~0.7 dB at the edge (host simulation, not a range
+  measurement). Fixed ultrafine and protected adaptive V5 lanes remain Z
+  comparisons.
+- Severe clipping (>=50%, P95>=95) on the coarse or a fixed lane sends active
+  Direct Gain to G20, its existing controller floor: a fixed lane has no
+  escape lane. Moderate overload uses staged BB-first cuts. In the adaptive
+  comparison finer-lane saturation first escapes to coarse. No native/manual
+  gain writes.
 - Fixed nominal loaded CVBS transfer STD150 (default): 0.310-V blanking +
   0.150 V/MHz, nearest DAC code with saturation. Assumed nominal sync/white
   targets are 0.010/1.010 V: 0.300 V sync depth and 1.000 V sync-to-white
@@ -55,16 +62,17 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `J` | AFC state plus eight bounded sync/IQ snapshots; no actuator |
 | `u` | Toggle default-on sync/black level regulation, reboot; fixed mapping required |
 | `M` | Cycle STD150 (default) / CVBS150 / previous full-span transfer, reboot |
-| `Z` | Protected adaptive V5 / fixed ultrafine comparison, reboot |
+| `Z` | Cycle fixed fine (default) / fixed ultrafine / protected adaptive V5 lanes, reboot |
 | `h` | STATIC / bounded HISTORY phase decode, reboot |
 | `N` | Direct Gain / native AGC, reboot |
 | `H`, `{}`, `[]`, `W`, `B`, `A`, `:`, `L` | PR154 shared PHY diagnostics/labs |
 | `(`, `)` | Explicit native-only BB hold / 100-cycle reversible lab |
 
-The lane comparison uses the new NVS key `c5vrx4/force_ultra_v2`; the old
-PR146 `force_ultra` setting does not silently force the integrated default.
+The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
+ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`
+comparison keys are ignored, so an earlier test setting cannot override fixed fine.
 Other C5VRX-4 settings remain in `c5vrx4`, separate from C5VRX-3 `c5vrx`.
-STATIC remains the default; HISTORY and fixed ultrafine are comparisons.
+STATIC remains the default; HISTORY, fixed ultrafine and adaptive lanes are comparisons.
 Normal probes are disabled at boot. Lab writes require the pinned PHY archive;
 unknown libraries keep observation and refuse undocumented writes.
 

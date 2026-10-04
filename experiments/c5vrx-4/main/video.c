@@ -1731,7 +1731,7 @@ static void direct_gain_v3_observer_task(void *arg)
             /* Finer range lanes are owned by Direct Gain only. */
             if (rf_get_iq_lanes()
 #ifdef C5VRX4_EXPERIMENT
-                && !c5vrx4_ultrafine_forced()
+                && c5vrx4_fixed_lane() == C5VRX4_LANE_ADAPTIVE
 #endif
             ) {
                 rf_set_iq_lanes(0u);
@@ -1750,7 +1750,7 @@ static void direct_gain_v3_observer_task(void *arg)
                                         (uint8_t)(RF_IQ_LANE_SETS - 1u));
             if (rf_get_iq_lanes()
 #ifdef C5VRX4_EXPERIMENT
-                && !c5vrx4_ultrafine_forced()
+                && c5vrx4_fixed_lane() == C5VRX4_LANE_ADAPTIVE
 #endif
             ) {
                 rf_set_iq_lanes(0u);

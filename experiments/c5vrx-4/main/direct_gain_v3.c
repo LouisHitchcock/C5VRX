@@ -410,7 +410,7 @@ static uint8_t set_lane(direct_gain_v3_t *v3, const dg3_observation_t *o,
                         uint8_t lane)
 {
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) return v3->current_gain;
+    if (c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE) return v3->current_gain;
 #endif
     if (lane > v3->lane_max) lane = v3->lane_max;
     if (lane == v3->lane) return v3->current_gain;
@@ -470,7 +470,10 @@ void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
     v3->lane_cap = lane_max;
     v3->lane = 0u;
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) v3->lane = lane_max;
+    /* A fixed policy holds its lane from the first window: no listening or
+     * fold escape on another lane, and the BW gear sees it as the cap. */
+    uint8_t fixed = c5vrx4_fixed_lane();
+    if (fixed <= lane_max) v3->lane = v3->lane_cap = fixed;
 #endif
 }
 
@@ -490,6 +493,10 @@ static void learn_noise(direct_gain_v3_t *v3, const dg3_observation_t *o)
         if (((uint32_t)v3->noise_p50_q4 << (2u * k)) >=
             DG3_NOISE_R2_TARGET_Q4) { cap = k; break; }
     }
+#ifdef C5VRX4_EXPERIMENT
+    /* Noise is still learned for telemetry; a fixed lane stays the cap. */
+    if (c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE) cap = v3->lane;
+#endif
     v3->lane_cap = cap;
 }
 
@@ -534,7 +541,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     bool at_max = v3->current_gain == v3->table.max_index;
     bool fixed_lane = false;
 #ifdef C5VRX4_EXPERIMENT
-    fixed_lane = c5vrx4_ultrafine_forced();
+    fixed_lane = c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE;
 #endif
     /* Fold guard. On a finer lane the rail codes are the last warning before
      * the window folds; a folded strong carrier reads as wide, incoherent
@@ -651,10 +658,12 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (saturated) {
 #ifdef C5VRX4_EXPERIMENT
         /* #158: severe clipping on the coarse lane is real quantizer
-         * overdrive. Do not hunt through RF/BB stages. Finer-lane clipping
-         * first follows the fold escape above; manual/native stay untouched.
+         * overdrive. Do not hunt through RF/BB stages. Adaptive finer-lane
+         * clipping first follows the fold escape above. A fixed lane has no
+         * escape lane, so its severe overdrive or fold takes the same G20
+         * floor; manual/native stay untouched.
          * The settle freshness check above still rejects stale post-drop IQ. */
-        if (v3->lane == 0u && o->clip_pm >= 500u && o->p95 >= 95u) {
+        if ((v3->lane == 0u || fixed_lane) && o->clip_pm >= 500u && o->p95 >= 95u) {
             ++v3->overloads;
             v3->high_windows = v3->weak_windows = 0;
             v3->virtual_gain_q8 = 0;

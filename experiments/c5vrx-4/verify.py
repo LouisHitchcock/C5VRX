@@ -27,7 +27,9 @@ def main():
     assert "c5v4_cvbs_analyze" in semantic and "phase5_pair_is_sync" not in semantic
     assert "afc_ticks" not in video and "afc2_ctrl_decide" in video
     assert "goto afc_control;" in video and "phy_rx_lab_try_actuator(afc_epoch.phy)" in video
-    assert '"force_ultra_v2"' in (ROOT / "pipeline.c").read_text()
+    pipeline = (ROOT / "pipeline.c").read_text()
+    assert '"lane_mode"' in pipeline and '"force_ultra_v2"' not in pipeline
+    assert "mode = C5VRX4_LANES_FINE" in pipeline, "fixed fine must stay the default lane policy"
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

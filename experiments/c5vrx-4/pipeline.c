@@ -45,7 +45,8 @@ bool c5vrx4_level_enabled(void)
     return s_level;
 }
 
-static bool s_ultrafine_loaded, s_ultrafine = false;
+static bool s_lane_mode_loaded;
+static uint8_t s_lane_mode = C5VRX4_LANES_FINE;
 
 unsigned c5vrx4_cvbs_mode(void)
 {
@@ -74,19 +75,33 @@ const char *c5vrx4_cvbs_mode_name(void)
     return names[c5vrx4_cvbs_mode()];
 }
 
-bool c5vrx4_ultrafine_forced(void)
+uint8_t c5vrx4_lane_mode(void)
 {
-    if (!s_ultrafine_loaded) {
+    if (!s_lane_mode_loaded) {
         nvs_handle_t handle;
-        uint8_t enabled = 0;
+        uint8_t mode = C5VRX4_LANES_FINE;
         if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
-            (void)nvs_get_u8(handle, "force_ultra_v2", &enabled);
+            (void)nvs_get_u8(handle, "lane_mode", &mode);
             nvs_close(handle);
         }
-        s_ultrafine = enabled != 0;
-        s_ultrafine_loaded = true;
+        /* The older force_ultra_v2 comparison key is deliberately ignored. */
+        s_lane_mode = mode <= C5VRX4_LANES_ADAPTIVE ? mode : C5VRX4_LANES_FINE;
+        s_lane_mode_loaded = true;
     }
-    return s_ultrafine;
+    return s_lane_mode;
+}
+
+const char *c5vrx4_lane_mode_name(void)
+{
+    static const char *const names[] = {"fixed_fine", "fixed_ultrafine", "protected_v5"};
+    return names[c5vrx4_lane_mode()];
+}
+
+uint8_t c5vrx4_fixed_lane(void)
+{
+    /* RF lane sets: 0 coarse {9,8,7,6}, 1 fine {9,7,6,5}, 2 ultrafine {9,6,5,4}. */
+    static const uint8_t lanes[] = {1u, 2u, C5VRX4_LANE_ADAPTIVE};
+    return lanes[c5vrx4_lane_mode()];
 }
 
 bool c5vrx4_history_enabled(void)
@@ -220,11 +235,12 @@ static void print_state(void)
                                         blanks[mode],
            slopes[mode],
            C5V4_DAC_MEASURED ? "measured" : "nominal", c5vrx4_level_enabled());
+    bool fixed = c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE;
     printf("C5VRX4_LANES policy=%s lane=%u adc_step=%u window_codes=%u "
-           "fold_guard=%s\n", c5vrx4_ultrafine_forced() ? "fixed_ultrafine" : "protected_v5",
+           "runtime_switching=%d fold_guard=%s\n", c5vrx4_lane_mode_name(),
            rf_get_iq_lanes(), 64u >> rf_get_iq_lanes(),
-           512u >> rf_get_iq_lanes(),
-           c5vrx4_ultrafine_forced() ? "disabled_for_fixed_lane_test" : "baseline");
+           512u >> rf_get_iq_lanes(), !fixed,
+           fixed ? "fixed_lane_severe_clip_g20" : "baseline");
 }
 
 void c5vrx4_start(void)
@@ -284,15 +300,17 @@ bool c5vrx4_console(int key)
         return true;
     }
     if (key == 'Z') {
+        /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
+        static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};
         nvs_handle_t handle;
-        bool enabled = !c5vrx4_ultrafine_forced();
+        uint8_t mode = c5vrx4_lane_mode();
         esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
         if (err == ESP_OK) {
-            err = nvs_set_u8(handle, "force_ultra_v2", enabled ? 1 : 0);
+            err = nvs_set_u8(handle, "lane_mode", (uint8_t)((mode + 1u) % 3u));
             if (err == ESP_OK) err = nvs_commit(handle);
             nvs_close(handle);
         }
-        printf("C5VRX4 ultrafine_next=%u err=%s action=%s\n", enabled,
+        printf("C5VRX4 lanes_next=%s err=%s action=%s\n", next_name[mode],
                esp_err_to_name(err), err == ESP_OK ? "reboot" : "unchanged");
         if (err == ESP_OK) {
             fflush(stdout);

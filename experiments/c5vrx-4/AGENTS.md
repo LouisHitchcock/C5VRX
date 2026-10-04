@@ -13,9 +13,10 @@ Record source format, acquired rate, CPU/hardware ownership, raw ring, three
 bundles, unique 13.333M output and physical DAC40M separately. No CPU per-sample
 output, transformed ring, concurrent RX/TX BitScrambler or boundary DSP resets.
 
-Protected adaptive V5 lanes are default; fixed ultrafine is a Z comparison.
-Native is opt-in and owns gain exclusively. Severe coarse clipping may cut
-active Direct Gain to its established G20 floor; fresh epochs and settling
+Fixed fine lanes {9,7,6,5} are default (Leon, 2026-10-04): never switch lanes
+at runtime. Fixed ultrafine and protected adaptive V5 lanes are Z comparisons.
+Native is opt-in and owns gain exclusively. Severe coarse or fixed-lane clipping
+may cut active Direct Gain to its established G20 floor; fresh epochs and settling
 refusal still apply. Manual/native never use this automatic gain response.
 
 Sync scoring is a stride-3 semantic estimate, not tagged physical DAC output.

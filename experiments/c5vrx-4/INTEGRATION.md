@@ -28,11 +28,16 @@ The complete reviewed PR/commit list is in INTEGRATION_SOURCES.json. Merged
 features are inherited as implemented on current main, not reconstructed from
 obsolete patches. Selective ports keep the newer V5, ownership and scan logic.
 
-PR #146's fixed-ultrafine test is still available through Z, but the integrated
-default is protected V5 lanes. It preserves the noise-referenced cap and coarse
-escape instead of disabling fold recovery on strong signals. The new NVS key
-avoids inheriting an old fixed-lane test setting. This is a policy change, not a
-claim that six sequential GPIO writes are now seamless.
+Leon chose fixed fine lanes {9,7,6,5} as the default on 2026-10-04: no runtime
+lane switching for any gain owner. Lanes and BB gain are the same amplitude
+knob for pre-ADC noise, and with ~35 codes of receiver noise at maximum gain
+(docs/range-max.md) one fine step is close to one noise sigma; the analog loop
+places the envelope inside the fine window. A fixed lane has no fold escape, so
+its severe clipping takes the G20 floor. PR #146's fixed ultrafine and the
+protected adaptive V5 lanes remain Z comparisons under the new `lane_mode` key.
+This removes the six sequential GPIO writes from normal operation; it is not a
+range measurement, and DC centring, sampling phase and filter width still
+decide whether a finer fixed lane becomes better later.
 
 The AFC supervisor uses PR122's adjacent raw Phase8 reference measurements,
 while live output and slow sync scoring use the stride-3 winding detector. These
@@ -100,7 +105,7 @@ calling range or HDZero acceptance complete, bench-test:
 3. Strong input: coarse/fine escape, severe clipping recovery and gain-write
    counts. Manual/native remain excluded from automatic gain interventions.
 4. Weak-input sweep: lane/fold events, origin/clip/phase coverage, usable video,
-   recovery and FIFO faults. Compare protected V5 and fixed ultrafine via Z.
+   recovery and FIFO faults. Compare fixed fine, fixed ultrafine and protected V5 via Z.
 5. AUTO AFC only with a known VTX reference: injected offset/sign, scene/burst
    immunity, bounded acquisition and zero writes in AFC video TRACK.
 6. Menu exit, channel/BW changes, N/h/Z/M reboots, native labs/rollback, settings,
