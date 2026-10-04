@@ -35,6 +35,7 @@
 #include "cvbs_level.h"
 #include "cvbs_snapshot.h"
 #include "predemod.h"
+#include "agc_witness.h"
 #endif
 #include "rf.h"
 #include "phy_rx_lab.h"
@@ -172,12 +173,23 @@ BITSCRAMBLER_PROGRAM(s_c5vrx4_static_program, "c5vrx4_phase8_static");
 BITSCRAMBLER_PROGRAM(s_c5vrx4_history_program, "c5vrx4_phase8_history");
 BITSCRAMBLER_PROGRAM(s_c5vrx4_cvbs150_static_program, "c5vrx4_phase8_static_cvbs150");
 BITSCRAMBLER_PROGRAM(s_c5vrx4_cvbs150_history_program, "c5vrx4_phase8_history_cvbs150");
+BITSCRAMBLER_PROGRAM(s_c5vrx4_mask_static_program, "c5vrx4_phase8_static_mask");
+BITSCRAMBLER_PROGRAM(s_c5vrx4_mask_legacy_program, "c5vrx4_phase8_static_mask_legacy");
+BITSCRAMBLER_PROGRAM(s_c5vrx4_mask_cvbs150_program, "c5vrx4_phase8_static_mask_cvbs150");
 
 /* M-selected output transfer (generate_phase8.py): STD150 default,
  * LEGACY_FULL or CVBS150; STATIC/HISTORY decode is independent of it. */
 static const void *c5vrx4_selected_program(void)
 {
     bool history = c5vrx4_history_enabled();
+    if (c5vrx4_agc_mask_active()) {
+        /* Native AGC acquisition mask: STATIC decode with the hold path. */
+        switch (c5vrx4_cvbs_mode()) {
+        case C5VRX4_CVBS_LEGACY: return s_c5vrx4_mask_legacy_program;
+        case C5VRX4_CVBS_150: return s_c5vrx4_mask_cvbs150_program;
+        default: return s_c5vrx4_mask_static_program;
+        }
+    }
     switch (c5vrx4_cvbs_mode()) {
     case C5VRX4_CVBS_LEGACY:
         return history ? s_c5vrx4_legacy_history_program : s_c5vrx4_legacy_static_program;
@@ -2879,6 +2891,7 @@ static void predemod_resume(analog_agc_mode_t saved_mode)
 static void predemod_correction_print(void);
 #endif
 static void bw_status_print(void);
+static void agc_mask_status_print(void);
 static void lab_predemod_status(void)
 {
     const arc_gain_table_t *table = rf_get_arc_gain_table();
@@ -2899,6 +2912,7 @@ static void lab_predemod_status(void)
 #endif
     phy_rx_lab_predemod_status();
     bw_status_print();
+    agc_mask_status_print();
 }
 
 /* Sampling phase (#165 P0). PARLIO RX runs PLL_F240M/6 while MODEM_DIAG
@@ -3167,6 +3181,140 @@ static void bw_status_print(void)
            s_bw_fit_err_khz, s_current_bw40 ? "BW40" : "BW20",
            c5vrx4_fixed_bw_enabled() ? "retired" : "v5",
            (unsigned long)rf_fixed_bw_failures(), s_bw_cal_runs, s_bw_cal_result);
+}
+
+/* ---- Native AGC acquisition witness (calibration) ------------------------
+ * The C5 packet AGC re-acquires every ~25-50 us on a continuous carrier; each
+ * ~2-3 us gain walk produces saturated or starved IQ (native-agc-v2.md). The
+ * RF dump word on MODEM_DIAG carries the gain index (DIAG[20..27]) and the
+ * AGC state (DIAG[28..31]). With native AGC running, the eight PARLIO lanes
+ * capture DIAG[20..26] plus one state bit per pass; gain changes mark the
+ * acquisitions and the state bit that separates them becomes the hold flag
+ * on data bit 0 for the masked program. Live video is garbage for ~50 ms. */
+#define WITNESS_WINDOWS 6u
+static const char *s_witness_result = "never";
+static agc_witness_result_t s_witness_last = {.bit = -1};
+static unsigned s_witness_runs;
+
+static bool lab_run_agc_witness(bool automatic)
+{
+    ++s_witness_runs;
+    if (!rf_native_agc_active()) {
+        printf("AGC_WITNESS refused=native_agc_only (N selects native, reboot)\n");
+        s_witness_result = "not_native";
+        return false;
+    }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_WITNESS refused=other_lab_or_menu\n");
+        s_witness_result = "busy";
+        return false;
+    }
+    static uint8_t window[CONTROL_SAMPLE_BYTES];
+    agc_witness_t w;
+    agc_witness_init(&w);
+    s_rssi_probe_active = true;   /* observers and the level servo stand aside */
+    c5vrx4_suspend();             /* no pacing gate: every native acquisition */
+    vTaskDelay(pdMS_TO_TICKS(5));
+    for (unsigned bit = 0; bit < 4u; ++bit) {
+        const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, (uint8_t)(28u + bit)};
+        rf_route_diag_capture(diag);
+        for (unsigned n = 0; n < WITNESS_WINDOWS; ++n) {
+            vTaskDelay(pdMS_TO_TICKS(2)); /* > one 32-KiB ring lap after routing */
+            uint8_t *src = get_completed_rx_sample_window(sizeof(window));
+            sync_dma_m2c(src, sizeof(window));
+            memcpy(window, src, sizeof(window));
+            agc_witness_add(&w, window, sizeof(window), bit);
+        }
+    }
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    agc_witness_result_t r;
+    bool ok = agc_witness_choose(&w, &r);
+    s_witness_last = r;
+    printf("AGC_WITNESS mode=%s windows=%lu acquisitions=%lu acq_per_ms=%u.%u acq_us=%u.%u "
+           "acq_share_pm=%u walk_min_gain=%u trapped_gain=%u..%u\n",
+           automatic ? "auto" : "manual", (unsigned long)w.windows, (unsigned long)w.acquisitions,
+           r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u, r.acq_us_x10 / 10u, r.acq_us_x10 % 10u,
+           r.acq_share_pm, r.gain_min_acq, r.trapped_min, r.trapped_max);
+    for (unsigned bit = 0; bit < 4u; ++bit)
+        printf("AGC_WITNESS state_bit=DIAG[%u] p1_acq_pm=%lu p1_trapped_pm=%lu\n", 28u + bit,
+               w.acq[bit] ? (unsigned long)((uint64_t)w.ones_acq[bit] * 1000u / w.acq[bit]) : 0ul,
+               w.trapped[bit] ? (unsigned long)((uint64_t)w.ones_trapped[bit] * 1000u / w.trapped[bit]) : 0ul);
+    if (!ok) {
+        s_witness_result = w.acquisitions < 8u ? "no_acquisitions_carrier_needed" :
+                           r.bit < 0 || r.separation_pm < 700u ? "no_separating_bit" :
+                           "flag_not_clean_enough";
+        printf("AGC_WITNESS result=%s stored=0\n", s_witness_result);
+        return false;
+    }
+    uint8_t flag = (uint8_t)((unsigned)r.bit | (r.invert ? 0x80u : 0u));
+    bool stored = c5vrx4_agc_flag_store(flag);
+    s_witness_result = stored ? "stored" : "store_failed";
+    printf("AGC_WITNESS result=%s flag=DIAG[%d]%s separation_pm=%u active_acq_pm=%u "
+           "active_trapped_pm=%u lead_samples=%u lag_samples=%u lookahead_ok=%u "
+           "applies=after_reboot\n", s_witness_result, 28 + r.bit, r.invert ? "_inverted" : "",
+           r.separation_pm, r.active_acq_pm, r.active_trapped_pm, r.lead_samples,
+           r.lag_samples, r.lead_samples >= 2u);
+    return stored;
+}
+
+/* While masking: share of samples with the hold flag set (data bit 0),
+ * from completed observer windows; ~6-13 % expected from the measured
+ * acquisition share. Much more means the picture is mostly held. */
+static unsigned s_agc_flag_share_pm;
+static void agc_mask_observe(void)
+{
+    if (!c5vrx4_agc_mask_active()) return;
+    uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+    if (!rx_probe_copy_completed(sample)) return;
+    unsigned set = 0;
+    for (unsigned k = 0; k < sizeof(sample); ++k) set += sample[k] & 1u;
+    unsigned pm = set * 1000u / sizeof(sample);
+    s_agc_flag_share_pm = (7u * s_agc_flag_share_pm + pm) / 8u;
+}
+
+static void agc_mask_status_print(void)
+{
+    uint8_t flag = c5vrx4_agc_flag();
+    printf("AGC_MASK native=%u enabled=%u active=%u flag=%s%d%s calibrations=%u last=%s "
+           "separation_pm=%u lead_samples=%u lag_samples=%u live_flag_share_pm=%u lane_cost=Q_LSB "
+           "pacing=%s hardware_acceptance=pending\n",
+           rf_native_agc_active(), c5vrx4_agc_mask_enabled(), c5vrx4_agc_mask_active(),
+           flag == C5VRX4_AGC_FLAG_UNKNOWN ? "none" : "DIAG", flag == C5VRX4_AGC_FLAG_UNKNOWN ? -1 :
+           28 + (flag & 3), (flag != C5VRX4_AGC_FLAG_UNKNOWN && (flag & 0x80u)) ? "_inverted" : "",
+           s_witness_runs, s_witness_result, s_witness_last.separation_pm,
+           s_witness_last.lead_samples, s_witness_last.lag_samples, s_agc_flag_share_pm,
+           c5vrx4_agc_mask_active() ? "off_mask_needs_every_acquisition" : "unchanged");
+}
+
+/* First native carrier without a stored witness: calibrate once, reboot to
+ * apply (program and lane route are chosen per boot). At most three tries
+ * per boot, one a minute; never in Direct Gain mode. */
+static void agc_witness_autocheck(void)
+{
+    static unsigned carrier_ticks, tries;
+    static int64_t last_try_us;
+    if (!rf_native_agc_active() || !c5vrx4_agc_mask_enabled() ||
+        c5vrx4_agc_flag() != C5VRX4_AGC_FLAG_UNKNOWN || tries >= 3u ||
+        s_menu_active || s_rssi_probe_active || s_gain_sweep.active) { carrier_ticks = 0; return; }
+    uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+    if (!rx_probe_copy_completed(sample)) return;
+    control_metrics_t m = analyze_control_window(sample, sizeof(sample), 0);
+    if (m.q_phase < 40) { carrier_ticks = 0; return; }
+    if (++carrier_ticks < 12u) return; /* ~3 s of carrier at the 250 ms tick */
+    int64_t now = esp_timer_get_time();
+    if (last_try_us && now - last_try_us < 60000000) return;
+    last_try_us = now;
+    carrier_ticks = 0;
+    ++tries;
+    if (lab_run_agc_witness(true)) {
+        printf("AGC_WITNESS rebooting to apply the acquisition mask ('|' opts out)\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(150));
+        esp_restart();
+    }
 }
 
 static unsigned s_native_hold_cycles;
@@ -5373,6 +5521,8 @@ static void predemod_task(void *arg)
         predemod_dc_service();
         predemod_sphase_autocheck();
         predemod_bw_autocal();
+        agc_witness_autocheck();
+        agc_mask_observe();
     }
 }
 
@@ -6412,6 +6562,13 @@ static void console_diag_task(void *arg)
                     lab_run_filter_sweep();
                 } else if (c == '=') {
                     (void)lab_run_bw_calibration(false);
+                } else if (c == '*') {
+                    if (lab_run_agc_witness(false) && c5vrx4_agc_mask_enabled()) {
+                        printf("AGC_WITNESS rebooting to apply the acquisition mask\n");
+                        fflush(stdout);
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        esp_restart();
+                    }
                 } else if (c == 'R') {
                     lab_run_rssi_gain_probe();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
@@ -6749,7 +6906,8 @@ static void console_diag_task(void *arg)
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");
                     printf("  '$':         Reversible RX filter-cap sweep 0x67/6..13: +4/+8/+16/+24/60 (pinned PHY)\n");
                     printf("  '%%' / '&':   Toggle default-on digital DC recentring / first-lock sampling-phase check, reboot\n");
-                    printf("  '=' / '^':   Fixed analog BW: measure noise width + store offset (VTX off) / toggle, reboot\n");
+                    printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
+                    printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

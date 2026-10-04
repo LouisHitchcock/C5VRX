@@ -28,7 +28,7 @@ def parse(text):
     return cfg, lut, blocks, labels
 
 
-def simulate(text, raw, count, *, initial=None, start=None):
+def simulate(text, raw, count, *, initial=None, start=None, stats=None):
     cfg, lut, blocks, labels = parse(text)
     out = a = b = look = pos = pc = 0
     if initial is not None: out, a, b, look = initial
@@ -65,6 +65,23 @@ def simulate(text, raw, count, *, initial=None, start=None):
         op = opcode[0]
         next_pc=pc+1
         if op == 'jmp': next_pc=labels[opcode[1]]
+        elif op in ('if', 'ifn'):
+            # Sources and B-counter conditions see the previous cycle's output.
+            src = opcode[1]
+            m = re.fullmatch(r'(bh|bl|b)(<=|>|=)o(\d+)', src)
+            if m:
+                part, cmp, off = m.group(1), m.group(2), int(m.group(3))
+                lhs = b & 255 if part == 'bl' else (b >> 8) & 255 if part == 'bh' else b & 65535
+                width = 16 if part == 'b' else 8
+                rhs = (out >> off) & ((1 << width) - 1)
+                v = lhs <= rhs if cmp == '<=' else lhs > rhs if cmp == '>' else lhs == rhs
+            elif src in ('l', 'h'): v = src == 'h'
+            elif src[0] in 'olab':
+                v = ({'o':out,'l':look,'a':a,'b':b}[src[0]] >> int(src[1:])) & 1
+            else:
+                bit=int(src); ix=pos+bit//8
+                v=(int(raw[ix]) >> (bit%8)) & 1 if ix < len(raw) else 0
+            if bool(v) == (op == 'if'): next_pc=labels[opcode[2]]
         elif op.startswith(('ldcti','addcti','ldctd')):
             kind = 'addcti' if op.startswith('addcti') else 'ldcti' if op.startswith('ldcti') else 'ldctd'
             suffix=op[len(kind):]; ctr=suffix[0]; half=suffix[1:]
@@ -77,6 +94,9 @@ def simulate(text, raw, count, *, initial=None, start=None):
             if ctr=='a': a=value
             else: b=value
         elif op != 'nop': raise ValueError(f'unsupported opcode {op}')
+        if stats is not None:
+            stats['bundles'] = stats.get('bundles', 0) + 1
+            stats.setdefault('trace', []).append(pc)
         out=new
         look=lut[(out>>16)&(len(lut)-1)]
         pos+=read//8

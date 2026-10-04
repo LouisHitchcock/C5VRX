@@ -176,9 +176,9 @@ def words_for(history, legacy=False, transfer="std150"):
 NAMES = {"std150": " STD150", "legacy": " legacy", "cvbs150": " CVBS150"}
 
 
-def build(history, legacy=False, transfer="std150"):
+def build(history, legacy=False, transfer="std150", words=None):
     if legacy is True: transfer = "legacy"
-    words = words_for(history, False, transfer)
+    if words is None: words = words_for(history, False, transfer)
     mode = ('history' if history else 'static') + NAMES[transfer]
     return f"""# C5VRX-4: unwrapped Phase8 {mode}, 75 ns endpoint difference.
 # STD150 default: 0.310 V blanking, 0.150 V/MHz, nominal 1 V sync-to-white.
@@ -241,6 +241,128 @@ decode_next:
 """
 
 
+# ---- Native AGC acquisition mask (STATIC only) ----------------------------
+# The C5 packet AGC re-acquires every ~25-50 us on a continuous carrier; each
+# acquisition is a ~2-3 us gain walk whose IQ is saturated or starved. With a
+# per-sample witness from MODEM_DIAG[28..31] (dump-word AGC state) on PARLIO
+# data bit 0 (the fine Q LSB, DIAG5), the program holds the last DAC value for
+# every span touching a flagged endpoint and reseeds phase history from the
+# span's own endpoint, so the first clean span after an acquisition is exact.
+# Q keeps {9,7,6}: 3 bits, decoded at the centre of its two-cell step.
+# Decision for span k+1 is made in decode_next from map_delta's bits 8/9:
+# flag(C_k) (the next P) OR flag(M1_{k+1}) (look-ahead; M2/C are behind the
+# counter/reg_mem1 operand restriction). Counter B stays 0, so `BL=O8` is
+# "both clear". Bank 3 (unused by STATIC decode) is an identity plane that
+# returns the held DAC code. Six of eight instruction slots; every path is
+# three bundles per three IQ bytes and three DAC bytes.
+FLAG_BIT = 0  # data bit 0 of each PARLIO byte
+
+
+def phase8_mask(raw):
+    i = signed(raw >> 4) + 31.5 / 64
+    q = (signed(raw & 15) & ~1) + 63.5 / 64
+    return round(math.atan2(q, i) * 128 / math.pi) & 255
+
+
+def words_for_mask(transfer="std150", identity=True):
+    dac = dac_codes(transfer == "legacy", "std150" if transfer == "legacy" else transfer)
+    words = []
+    for bank in range(4):
+        for index in range(256):
+            if bank == 3 and identity:
+                words.append(index & 63)
+            elif bank & 1:
+                p = phase8_mask(index)
+                words.append(((128 + p) & 255) | (((-p) & 255) << 8))
+            else:
+                words.append(dac[index] | (trajectory_class(index) << 6))
+    return words
+
+
+def build_mask(transfer="std150"):
+    words = words_for_mask(transfer)
+    return f"""# C5VRX-4: unwrapped Phase8 static{NAMES[transfer]} with native AGC acquisition mask.
+# Input: PARLIO bit0 = AGC acquisition witness (MODEM_DIAG state bit), Q={{9,7,6}}.
+# A span touching a flagged endpoint holds the last DAC value and reseeds
+# phase history; clean spans are bit-exact with the unmasked Q3 pipeline.
+# Odd bank 1 decodes Phase8; bank 3 is the identity plane for the hold.
+cfg prefetch true
+cfg eof_on downstream
+cfg trailing_bytes 0
+cfg lut_width_bits 16
+lut """ + ' '.join(map(str, words)) + """
+
+init:
+    # Counter B is the all-clear reference for the BL=O8 decision.
+    ldctdb 0
+
+accumulate:
+    set 0..6 O0..O6,
+    set 7 L0,
+    set 8..15 L8..L15,
+    set 16 15,
+    set 17 11,
+    set 18 23,
+    set 19 19,
+    set 20 31,
+    set 21 27,
+    set 22 39,
+    set 23 35,
+    set 24 L,
+    set 25..31 L1..L7,
+    read 16,
+    write 8,
+    addctiah
+
+map_delta:
+    # Bits 8/9: flag(C) (next span's P) and flag(M1') for decode_next.
+    set 0..7 O0..O7,
+    set 8 16,
+    set 9 24,
+    set 10..15 L,
+    set 16..21 A10..A15,
+    set 22..23 L6..L7,
+    set 24 L,
+    set 25..31 O9..O15,
+    read 8,
+    write 8,
+    ldctiah
+
+decode_next:
+    # Emits the span's first DAC byte; bank 1 decode for the next endpoint.
+    set 0..5 L0..L5,
+    set 6 O7,
+    set 16..23 32..39,
+    set 24 H,
+    set 25 L,
+    write 8,
+    if bl=o8 accumulate
+
+hold_reseed:
+    # Flagged span: repeat the last DAC, A = -phase of this span's endpoint.
+    set 0..7 O0..O7,
+    set 24 L,
+    set 25..31 L9..L15,
+    read 16,
+    write 8,
+    ldctiah
+
+hold_next:
+    # Identity lookup (bank 3) makes decode_next re-emit the held code.
+    set 0..7 O0..O7,
+    set 8 16,
+    set 9 24,
+    set 10..15 L,
+    set 16..21 O0..O5,
+    set 22..23 L,
+    set 24 H,
+    set 25 H,
+    read 8,
+    write 8,
+    jmp decode_next
+"""
+
+
 def generate():
     for history in (False, True):
         for transfer, suffix in (("std150", ""), ("legacy", "_legacy"), ("cvbs150", "_cvbs150")):
@@ -248,6 +370,10 @@ def generate():
             path = HERE / f'c5vrx4_phase8_{name}.bsasm'
             path.write_text(build(history, False, transfer), encoding='utf-8')
             print(f'Generated {path.name}: three bundles, trajectory unwrap, fixed CVBS scale')
+    for transfer, suffix in (("std150", ""), ("legacy", "_legacy"), ("cvbs150", "_cvbs150")):
+        path = HERE / f'c5vrx4_phase8_static_mask{suffix}.bsasm'
+        path.write_text(build_mask(transfer), encoding='utf-8')
+        print(f'Generated {path.name}: native AGC acquisition hold, six slots')
     voltage = voltages()
     def array(name, values, ctype):
         return f'static const {ctype} {name}[{len(values)}] = {{' + ','.join(map(str, values)) + '};\n'

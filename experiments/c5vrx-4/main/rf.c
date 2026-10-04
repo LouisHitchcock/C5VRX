@@ -215,7 +215,16 @@ void rf_set_iq_lanes(uint8_t set)
         gpio_func_out_sel_cfg_reg_t config;
         config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
         config.out_sel = MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane];
+        config.out_inv_sel = 0;
         route[lane] = config.val;
+    }
+    /* Native AGC acquisition mask: data bit 0 (Q LSB) is the witness. */
+    uint8_t flag = c5vrx4_agc_mask_active() ? c5vrx4_agc_flag() : C5VRX4_AGC_FLAG_UNKNOWN;
+    if (flag != C5VRX4_AGC_FLAG_UNKNOWN) {
+        gpio_func_out_sel_cfg_reg_t config = {.val = route[0]};
+        config.out_sel = MODEM_DIAG0_IDX + 28u + (flag & 3u);
+        config.out_inv_sel = (flag >> 7) & 1u;
+        route[0] = config.val;
     }
     uint64_t started = (uint64_t)esp_timer_get_time();
     for (unsigned step = 0; step < 3; ++step) {
@@ -247,6 +256,44 @@ uint8_t rf_get_iq_lanes(void)
 {
     return s_iq_lane_set;
 }
+
+#ifdef C5VRX4_EXPERIMENT
+/* AGC witness calibration only: route eight raw MODEM_DIAG signals onto the
+ * PARLIO lanes (data bit n = diag[n]), then restore the receive routes. Live
+ * video is garbage meanwhile; nothing else may switch lanes in between. */
+void rf_route_diag_capture(const uint8_t diag[8])
+{
+    portENTER_CRITICAL(&s_lane_route_lock);
+    for (unsigned lane = 0; lane < 8; ++lane) {
+        gpio_func_out_sel_cfg_reg_t config;
+        config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
+        config.out_sel = MODEM_DIAG0_IDX + (diag[lane] & 31u);
+        config.out_inv_sel = 0;
+        GPIO.func_out_sel_cfg[s_iq_pins[lane]].val = config.val;
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    portEXIT_CRITICAL(&s_lane_route_lock);
+}
+void rf_restore_iq_routes(void)
+{
+    portENTER_CRITICAL(&s_lane_route_lock);
+    uint8_t set = s_iq_lane_set < RF_IQ_LANE_SETS ? s_iq_lane_set : 0u;
+    uint8_t flag = c5vrx4_agc_mask_active() ? c5vrx4_agc_flag() : C5VRX4_AGC_FLAG_UNKNOWN;
+    for (unsigned lane = 0; lane < 8; ++lane) {
+        gpio_func_out_sel_cfg_reg_t config;
+        config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
+        config.out_sel = MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane];
+        config.out_inv_sel = 0;
+        if (lane == 0 && flag != C5VRX4_AGC_FLAG_UNKNOWN) {
+            config.out_sel = MODEM_DIAG0_IDX + 28u + (flag & 3u);
+            config.out_inv_sel = (flag >> 7) & 1u;
+        }
+        GPIO.func_out_sel_cfg[s_iq_pins[lane]].val = config.val;
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    portEXIT_CRITICAL(&s_lane_route_lock);
+}
+#endif
 
 static void rf_enable_continuous_modem(void)
 {

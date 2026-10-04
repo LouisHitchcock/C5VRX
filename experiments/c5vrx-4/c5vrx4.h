@@ -46,5 +46,16 @@ uint8_t c5vrx4_bw_code(void);
 unsigned c5vrx4_bw_width_khz(void);
 unsigned c5vrx4_bw_target_khz(void);
 bool c5vrx4_bw_store(uint8_t code, unsigned width_khz);
+/* Native AGC acquisition mask (native mode only, '|' opts out with a
+ * reboot). PARLIO data bit 0 (fine Q LSB) carries a MODEM_DIAG AGC state bit
+ * found by the witness calibration ('*'); the static program holds the DAC
+ * through every acquisition. agc_flag: bits 0..1 = state bit (DIAG[28+n]),
+ * bit 7 = inverted, 255 = not calibrated. */
+#define C5VRX4_AGC_FLAG_UNKNOWN UINT8_MAX
+uint8_t c5vrx4_agc_flag(void);
+bool c5vrx4_agc_flag_store(uint8_t flag);
+bool c5vrx4_agc_mask_enabled(void);
+/* Native + enabled + calibrated + STATIC decode: masked program and lane. */
+bool c5vrx4_agc_mask_active(void);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);

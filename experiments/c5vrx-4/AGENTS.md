@@ -40,5 +40,9 @@ It extends ESPARGOS esp-sdr's C5 BANDWIDTH control (absolute regs 6/7 code,
 noise-FFT curves, commit ac627b0b) and zerowidth PR #3's 11p noise result;
 keep that credit, keep regs 8..13 and upper bits calibrated, calibrate only
 without a carrier, never go below the 24 MHz floor that C5VRX's BW20 test
-motivated, and keep the `^` opt-out. Run verify.py and exact-head
+motivated, and keep the `^` opt-out. Leon asked on 2026-10-04 for the native AGC
+acquisition mask (NATIVE_AGC_MASK.md): native mode only, witness bit measured
+on the board (never guessed), STATIC decode, six BitScrambler slots, three
+bundles per span on every path; keep the `|` opt-out, the per-boot latch, the
+pacing exclusion and the DC-recentring refusal (bank 3 is the hold plane). Run verify.py and exact-head
 IDF CI before requesting merge approval; merge only after Leon approves.

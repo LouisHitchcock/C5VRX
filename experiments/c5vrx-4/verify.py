@@ -30,6 +30,11 @@ def main():
     pipeline = (ROOT / "pipeline.c").read_text()
     assert '"lane_mode"' in pipeline and '"force_ultra_v2"' not in pipeline
     assert "mode = C5VRX4_LANES_FINE" in pipeline, "fixed fine must stay the default lane policy"
+    # Native AGC acquisition mask: per-boot latch, no pacing while masking,
+    # DC recentring refused (bank 3 is the hold identity plane).
+    assert "static int8_t active = -1;" in pipeline and "!c5vrx4_agc_mask_active() && !s_suspend_depth" in pipeline
+    assert "!c5vrx4_agc_mask_active() &&" in (ROOT / "cvbs_level_hw.c").read_text()
+    assert "s_c5vrx4_mask_static_program" in video and '"agc_flag"' in pipeline
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),
@@ -48,6 +53,7 @@ def main():
         ("integration", ["-DC5VRX4_EXPERIMENT=1", "-I.", "-Itools/phy_lab_stubs", "main/direct_gain_v3.c", "main/arc_phy.c"]),
         ("c5vrx4_gate", ["-pthread", "-I.", "-Itools/phy_lab_stubs"]),
         ("predemod", ["-I.", "-lm"]),
+        ("agc_witness", ["-I."]),
     ]
     with tempfile.TemporaryDirectory(prefix="c5vrx4-verify-") as td:
         for name, extra in cases:
@@ -65,10 +71,10 @@ def main():
         target = str(Path(td) / "unwrap")
         run([cc, "-O3", "-std=c11", "unwrap_oracle.c", "-o", target])
         run([target])
-    for name in ("test_unwrap.py", "test_cvbs.py", "tools/test_phase8_hr_live.py",
+    for name in ("test_unwrap.py", "test_cvbs.py", "test_agc_mask.py", "tools/test_phase8_hr_live.py",
                  "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
         run([sys.executable, name])
-    print("PASS: isolated C5VRX-4 integration, 22 C regressions, exhaustive unwrap and source-driven DSP tests")
+    print("PASS: isolated C5VRX-4 integration, 23 C regressions, exhaustive unwrap and source-driven DSP tests")
 
 if __name__ == "__main__":
     main()

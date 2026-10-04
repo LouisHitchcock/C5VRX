@@ -73,6 +73,13 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   re-applied at boot and on every retune. C5VRX's own `WIFI_BW20` test lost
   detail and chroma, hence the 24 MHz floor. Runs automatically once (VTX
   off); `=` repeats it, NVS `c5vrx4/fixed_bw=0` (`^`) restores the gear.
+- Native AGC acquisition mask (native mode, default on once calibrated): the
+  C5 packet AGC re-acquires every ~25-50 us with a ~2-3 us saturated/starved
+  gain walk. A MODEM_DIAG AGC state bit, found by an on-board witness
+  calibration (`*`, automatic at the first native carrier), rides on PARLIO
+  data bit 0 (Q LSB) and the STATIC program holds the last DAC value through
+  every walk, reseeding phase so the next clean span is exact. Native keeps
+  its sub-line reaction; `|` opts out. See NATIVE_AGC_MASK.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
@@ -99,6 +106,8 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `&` | Toggle default-on first-lock sampling-phase check, reboot |
 | `=` | Measure the receiver-noise width per RX filter code and store the fixed BW (VTX off) |
 | `^` | Toggle default-on fixed analog BW (off restores the V5 BW gear), reboot |
+| `*` | Native AGC witness calibration (VTX on, native mode): find the acquisition state bit, store, reboot |
+| `\|` | Toggle the native AGC acquisition mask, reboot |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

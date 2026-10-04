@@ -172,6 +172,52 @@ bool c5vrx4_bw_store(uint8_t code, unsigned width_khz)
     return err == ESP_OK;
 }
 
+/* Native AGC acquisition mask: calibrated witness bit and opt-out. */
+static int16_t s_agc_flag = -1;
+static int8_t s_agc_mask = -1;
+uint8_t c5vrx4_agc_flag(void)
+{
+    if (s_agc_flag < 0) {
+        uint8_t value = C5VRX4_AGC_FLAG_UNKNOWN;
+        nvs_handle_t handle;
+        if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+            (void)nvs_get_u8(handle, "agc_flag", &value);
+            nvs_close(handle);
+        }
+        if (value != C5VRX4_AGC_FLAG_UNKNOWN && (value & 0x7cu)) value = C5VRX4_AGC_FLAG_UNKNOWN;
+        s_agc_flag = value;
+    }
+    return (uint8_t)s_agc_flag;
+}
+bool c5vrx4_agc_flag_store(uint8_t flag)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "agc_flag", flag);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) s_agc_flag = flag;
+    else printf("C5VRX4 agc_flag store err=%s\n", esp_err_to_name(err));
+    return err == ESP_OK;
+}
+bool c5vrx4_agc_mask_enabled(void)
+{
+    if (s_agc_mask < 0) s_agc_mask = nvs_flag("agc_mask", true);
+    return s_agc_mask;
+}
+bool c5vrx4_agc_mask_active(void)
+{
+    /* Latched per boot: program and lane route are chosen together at start,
+     * so a calibration stored later only takes effect after a reboot. */
+    static int8_t active = -1;
+    if (active < 0)
+        active = rf_native_agc_active() && c5vrx4_agc_mask_enabled() &&
+                 c5vrx4_agc_flag() != C5VRX4_AGC_FLAG_UNKNOWN && !c5vrx4_history_enabled();
+    return active;
+}
+
 static bool toggle_flag(const char *key, bool current, const char *name)
 {
     nvs_handle_t handle;
@@ -265,8 +311,9 @@ void c5vrx4_resume(void)
     if (!s_transition_lock) return;
     portENTER_CRITICAL(&s_lock);
     if (s_suspend_depth) --s_suspend_depth;
+    /* The acquisition mask needs every native re-acquisition: no pacing. */
     bool start = s_timer && s_requested && rf_native_agc_active() &&
-                 !s_suspend_depth && !s_running;
+                 !c5vrx4_agc_mask_active() && !s_suspend_depth && !s_running;
     portEXIT_CRITICAL(&s_lock);
     if (!start) {
         xSemaphoreGiveRecursive(s_transition_lock);
@@ -385,6 +432,7 @@ bool c5vrx4_console(int key)
     if (key == '%') return toggle_flag("dc_recenter", c5vrx4_dc_recenter_enabled(), "dc_recenter");
     if (key == '&') return toggle_flag("sphase_auto", c5vrx4_sphase_auto_enabled(), "sphase_auto");
     if (key == '^') return toggle_flag("fixed_bw", c5vrx4_fixed_bw_enabled(), "fixed_bw");
+    if (key == '|') return toggle_flag("agc_mask", c5vrx4_agc_mask_enabled(), "agc_mask");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

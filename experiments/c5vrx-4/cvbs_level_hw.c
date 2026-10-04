@@ -93,7 +93,9 @@ bool c5v4_decoder_recenter(int di, int dq)
     for (unsigned raw = 0; raw < 256; ++raw)
         words[raw] = pristine ? 0u : predemod_decoder_word((uint8_t)raw, di, dq);
     c5v4_level_hw_lock();
+    /* The AGC-mask program decodes Q3 and keeps the hold identity in bank 3. */
     bool ok = lut_verified && !decoder_blocked && !c5vrx4_history_enabled() &&
+              !c5vrx4_agc_mask_active() &&
               bitscrambler_ll_get_lut_width(&BITSCRAMBLER, BITSCRAMBLER_DIR_TX) == 1;
     for (unsigned raw = 0; ok && raw < 256; ++raw) {
         uint16_t word = pristine ? decoder_pristine[raw] : words[raw];
