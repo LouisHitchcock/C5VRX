@@ -13,7 +13,9 @@ BIAS = 128
 MULT = 1
 
 
-def build() -> str:
+def build(dac_bits: int = 6) -> str:
+    if dac_bits not in (6, 8):
+        raise ValueError("DAC width must be 6 or 8")
     source = build_oracle()
     match = re.search(r"(?m)^lut (.*)$", source)
     assert match is not None
@@ -30,9 +32,18 @@ def build() -> str:
     source = source.replace("cfg trailing_bytes 10", "cfg trailing_bytes 0")
     source = source.replace("80 + 3*(current-previous)",
                             "128 + (current-previous)")
+    if dac_bits == 8:
+        # Preserve the complete counter result instead of discarding A8..A9.
+        # Same bundles, LUT, read/write widths and continuous boundary state.
+        source = source.replace("all 64 DAC levels", "all 256 DAC levels")
+        source = source.replace("set 0..5 A10..A15", "set 0..7 A8..A15")
+        source = source.replace("set 8..13 A10..A15", "set 8..15 A8..A15")
     return source
 
 
 if __name__ == "__main__":
     TARGET.write_text(build(), encoding="utf-8")
     print(f"wrote {TARGET}")
+    target8 = TARGET.with_name("fm_phase8_8bit.bsasm")
+    target8.write_text(build(8), encoding="utf-8")
+    print(f"wrote {target8}")

@@ -7,8 +7,8 @@
  *     -> PARLIO RX POS edge @ 40 MHz
  *     -> 32 KiB cyclic raw DMA ring (HP SRAM)
  *     -> PARLIO TX + selectable Golden Phase5 / Trajectory v2 BitScrambler
- *     -> [D,D] 6-bit CVBS @ 20 MS/s unique / 40 MHz DAC clock
- *     -> 6-bit resistor DAC
+ *     -> [D,D] CVBS @ 20 MS/s unique / 40 MHz DAC clock
+ *     -> configured 6-bit or experimental 8-bit resistor DAC
  *
  * Reference: Seamless Golden 16K (build-golden-notel) -- proven best live build.
  *
@@ -28,6 +28,8 @@
  */
 
 #include "video.h"
+#include "board_config.h"
+#include "video_levels.h"
 #ifdef C5VRX4_EXPERIMENT
 #include "c5vrx4.h"
 #endif
@@ -149,7 +151,11 @@ static volatile int64_t s_last_user_lag_mark_us;
 BITSCRAMBLER_PROGRAM(s_fm_program, "fm");
 BITSCRAMBLER_PROGRAM(s_fm_relative_golden_program, "fm_relative_golden");
 BITSCRAMBLER_PROGRAM(s_fm_phase5_360_program, "fm_phase5_360");
+#if CONFIG_C5VRX_DAC_BITS == 8
+BITSCRAMBLER_PROGRAM(s_fm_phase8_hr_live_program, "fm_phase8_8bit");
+#else
 BITSCRAMBLER_PROGRAM(s_fm_phase8_hr_live_program, "fm_phase8_hr_live");
+#endif
 BITSCRAMBLER_PROGRAM(s_fm_hc_program, "fm_hc");
 BITSCRAMBLER_PROGRAM(s_fm_fsm_capture_program, "fm_phase5_fsm_capture");
 BITSCRAMBLER_PROGRAM(s_fm4_program, "fm4");
@@ -162,8 +168,8 @@ BITSCRAMBLER_PROGRAM(s_c5vrx4_program, "c5vrx4_span75");
 #define DAC_RATE_HZ      40000000u   /* default 6-bit PARLIO TX clock */
 #define DAC4_RATE_HZ     80000000u   /* experimental 4-bit PARLIO TX clock */
 #define RAW_RING_BYTES   32768u      /* 32 KiB cyclic ring; Golden Phase5 datapath */
-#define DAC_IDLE_CODE    20u         /* Black/blanking pedestal; sync is 0 */
-#define BOOT_BTN_GPIO    GPIO_NUM_28 /* Seeed Studio XIAO ESP32-C5 BOOT Button */
+#define DAC_IDLE_CODE    C5VRX_DAC_CODE(20u)         /* Black/blanking pedestal; sync is 0 */
+#define BOOT_BTN_GPIO    CONFIG_C5VRX_BUTTON_GPIO
 #define MENU_RUNTIME_ENABLED 1       /* Native CVBS menu enabled after geometry rework */
 #define CONTROL_SAMPLE_BYTES 4092u  /* one complete, already-finished GDMA descriptor */
 #define FUSION_FAST_SAMPLE_BYTES 512u /* distributed shadow window; never paces live IQ */
@@ -328,13 +334,11 @@ static volatile int s_last_phy_rssi_dbm = -127;
 static volatile bool s_noise_floor_valid;
 static volatile bool s_phy_rssi_valid;
 
-/* TX GPIO mapping: 6-bit resistor DAC.
- * Order: DAC bit 0 (LSB) .. DAC bit 5 (MSB) on data_gpio_nums[0..5].
- * Bits 6..7 unused (set to -1).
- * Verified against C5VRX-2 realtime.c (standard 8-bit PARLIO TX, non-parlio4). */
-static const int s_dac_gpio[8] = {23, 24, 11, 12, 8, 9, -1, -1};
+/* Physical DAC branches in LSB-to-MSB order. The default six-bit board
+ * leaves entries 6/7 unused; custom eight-bit boards wire every entry. */
+static const int s_dac_gpio[8] = C5VRX_DAC_GPIOS;
 /* 4-bit mode drives the four MSB resistor branches: weights 4/8/16/32. */
-static const int s_dac4_gpio[4] = {11, 12, 8, 9};
+/* 4BIT@80 is available only with the six-bit physical DAC. */
 
 _Static_assert(IQ_RATE_HZ == 40000000u, "IQ rate must be 40 MHz");
 _Static_assert(DAC_RATE_HZ == 40000000u, "DAC rate must be 40 MHz");
@@ -370,12 +374,8 @@ static esp_err_t prepare_rx(void)
         .clk_in_gpio_num   = -1,
         .clk_out_gpio_num  = -1,
         .valid_gpio_num    = -1,
-        /* GPIO order must match s_iq_pins[] in rf.c:
-         * Q[9:6] on GPIO 1,0,25,7 then I[9:6] on GPIO 10,5,3,4. */
-        .data_gpio_nums    = {
-            GPIO_NUM_1, GPIO_NUM_0, GPIO_NUM_25, GPIO_NUM_7,
-            GPIO_NUM_10, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,
-        },
+        /* Shared with RF routing and the phase-tap probe: Q nibble, then I. */
+        .data_gpio_nums    = C5VRX_IQ_GPIOS,
         .flags = {
             .free_clk    = true,   /* RX clock is derived from PHY, not gated */
             .clk_gate_en = false,
@@ -404,6 +404,7 @@ static esp_err_t prepare_rx(void)
 static esp_err_t create_tx_unit(video_output_mode_t mode)
 {
     const bool four_bit = mode == VIDEO_OUTPUT_4BIT_80;
+    if (four_bit && CONFIG_C5VRX_DAC_BITS != 6) return ESP_ERR_NOT_SUPPORTED;
     parlio_tx_unit_config_t cfg = {
         .clk_src               = PARLIO_CLK_SRC_DEFAULT,
         .clk_in_gpio_num       = -1,
@@ -423,7 +424,7 @@ static esp_err_t create_tx_unit(video_output_mode_t mode)
     };
 
     if (four_bit) {
-        for (unsigned i = 0; i < 4u; ++i) cfg.data_gpio_nums[i] = s_dac4_gpio[i];
+        for (unsigned i = 0; i < 4u; ++i) cfg.data_gpio_nums[i] = s_dac_gpio[i + 2u];
     } else {
         for (unsigned i = 0; i < 8u; ++i) cfg.data_gpio_nums[i] = s_dac_gpio[i];
     }
@@ -1224,7 +1225,7 @@ static const char *rf_bw_mode_name(void)
 
 static const char *output_mode_name(void)
 {
-    return s_output_mode == VIDEO_OUTPUT_4BIT_80 ? "4BIT@80" : "6BIT@40";
+    return s_output_mode == VIDEO_OUTPUT_4BIT_80 ? "4BIT@80" : C5VRX_DAC_MODE_NAME;
 }
 
 static const char *demod_mode_name(void)
@@ -3579,7 +3580,7 @@ static inline void menu_ui_pixel(int x, int y, uint8_t code)
     if ((unsigned)x >= MENU_UI_WIDTH || (unsigned)y >= MENU_UI_LINES) return;
     unsigned x0 = (unsigned)x * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
     unsigned x1 = (unsigned)(x + 1) * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
-    memset(&s_menu_raster.ui[y][x0], code, x1 - x0);
+    memset(&s_menu_raster.ui[y][x0], C5VRX_DAC_CODE(code), x1 - x0);
 }
 
 static void menu_ui_rect(int x, int y, int w, int h, uint8_t code)
@@ -3593,7 +3594,7 @@ static void menu_ui_rect(int x, int y, int w, int h, uint8_t code)
     for (int yy = y0; yy < y1; ++yy) {
         unsigned sx0 = (unsigned)x0 * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
         unsigned sx1 = (unsigned)x1 * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
-        memset(&s_menu_raster.ui[yy][sx0], code, sx1 - sx0);
+        memset(&s_menu_raster.ui[yy][sx0], C5VRX_DAC_CODE(code), sx1 - sx0);
     }
 }
 
@@ -3933,7 +3934,7 @@ static void menu_draw_exit_page(void)
 
 static void menu_render_menu(void)
 {
-    memset(s_menu_raster.ui, UI_ROOT, sizeof(s_menu_raster.ui));
+    memset(s_menu_raster.ui, C5VRX_DAC_CODE(UI_ROOT), sizeof(s_menu_raster.ui));
     menu_draw_shell();
 
     switch (s_menu_cursor) {
@@ -4081,7 +4082,7 @@ static void lab_run_tx_self_noise_probe(void)
 
     /* Once the PARLIO owner is gone, explicitly select ordinary GPIO output
      * and hold every physical DAC branch low. RX/PARLIO input remains live. */
-    for (unsigned i = 0; i < 6u; ++i) {
+    for (unsigned i = 0; i < CONFIG_C5VRX_DAC_BITS; ++i) {
         gpio_reset_pin((gpio_num_t)s_dac_gpio[i]);
         gpio_set_direction((gpio_num_t)s_dac_gpio[i], GPIO_MODE_OUTPUT);
         gpio_set_level((gpio_num_t)s_dac_gpio[i], 0);
@@ -4178,7 +4179,8 @@ static void video_set_menu_mode(bool active)
         /* Live -> menu: stop the live producer once. */
         ESP_ERROR_CHECK(bitscrambler_disable(s_flight_bs));
 
-        /* Menu raster is byte-oriented 6-bit@40 even if live output was 4-bit@80. */
+        /* Menu uses the configured physical DAC width at byte-oriented 40 MHz,
+         * even if the six-bit board's live output was 4BIT@80. */
         if (s_tx_unit_mode != VIDEO_OUTPUT_6BIT_40) {
             ESP_ERROR_CHECK(replace_tx_unit(VIDEO_OUTPUT_6BIT_40));
         }
@@ -4244,6 +4246,7 @@ static void menu_cycle_standard_mode(void)
 
 static void init_boot_button(void)
 {
+#if CONFIG_C5VRX_BUTTON_GPIO >= 0
     const gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -4252,6 +4255,7 @@ static void init_boot_button(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
+#endif
 }
 
 /* Copy the endpoint bytes (odd ring byte of each pair, as Phase8 reads
@@ -4471,7 +4475,7 @@ static void open_recovery_menu(void)
     settings_save();
     video_set_menu_mode(true);
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-    printf("[RECOVERY] PHASE8 HR TEST + 6BIT@40 + DIRECT GAIN V3 TEST restored; menu %s\n",
+    printf("[RECOVERY] PHASE8 HR TEST + " C5VRX_DAC_MODE_NAME " + DIRECT GAIN V3 TEST restored; menu %s\n",
 #elif CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     printf("[RECOVERY] GOLDEN + 6BIT@40 + DIRECT GAIN V3 TEST restored; menu %s\n",
 #else
@@ -4538,7 +4542,7 @@ static void handle_button_long_click(void)
 #ifdef C5VRX4_EXPERIMENT
             printf("[MENU: OUTPUT] 6BIT@40 fixed for C5V4 SPAN75\n");
 #elif CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
-            printf("[MENU: OUTPUT] 6BIT@40 fixed for PHASE8 HR TEST\n");
+            printf("[MENU: OUTPUT] " C5VRX_DAC_MODE_NAME " fixed for PHASE8 HR TEST\n");
 #else
             s_output_mode = s_output_mode == VIDEO_OUTPUT_6BIT_40 ?
                             VIDEO_OUTPUT_4BIT_80 : VIDEO_OUTPUT_6BIT_40;
@@ -4640,7 +4644,7 @@ static void analog_agc_task(void *arg)
             btn_scan_fired = false;
             btn_recovery_fired = false;
         } else {
-            int btn_level = gpio_get_level(BOOT_BTN_GPIO);
+            int btn_level = BOOT_BTN_GPIO < 0 ? 1 : gpio_get_level(BOOT_BTN_GPIO);
             if (btn_level == 0) {
                 btn_ticks++;
 
@@ -5327,7 +5331,11 @@ static void console_diag_task(void *arg)
          * monopolize the task. No host line-ending or DTR assumption. */
         for (unsigned received = 0; received < 64; ++received) {
             uint8_t byte;
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
             if (usb_serial_jtag_ll_read_rxfifo(&byte, 1) == 0) break;
+#else
+            if (read(STDIN_FILENO, &byte, 1) != 1) break;
+#endif
             int c = byte;
             if (c != EOF && c > 0) {
 #ifdef C5VRX4_EXPERIMENT
@@ -5405,6 +5413,9 @@ static void console_diag_task(void *arg)
                     lab_run_rssi_gain_probe();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
                 } else if (c == 'P') {
+#if CONFIG_C5VRX_DAC_BITS == 8
+                    printf("[DEMOD] 8-bit output requires PHASE8 FULL; HC is unavailable\n");
+#else
                     nvs_handle_t h;
                     esp_err_t err = nvs_open("c5vrx", NVS_READWRITE, &h);
                     if (err == ESP_OK) {
@@ -5420,6 +5431,7 @@ static void console_diag_task(void *arg)
                         vTaskDelay(pdMS_TO_TICKS(150));
                         esp_restart();
                     }
+#endif
 #endif
                 } else if (c == 'D') {
                     apply_rx_profile(RX_PROFILE_DIRECT_GAIN);
@@ -5761,9 +5773,11 @@ esp_err_t video_start(void)
     fcntl(fileno(stdin), F_SETFL, flags | O_NONBLOCK);
     flags = fcntl(fileno(stdout), F_GETFL, 0);
     fcntl(fileno(stdout), F_SETFL, flags | O_NONBLOCK);
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
     usb_serial_jtag_vfs_use_nonblocking();
+#endif
 
-    /* Initialize BOOT button on GPIO 28 */
+    /* Initialize the configured active-low button, if present. */
     init_boot_button();
 
     /* Menu control is serialized with BOOT handling in the AGC task. */
@@ -5802,9 +5816,10 @@ esp_err_t video_start(void)
             (void)nvs_get_u8(h, "hc_demod", &hc);
             nvs_close(h);
         }
-        s_hc_demod = hc == 1u;
-        ESP_LOGW(TAG, "Live demodulator: %s ('P' toggles, reboot)",
-                 s_hc_demod ? "HC (history-conditioned, fm_hc)" : "PHASE8 FULL");
+        s_hc_demod = CONFIG_C5VRX_DAC_BITS == 6 && hc == 1u;
+        ESP_LOGW(TAG, "Live demodulator: %s (%s)",
+                 s_hc_demod ? "HC (history-conditioned, fm_hc)" : "PHASE8 FULL",
+                 CONFIG_C5VRX_DAC_BITS == 8 ? "8-bit; HC unavailable" : "'P' toggles, reboot");
     }
 #endif
     start_flight_demodulator();

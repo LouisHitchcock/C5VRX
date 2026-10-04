@@ -3,6 +3,7 @@
  * A CPU GPIO snapshot is NOT a 40 MS/s synchronous capture: a plausible
  * candidate requires a later source-clocked PARLIO validation. */
 #include "phy_phase_tap_probe.h"
+#include "board_config.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -25,7 +26,7 @@
 #define REG32(address) (*(volatile uint32_t *)(uintptr_t)(address))
 
 /* Same eight routed XIAO pins and raw-Q4/I4 lanes as main/rf.c. */
-static const uint8_t s_pins[CAPTURE_WIDTH] = {1, 0, 25, 7, 10, 5, 3, 4};
+static const uint8_t s_pins[CAPTURE_WIDTH] = C5VRX_IQ_GPIOS;
 static const uint8_t s_iq_lanes[CAPTURE_WIDTH] = {6, 7, 8, 9, 16, 17, 18, 19};
 static uint8_t s_trace[TRACE_SAMPLES];
 

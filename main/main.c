@@ -7,6 +7,7 @@
  */
 
 #include "rf.h"
+#include "board_config.h"
 #include "video.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -21,6 +22,7 @@
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(board_config_validate());
 #if CONFIG_C5VRX_BS_RELATIVE_WORKER_PROBE
     bs_relative_worker_probe_run();
 #endif

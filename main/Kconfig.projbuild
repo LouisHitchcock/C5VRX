@@ -1,3 +1,97 @@
+menu "C5VRX board and video DAC"
+    config C5VRX_CUSTOM_BOARD
+        bool "Configure a custom ESP32-C5 board"
+        default n
+        help
+            Defaults preserve the XIAO wiring. Use GPIO numbers, not board D/A
+            labels. IQ pins are internal diagnostic loopbacks, not analog inputs.
+            See docs/custom-board.md for electrical and console restrictions.
+
+    choice C5VRX_DAC_RESOLUTION
+        prompt "Physical resistor DAC resolution"
+        default C5VRX_DAC_6BIT
+        config C5VRX_DAC_6BIT
+            bool "6 bits (existing resistor network)"
+        config C5VRX_DAC_8BIT
+            bool "8 bits (experimental Phase8, requires a new resistor network)"
+            depends on C5VRX_CUSTOM_BOARD && C5VRX_PHASE8_HR_LIVE_TEST
+    endchoice
+
+    config C5VRX_DAC_BITS
+        int
+        default 8 if C5VRX_DAC_8BIT
+        default 6
+
+    config C5VRX_IQ_D0_GPIO
+        int "IQ bit 0 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 1
+    config C5VRX_IQ_D1_GPIO
+        int "IQ bit 1 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 0
+    config C5VRX_IQ_D2_GPIO
+        int "IQ bit 2 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 25
+    config C5VRX_IQ_D3_GPIO
+        int "IQ bit 3 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 7
+    config C5VRX_IQ_D4_GPIO
+        int "IQ bit 4 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 10
+    config C5VRX_IQ_D5_GPIO
+        int "IQ bit 5 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 5
+    config C5VRX_IQ_D6_GPIO
+        int "IQ bit 6 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 3
+    config C5VRX_IQ_D7_GPIO
+        int "IQ bit 7 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 4
+    config C5VRX_DAC_D0_GPIO
+        int "DAC bit 0 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 23
+    config C5VRX_DAC_D1_GPIO
+        int "DAC bit 1 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 24
+    config C5VRX_DAC_D2_GPIO
+        int "DAC bit 2 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 11
+    config C5VRX_DAC_D3_GPIO
+        int "DAC bit 3 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 12
+    config C5VRX_DAC_D4_GPIO
+        int "DAC bit 4 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 8
+    config C5VRX_DAC_D5_GPIO
+        int "DAC bit 5 GPIO" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 9
+    config C5VRX_DAC_D6_GPIO
+        int "DAC bit 6 GPIO" if C5VRX_CUSTOM_BOARD && C5VRX_DAC_8BIT
+        range -1 28
+        default -1
+    config C5VRX_DAC_D7_GPIO
+        int "DAC bit 7 GPIO" if C5VRX_CUSTOM_BOARD && C5VRX_DAC_8BIT
+        range -1 28
+        default -1
+    config C5VRX_BUTTON_GPIO
+        int "Active-low menu button GPIO (-1 to disable)" if C5VRX_CUSTOM_BOARD
+        range -1 28
+        default 28
+endmenu
+
 menu "C5VRX diagnostic probes"
     config C5VRX_PHY_PHASE_TAP_PROBE
         bool "Capture bounded MODEM_DIAG lane traces at boot, then start video"
