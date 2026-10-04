@@ -23,7 +23,7 @@ def expand(token):
                                              int(last[len(prefix):]) + 1)]
 
 
-def simulate(source, raw):
+def simulate(source, raw, dac_bits=6):
     _, lut, blocks, _ = model.parse(source)
     assert len(blocks) == 8
     out = counter = look = position = pc = 0
@@ -70,7 +70,7 @@ def simulate(source, raw):
         if write:
             assert write == 16 and read == 16
             code = out & 255
-            assert code < 64 and ((out >> 8) & 255) == code
+            assert code < (1 << dac_bits) and ((out >> 8) & 255) == code
             outputs.append(code)
             assert bundles == 2 * len(outputs)
         else:

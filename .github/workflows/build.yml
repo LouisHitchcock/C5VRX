@@ -151,6 +151,15 @@ jobs:
           python tools/validate_build.py
           bash -n tools/prepare_pages_site.sh
 
+      - name: Validate custom pinout and 8-bit DAC output
+        run: |
+          python tools/test_phase8_hr_live.py
+          python tools/test_phase8_8bit.py
+          gcc -std=c11 -Wall -Wextra -Werror -Imain tools/test_board_pinout.c -o /tmp/test_board_pinout
+          /tmp/test_board_pinout
+          gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_C5VRX_DAC_BITS=8 -Imain tools/test_menu_raster.c main/menu_raster.c -lm -o /tmp/test_menu_8bit
+          /tmp/test_menu_8bit
+
       - name: Dry-run GitHub Pages firmware mirror
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

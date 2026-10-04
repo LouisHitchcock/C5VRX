@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "board_config.c"
         "bs_relative_worker_probe.c"
         "bs_relative_middle_probe.c"
         "phy_phase_tap_probe.c"
@@ -47,7 +48,11 @@ target_bitscrambler_add_src("bs_relative_middle_probe.bsasm")
 target_bitscrambler_add_src("fm_phase5_fsm_capture.bsasm")
 target_bitscrambler_add_src("fm4.bsasm")
 target_bitscrambler_add_src("bs_addctia_probe.bsasm")
-target_bitscrambler_add_src("fm_phase8_hr_live.bsasm")
+if(CONFIG_C5VRX_DAC_8BIT)
+    target_bitscrambler_add_src("fm_phase8_8bit.bsasm")
+else()
+    target_bitscrambler_add_src("fm_phase8_hr_live.bsasm")
+endif()
 target_bitscrambler_add_src("fm_hc.bsasm")
 if(C5VRX4_EXPERIMENT)
     include("${PROJECT_DIR}/component.cmake")

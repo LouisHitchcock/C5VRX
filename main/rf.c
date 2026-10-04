@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include "driver/gpio.h"
+#include "board_config.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -90,10 +91,7 @@ static volatile uint32_t s_native_agc_blocked_writes;
 /* MODEM_DIAG lane mapping: Q[9:6] on DIAG[6:9], I[9:6] on DIAG[16:19].
  * GPIO mapping correlated against physical ESP32-C5 hardware captures.
  * These GPIOs connect to the PARLIO RX data_gpio_nums[] array (same order). */
-static const gpio_num_t s_iq_pins[8] = {
-    GPIO_NUM_1, GPIO_NUM_0, GPIO_NUM_25, GPIO_NUM_7,   /* Q[9:6] */
-    GPIO_NUM_10, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,   /* I[9:6] */
-};
+static const gpio_num_t s_iq_pins[8] = C5VRX_IQ_GPIOS;
 /* Range lanes: which ADC bits form the signed 4-bit I/Q nibble. Each set
  * keeps the sign (bit 9) and drops the next MSBs, so inside its window it is
  * an exact power-of-two scale of the coarse set: same angle, same Phase8

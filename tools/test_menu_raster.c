@@ -1,5 +1,6 @@
 /* Host waveform test: compile with main/menu_raster.c and -lm. */
 #include "menu_raster.h"
+#include "video_levels.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -37,7 +38,7 @@ static void test(video_standard_t standard)
     unsigned ui_lines = 0, ui_min = ~0u, ui_max = 0;
     used = nodes = 0;
     menu_raster_init(&raster, standard);
-    memset(raster.ui, 60, sizeof(raster.ui));
+    memset(raster.ui, C5VRX_DAC_CODE(60), sizeof(raster.ui));
     assert(menu_raster_emit(&raster, standard, capture, NULL));
     assert(!menu_raster_emit(&raster, standard, reject, NULL));
     assert(used == (pal ? 1600000u : 1334668u));
@@ -54,7 +55,7 @@ static void test(video_standard_t standard)
             (h % 2 == 0 ? 188 : 0);
         for (unsigned x = 0; x < next - at; ++x) {
             assert((waveform[at + x] == 0) == (x < width));
-            assert(waveform[at + x] <= 60);
+            assert(waveform[at + x] <= C5VRX_DAC_CODE(60));
         }
         if (pos >= 3 * eq && !(h & 1)) {
             unsigned burst = pal ? 224 : 212;
@@ -67,14 +68,15 @@ static void test(video_standard_t standard)
             for (unsigned x = 188; x < menu_prefix_bytes(standard); ++x) {
                 unsigned value = waveform[at + x];
                 if (burst_enabled && x >= burst && x < burst + count) {
-                    assert(value >= 12 && value <= 28);
-                    varies |= value != 20;
+                    assert(value >= C5VRX_DAC_CODE(12) && value <= C5VRX_DAC_CODE(28));
+                    varies |= value != C5VRX_DAC_CODE(20);
                     double carrier = pal ? 177345.0 / 1600000 : 119438.0 / 1334668;
                     double swing = pal ? (h / 2 % 2 ? -0.375 : 0.375) : 0.5;
                     double ideal = 20 + 8 * sin(6.283185307179586 * ((at + x) * carrier + swing));
                     /* Quantized start phase plus integer DAC amplitude. */
-                    assert(fabs(value - ideal) < 3.7);
-                } else assert(value == 20);
+                    double scale = CONFIG_C5VRX_DAC_BITS == 8 ? 255.0 / 63.0 : 1.0;
+                    assert(fabs(value / scale - ideal) < 3.85);
+                } else assert(value == C5VRX_DAC_CODE(20));
             }
             assert(varies == burst_enabled);
 
@@ -89,7 +91,7 @@ static void test(video_standard_t standard)
                            k < first + menu_ui_y_repeat(standard) * MENU_UI_LINES;
             for (unsigned x = 0; x < line_len; ++x) {
                 bool in_ui = ui_line && x >= prefix && x < prefix + MENU_UI_BYTES;
-                assert((waveform[at + x] == 60) == in_ui);
+                assert((waveform[at + x] == C5VRX_DAC_CODE(60)) == in_ui);
             }
             if (ui_line) {
                 ++ui_lines;
@@ -116,7 +118,7 @@ static void test(video_standard_t standard)
         unsigned count = pal ? 90 : 100;
         for (unsigned x = begin; x < begin + count; ++x) {
             double ideal = 20 + 8 * sin(6.283185307179586 * p / MENU_PHASES + omega * x);
-            assert(fabs(raster.prefix[p][x] - ideal) <= 0.501);
+            assert(raster.prefix[p][x] == C5VRX_DAC_CODE((unsigned)lround(ideal)));
         }
     }
     double cycles = used * (pal ? 177345.0 / 1600000 : 119438.0 / 1334668);

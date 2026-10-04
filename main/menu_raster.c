@@ -1,4 +1,5 @@
 #include "menu_raster.h"
+#include "video_levels.h"
 #include <math.h>
 #include <string.h>
 
@@ -37,6 +38,12 @@ void menu_raster_init(menu_raster_t *r, video_standard_t standard)
             r->prefix[phase][x] = (uint8_t)lround(20.0 + 8.0 * sin(angle));
         }
     }
+#if CONFIG_C5VRX_DAC_BITS == 8
+    /* Convert once while preparing the menu, never in the live RF path. */
+    uint8_t *samples = (uint8_t *)r;
+    for (unsigned i = 0; i < sizeof(*r); ++i)
+        samples[i] = C5VRX_DAC_CODE(samples[i]);
+#endif
 }
 
 bool menu_raster_emit(const menu_raster_t *r, video_standard_t standard,

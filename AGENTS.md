@@ -410,8 +410,13 @@ requirements by themselves**.
   demodulator and supports both `6BIT@40` and experimental `4BIT@80`.
   TRAJ V2 remains a research artifact and must not appear in the live menu.
 - The standalone menu raster is always emitted through the byte-oriented
-  `6BIT@40` TX geometry. On menu exit, recreate the live TX unit for the
+  40 MHz TX geometry (six physical bits by default, eight for the experimental
+  custom-board Phase8 option). On menu exit, recreate the live TX unit for the
   selected output mode before restarting the flight BitScrambler.
+- Custom-board pin mappings and the experimental full-byte Phase8 output are
+  described in `docs/custom-board.md`. Preserve the default XIAO mapping, shared
+  IQ routing and startup conflict checks. Eight-bit host simulation is not a
+  hardware validation or an improvement in RF acquisition resolution.
 - Do not move the full menu GDMA scatter chain back into static BSS. PAL needs
   up to 6,348 12-byte AHB-DMA descriptors (~76 KiB), but that chain is used
   only while the standalone menu owns TX. Count the active raster first,
