@@ -131,5 +131,7 @@ samples are hidden.
   shortens its visible edge. This is a concealment, not a recovery.
 - One Q bit is spent on the witness.
 - DC recentring is off while masking.
-- The CPU observers still read the flag bit as Q LSB, a half-cell Q error in
+- The CPU snapshot observers (sync/standard, AFC, level servo, `J`) decode Q3
+  at its cell centre while masking, like the program; the V5 power/coherence
+  observer still reads the flag bit as Q LSB, a half-cell Q error in
   their statistics.

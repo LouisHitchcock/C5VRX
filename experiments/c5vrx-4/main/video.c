@@ -5444,9 +5444,13 @@ static void cvbs_level_task(void *arg)
     bool have_capture = false;
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(5));
+        /* Native AGC included: sync depth and black are measured in the phase
+         * domain, which RF gain does not scale. Native's untagged acquisitions
+         * only add outlier samples, which the plateau-MAD, ambiguity/origin
+         * limits and three-window agreement already reject (HDZERO.md). */
         if (!c5vrx4_level_enabled() || !c5v4_level_hw_ready() || s_menu_active ||
             s_rssi_probe_active || s_gain_sweep.active || s_pre_q4_probe_active ||
-            phy_rx_lab_busy() || rf_native_agc_active()) {
+            phy_rx_lab_busy()) {
             c5v4_level_hw_invalidate(); continue;
         }
         rx_control_epoch_t epoch = {s_profile_generation, phy_rx_lab_generation(), s_gain_transition_count};
@@ -5476,7 +5480,7 @@ static void cvbs_level_task(void *arg)
         s_level_work_us = (unsigned)(esp_timer_get_time()-start);
         if (!phy_rx_lab_try_actuator(epoch.phy)) { c5v4_level_hw_invalidate(); continue; }
         bool fresh = !s_menu_active && !s_rssi_probe_active && !s_gain_sweep.active &&
-            !s_pre_q4_probe_active && !phy_rx_lab_busy() && !rf_native_agc_active() &&
+            !s_pre_q4_probe_active && !phy_rx_lab_busy() &&
             lane == rf_get_iq_lanes() && esp_timer_get_time()-start < period &&
             rx_control_epoch_equal(epoch, (rx_control_epoch_t){s_profile_generation,
                 phy_rx_lab_generation(), s_gain_transition_count});
@@ -7250,6 +7254,9 @@ esp_err_t video_start(void)
 
 
 #ifdef C5VRX4_EXPERIMENT
+    /* The mask decision is latched per boot; every CPU snapshot observer
+     * (sync/standard, AFC, level servo, J) decodes the same Q3 as the program. */
+    c5v4_cvbs_set_mask_decode(c5vrx4_agc_mask_active());
     if (c5vrx4_level_enabled()) {
         uint8_t *level_raw = malloc(C5V4_LEVEL_SAMPLE_BYTES);
         if (!level_raw) return ESP_ERR_NO_MEM;

@@ -9,8 +9,11 @@ curve or proof that RF amplitude directly changes the ideal FM deviation.
 **Enabled by default in PR164 at Leon's request on 2026-10-04.** Lowercase `u`
 toggles and reboots; an explicit `c5vrx4/level_lab=0` remains an opt-out.
 The original legacy M mapping refuses the actuator for an unchanged comparison.
-Use Direct Gain V5: native AGC makes untagged physical gain transitions and the
-new observer holds instead of actuating while native owns gain. V/v retain
+Since 2026-10-04 (HDZERO.md) the servo also runs under native AGC. Sync depth
+and black are phase-domain levels that RF gain does not scale; native's
+untagged acquisitions only add outlier samples, which the plateau-MAD,
+ambiguity/origin limits and three-window agreement reject. With the native
+acquisition mask the snapshot decodes the same Q3 as the program. V/v retain
 their video-standard function. T reports requested/ready/blocked, target depth,
 update/write/fault counts, worker time and task/heap margin. J estimates the
 fixed baseline, not the currently regulated connector volts.

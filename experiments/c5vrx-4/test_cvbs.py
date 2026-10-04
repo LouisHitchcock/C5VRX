@@ -134,6 +134,34 @@ def main():
             assert std_s.sync_depth_mv<150, std_s.sync_depth_mv
         # Smaller phase separation must be visible as smaller sync span,
         # rather than silently applied as an unbounded output gain change.
+        # Native AGC with the acquisition mask: Q LSB carries the AGC flag.
+        # With mask decode the observer sees the same Q3 as the program, and
+        # acquisition bursts (~2.5 us every ~37 us, garbage IQ) are outliers
+        # the level evidence must survive (servo now also runs under native).
+        setmask=ct.CDLL(str(lib)).c5v4_cvbs_set_mask_decode
+        setmask.argtypes=[ct.c_bool]
+        def masked(raw,seed,burst=100,every=1480):
+            rng=random.Random(seed);out=bytearray()
+            start=rng.randrange(every)
+            for k,b in enumerate(raw):
+                acq=(k-start)%every<burst
+                if acq: b=rng.randrange(256)
+                out.append((b&0xFE)|(1 if acq else 0))
+            return bytes(out)
+        valid=total=0
+        for period in (2542,2560):
+            for shift in range(0,period,211):
+                raw=masked(make_raw(period=period,n=8190,shift=shift,radius=5),shift)
+                setmask(True); m=inspect(raw); setmask(False); u=inspect(raw)
+                total+=1
+                if m.levels_valid and m.repeated and m.sync_mad_bins<=4 and m.blank_mad_bins<=4:
+                    valid+=1
+                    assert abs(m.period_raw-period)<=6
+                    assert 240<=m.sync_depth_mv<=400, m.sync_depth_mv
+                    assert m.sync_mad_bins<=u.sync_mad_bins+1
+        print(f"masked native snapshots: {valid}/{total} valid with acquisition bursts")
+        assert valid*10>=total*8, (valid,total)
+        setmask(False)
         weak=inspect(make_raw(depth=.5));strong=inspect(make_raw())
         assert weak.levels_valid and weak.span_bins<strong.span_bins
         assert weak.sync_depth_mv<strong.sync_depth_mv

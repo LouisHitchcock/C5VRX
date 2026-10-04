@@ -41,9 +41,11 @@ static int delta_for(unsigned idx)
     if(cls==2 && d>=0) d-=256;
     return d;
 }
+static bool s_mask_decode;
+void c5v4_cvbs_set_mask_decode(bool enabled) { s_mask_decode = enabled; }
 static unsigned decode(uint8_t r,unsigned previous,bool history)
 {
-    if(!history) return c5v4_phase_static[r];
+    if(!history) return (s_mask_decode ? c5v4_phase_mask : c5v4_phase_static)[r];
     return (((-previous)&255)>>7 ? c5v4_phase_history1 : c5v4_phase_history0)[r];
 }
 

@@ -47,6 +47,43 @@ bits are named only through the masks the firmware uses.
    then takes ~1 s to count as locked again. Settings toggles reboot; avoid
    them in flight.
 
+## Why HDZero drops a live picture (research 2026-10-04)
+
+The goggles show TP2825 output only while the decoder holds H/V lock. The
+firmware enables the decoder AGC (`TP2825_REG06 0xB2 // AGC enabled`), so
+moderate amplitude errors are normalised. What breaks lock is a sync that is
+too small for that AGC, a sync clipped into the rail, or a disturbed or
+missing sync. A Fatshark-class sync separator still triggers on all three.
+The repository evidence:
+
+| Cause | Evidence | C5VRX-4 status |
+|---|---|---|
+| Too little amplitude | PR #157: 0.2–0.3 Vpp at HDZero AV-in, no picture; v3.18.1 worked. C5VRX-3 Phase8 FULL is ~0.35 V sync-to-white | STD150, 1.0 V sync-to-white |
+| VTX deviation | [Logicenios/C5VRX](https://github.com/Logicenios/C5VRX) (`refactor/phase4-fpga` measurements): Tank II deviation 0.4–0.47× nominal, i.e. -7 dB sync depth with a fixed transfer | Sync-referenced servo `u` (0.32–3.2× gain) |
+| Carrier offset (CFO) | 0.150 V/MHz: -1.5 MHz leaves <150 mV sync (`test_cvbs.py`); the fixed transfer has 10 mV sync margin | Servo removes the offset in the phase domain |
+| Close-in overload | #158: 73.8 % clipping, HDZero black while a scope locked | G20 severe-overload escape |
+| No carrier | Noise; HDZero firmware may switch PAL/NTSC on two polls | Idle raster (below) |
+| Weak, damaged sync | Community reports of rolling at weak signal; FM clicks; ambiguous spans emit blanking level inside sync | Open: needs sync keeping (`feat/sync-flywheel`, CPU-limited) |
+
+**Gap fixed here.** The servo was off whenever native AGC owned the gain, so
+native mode, and with it the native acquisition mask, ran the fixed transfer:
+no deviation and no CFO correction, exactly the HDZero failure class above.
+The servo now also runs under native AGC.
+- Its levels are phase-domain and do not depend on RF gain.
+- Native acquisitions are outliers that the existing MAD, ambiguity and origin
+  limits and the three-window agreement reject.
+- While masking, every CPU snapshot decodes Q3 like the program
+  (`c5v4_phase_mask`).
+- Host: with acquisition-like garbage bursts (100 samples every 1480), 22 of
+  26 masked snapshots stay valid, with a correct period and sync depth. The
+  servo needs three consecutive consistent ones.
+
+**Not fixable without new work.** Keeping lock on a weak, damaged sync needs
+sync regeneration, which the AGENTS invariant parks. A cheap BitScrambler
+"hold instead of blanking" for ambiguous spans was examined. It does not fit:
+the class is known only one bundle before the DAC byte is formed, and both
+counter-op bundles are already occupied.
+
 ## No-carrier idle raster
 
 `idle_raster.h` (host-tested in `tools/test_idle_raster.c`) and

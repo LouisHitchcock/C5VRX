@@ -99,6 +99,16 @@ tests are unchanged and pass.
 4. With a DC offset (`!` receiver DC), the boost should stay off or exit,
    not fold.
 
+## Prior evidence (read before trusting the model)
+
+`docs/range-max.md` records an earlier review model with only ~0.9 dB
+chroma-noise benefit from radius 6.5 vs 5.5 cells at C/N 20 and almost none at
+C/N 12, and a hardware L0/L1/L2 lane A/B (a lane change rescales the radius in
+cells) with no visible difference. The boost's gain therefore exists only
+where quantization clearly dominates (very strong, clean signal), and may be
+invisible. If the bench A/B with `y` shows no difference, turn it off: it
+works closer to the fold edge for nothing.
+
 ## Limits
 
 - The gain is a model result. The real noise, DC and fading margin around

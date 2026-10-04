@@ -51,5 +51,7 @@ first one, keep V5 at its no-carrier maximum while it owns TX, and keep the `_`
 opt-out. It is not sync regeneration of a received picture. The V5
 radius boost (RADIUS_BOOST.md) only moves the healthy P50 band on a strong,
 tight, rail-free ring; keep the immediate exit on rail codes/P95/jumps, the
-doubling hold-off, the normal-band constants and the `y` opt-out. Run verify.py and exact-head
+doubling hold-off, the normal-band constants and the `y` opt-out. The
+level servo runs under native AGC too (HDZERO.md): keep its phase-domain
+validity gates, and keep CPU snapshots on the Q3 mask decode while masking. Run verify.py and exact-head
 IDF CI before requesting merge approval; merge only after Leon approves.

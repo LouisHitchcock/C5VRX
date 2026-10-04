@@ -39,6 +39,10 @@ def main():
     # timeout, last stable standard persisted, '_' opt-out.
     assert "idle_raster_service(q_phase, fresh_sync" in video and '"idle_raster"' in pipeline
     assert "menu_was_active && !IDLE_RASTER_ACTIVE()" in video and '"last_std"' in pipeline
+    # HDZero: level servo also under native AGC; masked snapshots decode Q3.
+    level_task = video.split("static void cvbs_level_task", 1)[1].split("\n}\n", 1)[0]
+    assert "rf_native_agc_active" not in level_task
+    assert "c5v4_cvbs_set_mask_decode(c5vrx4_agc_mask_active())" in video
     # Radius boost: normal band constants unchanged, opt-out wired.
     dg3 = (ROOT / "main/direct_gain_v3.c").read_text()
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
