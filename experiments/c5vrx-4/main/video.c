@@ -3379,6 +3379,53 @@ static void lab_run_phy_track(void)
     printf("PHYTRACK done status=%d\n", (int)result);
 }
 
+/* '/' : digital RX filter / ADC-rate lab (PREDEMOD_LAB.md). With the VTX off
+ * the noise width shows whether a digital filter sits ahead of the tap; with
+ * a steady weak VTX, winding (clicks) and Q_phase show what it does to the
+ * picture. Direct Gain only, fixed gain. */
+#define DFILT_WINDOWS 48u
+static void lab_observe_dfilt(const char *stage, int arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(20));
+    float psd[PREDEMOD_FFT_N] = {0};
+    uint8_t sample[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+    uint32_t glitches = 0, samples = 0;
+    unsigned got = 0;
+    int q_sum = 0, p_sum = 0, wind_sum = 0, strong_sum = 0, clip_max = 0;
+    for (unsigned tries = 0; tries < DFILT_WINDOWS * 3u && got < DFILT_WINDOWS; ++tries) {
+        vTaskDelay(1);
+        if (!rx_probe_copy_completed(sample)) continue;
+        for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r) {
+            predemod_psd_accumulate(sample + r * RX_PROBE_REGION_BYTES, psd);
+            glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES, RX_PROBE_REGION_BYTES, 6);
+        }
+        samples += RX_PROBE_REGIONS * (RX_PROBE_REGION_BYTES - 2u);
+        control_metrics_t m = analyze_control_window(sample, sizeof(sample), 0);
+        q_sum += m.q_phase;
+        p_sum += m.p_median;
+        wind_sum += m.winding_permille;
+        strong_sum += m.strong_winding_permille;
+        if (m.clip_permille > clip_max) clip_max = m.clip_permille;
+        ++got;
+    }
+    if (!got) { printf("DFILT stage=%s arg=%d sample=unavailable\n", stage, arg); return; }
+    printf("DFILT stage=%s arg=%d freq=%u G=%u lane=%u windows=%u width_khz=%u glitch_ppm=%u "
+           "P50=%d Q_phase=%d wind_pm=%d strong_wind_pm=%d clip_pm=%d video=hardware_pending\n",
+           stage, arg, rf_get_frequency_mhz(), s_current_gain, rf_get_iq_lanes(), got,
+           predemod_psd_width_khz(psd), predemod_ppm(glitches, samples), p_sum / (int)got,
+           q_sum / (int)got, wind_sum / (int)got, strong_sum / (int)got, clip_max);
+}
+
+static void lab_run_dfilt(void)
+{
+    analog_agc_mode_t saved;
+    if (!predemod_pause("DFILT", &saved)) return;
+    esp_err_t result = phy_rx_lab_run_dfilt_probe(lab_observe_dfilt);
+    if (result == ESP_FAIL) { printf("DFILT rollback_failed rebooting\n"); fflush(stdout); esp_restart(); }
+    predemod_resume(saved);
+    printf("DFILT done status=%d\n", (int)result);
+}
+
 /* First native carrier without a stored witness: calibrate once, reboot to
  * apply (program and lane route are chosen per boot). At most three tries
  * per boot, one a minute; never in Direct Gain mode. */
@@ -6795,6 +6842,8 @@ static void console_diag_task(void *arg)
                     lab_run_sigrssi();
                 } else if (c == '"') {
                     lab_run_phy_track();
+                } else if (c == '/') {
+                    lab_run_dfilt();
                 } else if (c == '!') {
                     lab_predemod_status();
                 } else if (c == '@') {
@@ -7146,6 +7195,7 @@ static void console_diag_task(void *arg)
                     printf("  ':':         Reversible phy_11p_set(1,0) A/B (three fresh Q4 rows)\n");
                     printf("  '\\'':        sigRSSI mode A/B: live signal RSSI for ~1 s, exact AGC-word restore\n");
                     printf("  '\"':         phy_param_track_tot(1,0) A/B: temperature-tracked RX recalibration\n");
+                    printf("  '/':         Digital RX filter mode 0..15 + other ADC rate A/B: noise width, clicks, exact restore\n");
                     printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");

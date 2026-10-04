@@ -134,3 +134,54 @@ span: a modulo-2π decoder instead of Unwrap75 (identical click rate), a
 click clamp to black (no fewer false syncs), and digital IQ-imbalance
 correction (helps only at strong signal: 9.3° → 4.4° at 3 dB / 8° imbalance,
 nothing at the edge).
+
+## libphy RX-path audit for lost dB (2026-10-04)
+
+Our own disassembly of the pinned `libphy.a` (hash above) and `librftest.a`.
+The question was where the vendor RX path costs sensitivity through
+filtering, notches or calibration. Evidence labels: **static** means read
+from the archive; nothing here is a hardware measurement yet.
+
+| Suspect | Static finding | Expected effect |
+|---|---|---|
+| Spur notch | `phy_spur_coef_cfg` (slot 0 at the nearest 40 MHz harmonic, ±20 MHz in BW40, bit 13 of `0x600A7C14+4·slot`) has **no caller** in `libphy`, `libpp`, `libnet80211` or the ROM linker scripts. Only `librftest` `set_spur_reg` calls `phy_spur_cal`/`phy_spur_reg_write`, and C5VRX does not link the RF test library. | No loss expected. `/` prints slots 0–3 so hardware can confirm bit 13 is clear. |
+| Unfiltered 2:1 decimation | PARLIO takes every second sample of the ~80 MS/s MODEM_DIAG bus (`docs/continuous-iq-findings.md`), so all noise out to ±40 MHz folds into the ±20 MHz view. | Host model: pre-detection noise vs. a 24 MHz brick wall. With a 35–48 MHz analog width: +1.8 to +3.2 dB (1st–3rd order). With a 24 MHz analog width: +0.2 to +1.1 dB. Fixed analog BW (`=`) already recovers most of it. |
+| Digital filter ahead of the tap? | `phy_rx_filter_mode(m)` = `0x600A0430[21:18]`. On 5 GHz, `phy_rfpll_set_adc_rate` writes mode 0 (mode 4 if the stored width is BW20), then mode 8 with ADC rate 1 above 5830 MHz. The earlier BW20 rejection (`docs/static-reduction-and-filtering.md`: narrower, detail and chroma lost) hints that some digital width control precedes the tap. | Unknown, measured by `/`. A digital filter ahead of the tap would be a steep, free pre-detection filter. Its value is the remaining 0.2–1 dB plus adjacent-pilot rejection, and only if a mode near 24 MHz exists. |
+| ADC rate at 5830 MHz | `phy_adc_rate_set(r)` writes I2C block 0x66 host 0 reg 4 bit 2 = !r and `0x600A0448[1:0]` = r,r. On 5 GHz the selector is 0 up to 5830 MHz and 1 above (R6/R7/R8, F7/F8, A1/A2, B8, E-high). The `analog-lock-phy-lab.md` row "ADC selector remains 1" reads only the >5830 state. | Unknown. If the rate changes the bus clock, PARLIO's free-running 40 MHz could sample asynchronously on one side of 5830 MHz (watch `glitch_ppm`). `/` measures the other rate on the current channel. |
+| LO buffer cap | `phy_get_dcap_degen(f)` = 10 + (5880 − f)/36, clamped 10..31. It is written to I2C block 0x63 (PLL/LO block) reg 21 [4:0] by `phy_set_freq_i2c_new`. Above 5880 MHz it pins at 10. | The vendor's own truncating formula gives 9 at 5917/5945 MHz: one code short. Expected < 0.1 dB. Not worth a lab. |
+| ADC dither | `phy_get_adc_rand` is an empty return. `phy_set_adc_rand` is a DCO calibration routine, not dither. | Nothing to remove. |
+| RX IQ / DC cal points | `phy_set_rx_gain_cal_iq` loops 7 points on 5 GHz. RX DC tops out at 5855 MHz (known). | Small. IQ correction helps only at strong signal; DC recentring covers the rest. |
+| Packet-detector tweaks | `phy_rx_11b_opt`, `phy_rx_pkdet_dc_cal`, `phy_rx_sense_set`, the CCA/NF-auto bits: packet-detection and AGC-trigger registers. | Not in the MODEM_DIAG sample path. They matter only for native AGC acquisition (covered by the mask). |
+| Temperature tracking | Disabled by config (`"` exercises it). | Measured by `"`. |
+
+### `/` digital RX filter / ADC-rate lab
+
+Direct Gain only, at fixed gain. Run it twice on the same channel: VTX off
+(noise width), then a steady weak VTX (clicks).
+
+1. Prints `DFILT begin` with the vendor mode, ADC selector and word, the ADC
+   I2C byte and spur slots 0–3.
+2. `BASELINE`.
+3. `MODE` 0..15, with only `0x600A0430[21:18]` changed and the ADC rate
+   unchanged.
+4. `MODE_RESTORED`.
+5. `ADC_ALT`: the other rate through `phy_adc_rate_set`, current mode.
+6. `ADC_ALT_VENDOR_MODE`: the mode the vendor pairs with that rate (0 or 8).
+7. Exact restore of both words and the I2C byte, verified, then `RESTORED`.
+   A failed verification reboots.
+
+Each row gives the 64-point PSD `width_khz`, mid-transition `glitch_ppm`,
+P50, Q_phase, winding (`wind_pm`, `strong_wind_pm`) and clipping over 48
+observer windows.
+
+Reading the result:
+
+- **All widths equal:** the tap sits before the digital filter. The analog
+  RC filter and fixed BW are then the only pre-detection filter, and digital
+  modes are a dead end.
+- **Some modes narrower:** a digital filter is ahead of the tap. Pick the
+  narrowest mode still ≥ ~24 MHz and compare `wind_pm` against baseline with
+  a weak VTX. Fewer clicks at equal Q is real range. Then A/B the picture
+  (chroma, detail) before any default change.
+- **`ADC_ALT` `glitch_ppm` much higher or lower than baseline:** the rate
+  changes the bus clock relative to PARLIO. Repeat on 5825 vs. 5845 MHz.

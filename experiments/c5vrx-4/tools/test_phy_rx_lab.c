@@ -17,8 +17,12 @@ uint16_t rf_get_frequency_mhz(void) { return 5865; }
 int rf_get_frequency_offset_khz(void) { return 0; }
 static uint8_t analog_regs[32];
 static bool fail_restore, fail_apply;
+static uint8_t adc_i2c = 0x5Bu; /* block 0x66 host 0 reg 4; bit 2 = !rate */
 uint8_t phy_i2c_readReg(uint8_t b, uint8_t h, uint8_t r)
-{ assert(b==0x67 && h==1); return analog_regs[r]; }
+{
+    if (b==0x66) { assert(h==0 && r==4); return adc_i2c; }
+    assert(b==0x67 && h==1); return analog_regs[r];
+}
 #include "../main/phy_rx_lab.c"
 void phy_i2c_writeReg(uint8_t b,uint8_t h,uint8_t r,uint8_t v)
 { assert(b==0x67 && h==1); if (!fail_restore) analog_regs[r]=v; }
@@ -44,6 +48,39 @@ void phy_check_sigrssi_en(uint8_t enable)
 }
 int8_t phy_get_sigrssi(void) { return (int8_t)(-95 + (int)((sig_reads++ * 7u) % 51u)); }
 void phy_param_track_tot(uint8_t wifi, uint8_t bt) { assert(wifi==1 && bt==0); ++track_calls; }
+/* Vendor ABI as read from the pinned archive. */
+static bool dfilt_drop_i2c_restore;
+static unsigned dfilt_rate_calls, dfilt_mode_calls, dfilt_stages, dfilt_modes_seen;
+void phy_adc_rate_set(uint32_t rate)
+{
+    ++dfilt_rate_calls;
+    if (!(dfilt_drop_i2c_restore && dfilt_rate_calls > 1))
+        adc_i2c = (uint8_t)((adc_i2c & ~4u) | (rate ? 0u : 4u));
+    REG(0x600A0448) = (REG(0x600A0448) & ~3u) | (rate & 1u) | ((rate & 1u) << 1);
+}
+void phy_rx_filter_mode(uint32_t mode)
+{
+    ++dfilt_mode_calls;
+    REG(0x600A0430) = (REG(0x600A0430) & ~(0xFu << 18)) | ((mode & 0xFu) << 18);
+}
+static void dfilt_observe(const char *stage, int arg)
+{
+    assert(phy_rx_lab_busy());
+    unsigned mode = (REG(0x600A0430) >> 18) & 0xFu, rate = REG(0x600A0448) & 1u;
+    if (!strcmp(stage, "MODE")) {
+        assert(arg >= 0 && arg < 16 && mode == (unsigned)arg && rate == 1u);
+        assert((REG(0x600A0430) & ~(0xFu << 18)) == (0x12345678u & ~(0xFu << 18)));
+        dfilt_modes_seen |= 1u << arg;
+    } else if (!strcmp(stage, "ADC_ALT")) {
+        assert(arg == 0 && rate == 0u && mode == 8u && (adc_i2c & 4u));
+    } else if (!strcmp(stage, "ADC_ALT_VENDOR_MODE")) {
+        assert(arg == 0 && rate == 0u && mode == 0u);
+    } else {
+        assert(!strcmp(stage, "BASELINE") || !strcmp(stage, "MODE_RESTORED") || !strcmp(stage, "RESTORED"));
+        assert(arg == 8 && mode == 8u && rate == 1u);
+    }
+    ++dfilt_stages;
+}
 static void sig_observe(const char *stage)
 {
     assert(phy_rx_lab_busy()); ++sig_stages;
@@ -383,7 +420,23 @@ int main(void)
     /* Temperature tracking lab: one call between two observations. */
     assert(phy_rx_lab_run_track_probe(track_observe)==ESP_OK);
     assert(track_calls==1 && track_stages==2 && !phy_rx_lab_busy());
+    /* Digital filter / ADC-rate lab, vendor state above 5830 MHz: rate 1,
+     * mode 8. All 16 modes, the other rate, then an exact restore. */
+    REG(0x600A0430) = (0x12345678u & ~(0xFu << 18)) | (8u << 18);
+    REG(0x600A0448) = 0xA5A50003u;
+    adc_i2c = 0x5Bu & ~4u;
+    const uint32_t dfilt_word = REG(0x600A0430);
+    assert(phy_rx_lab_run_dfilt_probe(dfilt_observe) == ESP_OK);
+    assert(dfilt_modes_seen == 0xFFFFu && dfilt_stages == 16u + 5u && !phy_rx_lab_busy());
+    assert(REG(0x600A0430) == dfilt_word && REG(0x600A0448) == 0xA5A50003u && adc_i2c == (0x5Bu & ~4u));
+    assert(dfilt_rate_calls == 2u && dfilt_mode_calls == 1u);
+    /* The analog half of the ADC setter not returning: restore unverified. */
+    dfilt_rate_calls = 0; dfilt_drop_i2c_restore = true;
+    assert(phy_rx_lab_run_dfilt_probe(dfilt_observe) == ESP_FAIL && !phy_rx_lab_busy());
+    dfilt_drop_i2c_restore = false; adc_i2c = 0x5Bu & ~4u;
+    assert(phy_rx_lab_run_dfilt_probe(NULL) == ESP_ERR_INVALID_STATE);
 #else
+    assert(phy_rx_lab_run_dfilt_probe(NULL) == ESP_ERR_NOT_SUPPORTED);
     assert(phy_rx_lab_run_sigrssi_probe(NULL,NULL)==ESP_ERR_NOT_SUPPORTED);
     assert(phy_rx_lab_run_track_probe(NULL)==ESP_ERR_NOT_SUPPORTED);
     assert(!phy_rx_lab_filter_capture_base() && !phy_rx_lab_filter_set_code(52));

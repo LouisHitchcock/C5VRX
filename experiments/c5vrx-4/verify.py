@@ -50,6 +50,7 @@ def main():
     dg3 = (ROOT / "main/direct_gain_v3.c").read_text()
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
     assert '"radius_boost"' in pipeline and "direct_gain_v3_enable_boost(&s_direct_gain_v3" in video
+    assert "phy_rx_lab_run_dfilt_probe(lab_observe_dfilt)" in video and "lab_run_dfilt();" in video
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

@@ -52,6 +52,12 @@ esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
  * which phy_set_freq also stores). Not reversible: a normal PHY maintenance
  * call the Wi-Fi driver would make periodically. */
 esp_err_t phy_rx_lab_run_track_probe(void (*observe)(const char *stage));
+/* Digital RX filter / ADC-rate lab: digital filter mode 0x600A0430[21:18] =
+ * 0..15 with the ADC rate unchanged, then the other ADC rate through the
+ * vendor phy_adc_rate_set (current mode, then the vendor-paired mode 0/8).
+ * Restores both words and the ADC I2C byte and verifies them. Answers whether
+ * a digital filter sits ahead of the MODEM_DIAG tap. ESP_FAIL: reboot. */
+esp_err_t phy_rx_lab_run_dfilt_probe(void (*observe)(const char *stage, int arg));
 
 /* Pre-demodulation labs (#165). Read-only status; the two A/B labs below
  * require the pinned PHY archive, pause nothing themselves (the caller pauses

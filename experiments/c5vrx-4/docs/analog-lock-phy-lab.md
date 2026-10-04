@@ -53,7 +53,7 @@ python tools/extract_phy_rx_evidence.py \
 | `phy_bb_bss_cbw40_dig(uint32_t)` | `600A9C18`: clears **both** bits 2/3, sets bit 2 from argument bit 0 | Issue #151's single-bit description is incomplete |
 | `phy_bb_bss_cbw40(mode)` | Mode 0: digital 0/front 0; mode 1: digital 1/front 0; mode 4: digital 0/front 1; other nonzero: digital 1/front 1 | Not a boolean BW40 ABI; do not invent a private "full BW20" call |
 | `phy_bb_cbw_chan_cfg(code)` | Packed input decodes fields in `600A4400`, `600A7CE0`, `600A7CE4` | Read-only here; public Wi-Fi API owns complete width transitions |
-| `phy_rfpll_set_adc_rate()` | Normal 5 GHz branch changes filter mode at 5830 MHz, ADC selector remains 1 | Record coupled tuple; no forced mode-4/8 production change |
+| `phy_rfpll_set_adc_rate()` | Normal 5 GHz branch changes filter mode at 5830 MHz, ADC selector remains 1 (re-read 2026-10-04: selector 0 up to 5830 MHz, 1 above; see `PREDEMOD_LAB.md`) | Record coupled tuple; no forced mode-4/8 production change |
 | `phy_chan_filt_set(a,b)` | A=0 sets bit22 and clears low3 at `600A7904`; A!=0 clears bit22. B=0 sets bit13 at `600A7074`, B!=0 clears it | Isolate each final state; neither polarity means proven bypass |
 | `phy_noise_floor_auto_set()` | Set `600A7018[23,28]`, `600A7C44[0]`, `600A7C50[0]` | Independent temporary mask experiment |
 | `phy_pkdadc_set(a,b)` | Includes `600A0C38[31]`, threshold and secondary controls | Test enable bit only, retain thresholds |

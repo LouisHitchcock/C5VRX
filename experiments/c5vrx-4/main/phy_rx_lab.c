@@ -526,6 +526,73 @@ esp_err_t phy_rx_lab_run_track_probe(void (*observe)(const char *stage))
 #endif
 }
 
+/* ---- Digital RX filter / ADC-rate lab (2026-10-04) ------------------------
+ * Own reading of the pinned libphy. phy_chip_set_chan -> phy_rfpll_set_adc_rate:
+ * on 5 GHz phy_adc_rate_set(0) + phy_rx_filter_mode(0) (mode 4 when the stored
+ * width is BW20), then above 5830 MHz phy_adc_rate_set(1) + mode 8.
+ * phy_rx_filter_mode(m) = 0x600A0430[21:18]; phy_adc_rate_set(r) = I2C block
+ * 0x66 host 0 reg 4 bit 2 = !r and 0x600A0448[1:0] = r,r. The PARLIO capture
+ * takes every second sample of the ~80 MS/s MODEM_DIAG bus with no filter in
+ * between, so a digital filter ahead of the tap would be a free steep
+ * pre-detection filter. Whether one is ahead of the tap is unknown: this lab
+ * measures it. Normal C5 Wi-Fi never calls phy_spur_coef_cfg (only
+ * librftest's set_spur_reg does), so the spur slots are snapshotted, not
+ * changed. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_adc_rate_set(uint32_t rate);
+extern void phy_rx_filter_mode(uint32_t mode);
+#define DFILT_REG      0x600A0430u
+#define DFILT_SHIFT    18u
+#define DFILT_MASK     (UINT32_C(0xF) << DFILT_SHIFT)
+#define DFILT_ADC_REG  0x600A0448u
+#define DFILT_ADC_BLOCK 0x66u
+#define DFILT_ADC_HOST 0u
+#define DFILT_ADC_I2C  4u
+#endif
+esp_err_t phy_rx_lab_run_dfilt_probe(void (*observe)(const char *stage, int arg))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("DFILT refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("dfilt_AB");
+    const uint32_t filt = REG(DFILT_REG), adc = REG(DFILT_ADC_REG);
+    const uint8_t adc_i2c = phy_i2c_readReg(DFILT_ADC_BLOCK, DFILT_ADC_HOST, DFILT_ADC_I2C);
+    const unsigned mode = (filt & DFILT_MASK) >> DFILT_SHIFT, rate = adc & 1u;
+    printf("DFILT begin freq=%u vendor_mode=%u adc_sel=%u adc_word=0x%08" PRIx32
+           " adc_i2c=0x%02x spur_slots=0x%08" PRIx32 "/0x%08" PRIx32 "/0x%08" PRIx32 "/0x%08" PRIx32 "\n",
+           rf_get_frequency_mhz(), mode, rate, adc, (unsigned)adc_i2c,
+           REG(0x600A7C14), REG(0x600A7C18), REG(0x600A7C1C), REG(0x600A7C20));
+    observe("BASELINE", (int)mode);
+    /* Filter mode alone, ADC rate unchanged. */
+    for (unsigned m = 0; m < 16u; ++m) {
+        REG(DFILT_REG) = (filt & ~DFILT_MASK) | ((uint32_t)m << DFILT_SHIFT);
+        observe("MODE", (int)m);
+    }
+    REG(DFILT_REG) = filt;
+    observe("MODE_RESTORED", (int)mode);
+    /* The other ADC rate through the vendor setter: first with the current
+     * filter mode, then with the mode the vendor pairs it with on 5 GHz. */
+    const unsigned alt = rate ^ 1u;
+    phy_adc_rate_set(alt);
+    observe("ADC_ALT", (int)alt);
+    phy_rx_filter_mode(alt ? 8u : 0u);
+    observe("ADC_ALT_VENDOR_MODE", alt ? 8 : 0);
+    phy_adc_rate_set(rate);
+    REG(DFILT_ADC_REG) = adc;
+    REG(DFILT_REG) = filt;
+    __sync_synchronize();
+    bool restored = REG(DFILT_REG) == filt && REG(DFILT_ADC_REG) == adc &&
+                    phy_i2c_readReg(DFILT_ADC_BLOCK, DFILT_ADC_HOST, DFILT_ADC_I2C) == adc_i2c;
+    printf("DFILT restore_verified=%u\n", restored);
+    if (restored) observe("RESTORED", (int)mode);
+    phy_rx_lab_end();
+    return restored ? ESP_OK : ESP_FAIL;
+#endif
+}
+
 /* Native analog patch prototype (#139): retain the hardware-selected tuple,
  * stop only BB acquisition, then use the vendor resume strobe. This bounded
  * console experiment does not infer acquisition-complete from an unknown FSM
