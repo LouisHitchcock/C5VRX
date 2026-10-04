@@ -88,3 +88,53 @@ static inline int predemod_dco_step(const float j[4], float di, float dq,
     *step_a = sa; *step_b = sb;
     return 1;
 }
+
+/* Static Phase8 decoder word for one raw IQ byte with the I/Q centre moved
+ * by (di, dq) milli-cells of the current lane. Identical to
+ * generate_phase8.py at (0, 0): cell centre +31.5/64, half-even rounding.
+ * Odd LUT banks hold ((128 + p) & 255) | ((-p & 255) << 8). Digital
+ * recentring only moves the decode geometry; it cannot restore samples that
+ * folded or clipped before Q4. */
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+static inline uint8_t predemod_phase8(uint8_t raw, int di, int dq)
+{
+    double i = predemod_i(raw) + 31.5 / 64 - di / 1000.0;
+    double q = predemod_q(raw) + 31.5 / 64 - dq / 1000.0;
+    return (uint8_t)((int)rint(atan2(q, i) * 128 / M_PI) & 255);
+}
+static inline uint16_t predemod_decoder_word(uint8_t raw, int di, int dq)
+{
+    uint8_t p = predemod_phase8(raw, di, dq);
+    return (uint16_t)(((128u + p) & 255u) | (((256u - p) & 255u) << 8));
+}
+
+/* Decision for one evaluation of the measured centre (milli-cells). A new
+ * centre is applied only after two consecutive evaluations agree within
+ * `agree` and it differs from the applied one by at least `step` on an axis;
+ * |centre| is clamped to `limit`. Returns 1 and writes *out when applying. */
+typedef struct { int last[2]; int have_last; } predemod_dc_filter_t;
+static inline int predemod_dc_decide(predemod_dc_filter_t *f, const int measured[2],
+                                     const int applied[2], int agree, int step,
+                                     int limit, int out[2])
+{
+    int m[2];
+    for (unsigned a = 0; a < 2; ++a)
+        m[a] = measured[a] > limit ? limit : measured[a] < -limit ? -limit : measured[a];
+    int stable = f->have_last && predemod_abs(m[0] - f->last[0]) <= agree &&
+                 predemod_abs(m[1] - f->last[1]) <= agree;
+    int target[2] = {(m[0] + f->last[0]) / 2, (m[1] + f->last[1]) / 2};
+    f->last[0] = m[0]; f->last[1] = m[1]; f->have_last = 1;
+    if (!stable) return 0;
+    if (predemod_abs(target[0]) < step && predemod_abs(target[1]) < step) {
+        target[0] = target[1] = 0; /* deadband: stay on the pristine table */
+    }
+    if (target[0] == applied[0] && target[1] == applied[1]) return 0;
+    if (predemod_abs(target[0] - applied[0]) < step &&
+        predemod_abs(target[1] - applied[1]) < step &&
+        (target[0] || target[1])) return 0;
+    out[0] = target[0]; out[1] = target[1];
+    return 1;
+}

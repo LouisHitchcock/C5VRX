@@ -12,3 +12,8 @@ void c5v4_level_hw_invalidate(void);
 /* Latch off after a transport fault following live updates, until reboot. */
 void c5v4_level_hw_transport_fault(void);
 unsigned c5v4_level_hw_period(uint32_t context, uint64_t now_us);
+/* Probe result shared with digital DC recentring of the static decoder. */
+bool c5v4_level_hw_lut_verified(void);
+bool c5v4_decoder_recenter(int di_mcells, int dq_mcells);
+void c5v4_decoder_dc(int dc[2]);
+void c5v4_decoder_print(void);

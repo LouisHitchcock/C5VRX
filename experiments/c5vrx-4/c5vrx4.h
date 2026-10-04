@@ -28,5 +28,10 @@ bool c5vrx4_lane_window_ready(uint64_t now_us);
 uint8_t c5vrx4_lane_target(uint8_t current, uint8_t requested, const uint8_t *sample, size_t bytes, uint64_t now_us);
 void c5vrx4_lane_print(void);
 
+/* Default-on pre-demodulation correction (#165), NVS opt-outs, reboot:
+ * '%' digital DC recentring of the static Phase8 decoder (dc_recenter),
+ * '&' one automatic sampling-phase check at the first carrier lock (sphase_auto). */
+bool c5vrx4_dc_recenter_enabled(void);
+bool c5vrx4_sphase_auto_enabled(void);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);

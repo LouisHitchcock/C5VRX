@@ -336,6 +336,10 @@ static volatile uint32_t s_v3_bw_switches;
 static volatile int s_v3_clip_pm, s_v3_coherence;
 /* Sampling-phase evidence: mid-transition reads per observed sample. */
 static volatile uint32_t s_predemod_glitches, s_predemod_samples;
+/* Digital DC recentring evidence, reset whenever gain, lane or profile move. */
+static portMUX_TYPE s_dc_mux = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_dc_sum_i, s_dc_sum_q;
+static uint32_t s_dc_windows, s_dc_epoch;
 static TaskHandle_t s_v3_observer_task_handle;
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
 /* History-conditioned demodulator (fm_hc.bsasm), chosen per boot from NVS
@@ -1811,6 +1815,20 @@ static void direct_gain_v3_observer_task(void *arg)
             s_predemod_glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
                                                      RX_PROBE_REGION_BYTES, 6);
         s_predemod_samples += RX_PROBE_REGIONS * (RX_PROBE_REGION_BYTES - 2u);
+        /* Raw I/Q centre for digital recentring: settled, unclipped windows.
+         * The raw ring is never modified, so this stays the absolute DC. */
+        if (observation.clip_pm < 20 && s_direct_gain_v3.state != DG3_SETTLE) {
+            int dc_i, dc_q;
+            predemod_dc_mcells(sample, sizeof(sample), &dc_i, &dc_q);
+            uint32_t dc_epoch = s_gain_transition_count ^ profile ^
+                ((uint32_t)rf_get_iq_lanes() << 28);
+            portENTER_CRITICAL(&s_dc_mux);
+            if (dc_epoch != s_dc_epoch) {
+                s_dc_sum_i = s_dc_sum_q = 0; s_dc_windows = 0; s_dc_epoch = dc_epoch;
+            }
+            s_dc_sum_i += dc_i; s_dc_sum_q += dc_q; ++s_dc_windows;
+            portEXIT_CRITICAL(&s_dc_mux);
+        }
         direct_gain_v5_bw_gear(&observation);
     }
 }
@@ -2853,6 +2871,9 @@ static void predemod_resume(analog_agc_mode_t saved_mode)
     s_rssi_probe_active = false;
 }
 
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+static void predemod_correction_print(void);
+#endif
 static void lab_predemod_status(void)
 {
     const arc_gain_table_t *table = rf_get_arc_gain_table();
@@ -2868,6 +2889,9 @@ static void lab_predemod_status(void)
            c5vrx4_lane_mode_name(), rf_get_iq_lanes(), 64u >> rf_get_iq_lanes(),
            s_current_gain, table ? table->max_index : 0u, rf_get_frequency_mhz(),
            predemod_ppm(glitches, samples), (unsigned long)samples, dc_i, dc_q);
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    predemod_correction_print();
+#endif
     phy_rx_lab_predemod_status();
 }
 
@@ -4374,7 +4398,8 @@ static void start_flight_demodulator(void)
 #endif
 #ifdef C5VRX4_EXPERIMENT
     c5v4_level_hw_prepare();
-    if (c5vrx4_level_enabled() && !c5v4_level_hw_ready()) {
+    if (!c5v4_level_hw_lut_verified() ||
+        (c5vrx4_level_enabled() && !c5v4_level_hw_ready())) {
         /* A failed addressing probe is repaired from the pristine binary. */
         ESP_ERROR_CHECK(bitscrambler_load_program(s_flight_bs,
             c5vrx4_selected_program()));
@@ -5062,6 +5087,102 @@ static void cvbs_level_task(void *arg)
         c5v4_level_hw_observe(&stats, fresh, context, (uint64_t)esp_timer_get_time());
         phy_rx_lab_end_actuator();
     }
+}
+#endif
+
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+/* ---- Default-on pre-demodulation correction (#165) ----------------------
+ * Low-priority task, never in the 40 MS/s path. (1) Digital DC recentring:
+ * average the raw I/Q centre per gain/lane epoch, require two agreeing
+ * evaluations, move >=0.12 cell, at most every 2 s, and rewrite only the
+ * static decoder banks. (2) One sampling-phase check at the first stable
+ * carrier lock; it slips the RX clock only when mid-transition reads are
+ * clearly present (zerowidth PR #3 saw ~3 bad boots in 10). */
+#define DC_MIN_WINDOWS     600u
+#define DC_AGREE_MCELLS    150
+#define DC_STEP_MCELLS     120
+#define DC_LIMIT_MCELLS    3000
+#define DC_MIN_GAP_US      2000000
+#define SPHASE_AUTO_PPM    5000u
+static predemod_dc_filter_t s_dc_filter;
+static uint32_t s_dc_filter_epoch, s_dc_evaluations, s_dc_refusals;
+static int s_dc_measured[2];
+static int64_t s_dc_last_write_us;
+static bool s_sphase_auto_done;
+static unsigned s_sphase_auto_ppm = UINT32_MAX;
+
+static bool predemod_quiet_owner(void)
+{
+    return !s_menu_active && !s_rssi_probe_active && !s_gain_sweep.active &&
+           !s_pre_q4_probe_active && !phy_rx_lab_busy() && !rf_native_agc_active() &&
+           s_rx_profile == RX_PROFILE_DIRECT_GAIN && s_agc_mode == ANALOG_AGC_ACTIVE;
+}
+
+static void predemod_dc_service(void)
+{
+    if (!c5vrx4_dc_recenter_enabled() || c5vrx4_history_enabled() ||
+        !predemod_quiet_owner() || !c5v4_level_hw_lut_verified()) return;
+    portENTER_CRITICAL(&s_dc_mux);
+    uint32_t windows = s_dc_windows, epoch = s_dc_epoch;
+    int64_t si = s_dc_sum_i, sq = s_dc_sum_q;
+    if (windows >= DC_MIN_WINDOWS) { s_dc_sum_i = s_dc_sum_q = 0; s_dc_windows = 0; }
+    portEXIT_CRITICAL(&s_dc_mux);
+    if (windows < DC_MIN_WINDOWS) return;
+    if (epoch != s_dc_filter_epoch) {
+        memset(&s_dc_filter, 0, sizeof(s_dc_filter));
+        s_dc_filter_epoch = epoch;
+    }
+    int measured[2] = {(int)(si / (int64_t)windows), (int)(sq / (int64_t)windows)};
+    s_dc_measured[0] = measured[0]; s_dc_measured[1] = measured[1];
+    ++s_dc_evaluations;
+    int applied[2], next[2];
+    c5v4_decoder_dc(applied);
+    if (!predemod_dc_decide(&s_dc_filter, measured, applied, DC_AGREE_MCELLS,
+                            DC_STEP_MCELLS, DC_LIMIT_MCELLS, next)) return;
+    int64_t now = esp_timer_get_time();
+    if (s_dc_last_write_us && now - s_dc_last_write_us < DC_MIN_GAP_US) return;
+    s_dc_last_write_us = now;
+    if (!c5v4_decoder_recenter(next[0], next[1])) {
+        if (++s_dc_refusals == 1) printf("C5V4_DC_RECENTER refused=lut_write_or_mode\n");
+        return;
+    }
+    printf("C5V4_DC_RECENTER applied_mcells=%d/%d lane=%u gain=%u measured=%d/%d\n",
+           next[0], next[1], rf_get_iq_lanes(), s_current_gain, measured[0], measured[1]);
+}
+
+static void predemod_sphase_autocheck(void)
+{
+    if (s_sphase_auto_done || !c5vrx4_sphase_auto_enabled() || !predemod_quiet_owner()) return;
+    if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 80) return;
+    predemod_window_t w;
+    if (!predemod_collect(48, &w)) return;
+    s_sphase_auto_done = true;
+    s_sphase_auto_ppm = predemod_ppm(w.glitches, w.samples);
+    printf("SPHASE auto_check ppm=%u threshold=%u coherence=%d action=%s\n",
+           s_sphase_auto_ppm, SPHASE_AUTO_PPM, s_v3_coherence,
+           s_sphase_auto_ppm >= SPHASE_AUTO_PPM ? "scan" : "none");
+    if (s_sphase_auto_ppm >= SPHASE_AUTO_PPM) lab_run_sample_phase_scan();
+}
+
+static void predemod_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        predemod_dc_service();
+        predemod_sphase_autocheck();
+    }
+}
+
+static void predemod_correction_print(void)
+{
+    printf("PREDEMOD_AUTO dc_recenter=%u measured_mcells=%d/%d evaluations=%lu refusals=%lu "
+           "sphase_auto=%u sphase_checked=%u sphase_ppm=%u\n",
+           c5vrx4_dc_recenter_enabled(), s_dc_measured[0], s_dc_measured[1],
+           (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
+           c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
+           s_sphase_auto_done ? s_sphase_auto_ppm : 0u);
+    c5v4_decoder_print();
 }
 #endif
 
@@ -6423,6 +6544,7 @@ static void console_diag_task(void *arg)
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");
                     printf("  '$':         Reversible RX filter-cap sweep 0x67/6..13: +4/+8/+16/+24/60 (pinned PHY)\n");
+                    printf("  '%%' / '&':   Toggle default-on digital DC recentring / first-lock sampling-phase check, reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
@@ -6601,6 +6723,10 @@ esp_err_t video_start(void)
             free(level_raw); return ESP_ERR_NO_MEM;
         }
     }
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    if (xTaskCreate(predemod_task, "predemod", 6144, NULL, 2, NULL) != pdPASS)
+        return ESP_ERR_NO_MEM;
+#endif
 #endif
 
     /* Print startup stamp (visible on serial monitor at boot). */

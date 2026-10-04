@@ -31,5 +31,8 @@ explicit u opt-out, noise/context/settle refusal, loss hold and fault latch. RF 
 qualification; recovery is bounded to 100 ms, slew to 32 mV in the loaded table.
 Live RAM arbitration, waveform seams and FIFO continuity remain physical gates;
 do not claim their proof from default-on authorization or host tests. H/V
-regeneration and IQ DC correction remain absent. Run verify.py and exact-head
+regeneration and pre-Q4 (PHY) DC correction remain absent outside the reversible `#`
+lab. Leon authorized default-on digital DC recentring of the static decoder and
+a first-lock sampling-phase check on 2026-10-04; keep their opt-outs, refusal
+conditions and verified LUT path. Run verify.py and exact-head
 IDF CI before requesting merge approval; merge only after Leon approves.

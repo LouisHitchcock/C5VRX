@@ -104,6 +104,45 @@ uint8_t c5vrx4_fixed_lane(void)
     return lanes[c5vrx4_lane_mode()];
 }
 
+static bool nvs_flag(const char *key, bool fallback)
+{
+    nvs_handle_t handle;
+    uint8_t value = fallback ? 1u : 0u;
+    if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+        (void)nvs_get_u8(handle, key, &value);
+        nvs_close(handle);
+    }
+    return value != 0;
+}
+
+static int8_t s_dc_recenter = -1, s_sphase_auto = -1;
+bool c5vrx4_dc_recenter_enabled(void)
+{
+    if (s_dc_recenter < 0) s_dc_recenter = nvs_flag("dc_recenter", true);
+    return s_dc_recenter;
+}
+
+bool c5vrx4_sphase_auto_enabled(void)
+{
+    if (s_sphase_auto < 0) s_sphase_auto = nvs_flag("sphase_auto", true);
+    return s_sphase_auto;
+}
+
+static bool toggle_flag(const char *key, bool current, const char *name)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, key, current ? 0u : 1u);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    printf("C5VRX4 %s_next=%u err=%s action=%s\n", name, !current,
+           esp_err_to_name(err), err == ESP_OK ? "reboot" : "unchanged");
+    if (err == ESP_OK) { fflush(stdout); vTaskDelay(pdMS_TO_TICKS(120)); esp_restart(); }
+    return true;
+}
+
 bool c5vrx4_history_enabled(void)
 {
     if (!s_history_loaded) {
@@ -299,6 +338,8 @@ bool c5vrx4_console(int key)
         if (err == ESP_OK) { fflush(stdout); vTaskDelay(pdMS_TO_TICKS(120)); esp_restart(); }
         return true;
     }
+    if (key == '%') return toggle_flag("dc_recenter", c5vrx4_dc_recenter_enabled(), "dc_recenter");
+    if (key == '&') return toggle_flag("sphase_auto", c5vrx4_sphase_auto_enabled(), "sphase_auto");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

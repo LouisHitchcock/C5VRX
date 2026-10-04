@@ -18,6 +18,22 @@ esp-sdr (C5 filter-cap curve, S31 PBUS DC loop) and h0m3us3r/eSpDR (S3 DC DACs).
 | BW gear | `phy_wifi_fbw_sel()` writes only digital `0x600A0874` | Runtime BW switching may not move the analog filter; verify with `$`/`B` |
 | Dump banks | `HP_SYSTEM_SRAM_USAGE[11:8]` hands whole 128-KiB blocks to the MAC dump | Bank rotation would cost ~256 KiB: not pursued |
 
+## Default-on corrections
+
+- **Digital DC recentring** (`%` opt-out, NVS `dc_recenter`). The V5 observer
+  accumulates the raw cell-centre mean of settled, unclipped windows per
+  gain/lane/profile epoch. Every 250 ms a low-priority task evaluates >=600
+  windows; two evaluations agreeing within 0.15 cell and a move of >=0.12 cell
+  (clamped to 3 cells, deadband back to the pristine table, at most one rewrite
+  per 2 s) rewrite both odd decoder banks with `predemod_decoder_word()`. At
+  zero offset that word equals the generated table bit-exactly. It corrects
+  decode geometry only: samples that already folded or clipped stay lost, and
+  quadrant/trajectory sign bits are unchanged. HISTORY decode and native AGC
+  refuse it; a program reload is detected and the applied state reset.
+- **First-lock sampling-phase check** (`&` opt-out, NVS `sphase_auto`). Once
+  per boot, at the first V5 HOLD with coherence >=80 %, 48 windows are
+  measured; only >=5000 ppm mid-transition reads trigger the `@` scan.
+
 ## Commands
 
 - `!` prints `PREDEMOD` (lane policy, observer glitch ppm, receiver DC) and,
