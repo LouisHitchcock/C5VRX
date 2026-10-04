@@ -32,6 +32,27 @@ esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage));
 esp_err_t phy_rx_lab_run_native_hold(unsigned cycles,
     void (*observe)(const char *stage, unsigned cycle));
 
+/* Range labs (2026-10-04). Facts from FPVGateC5RX's provenance notes, checked
+ * in the pinned libphy: phy_check_sigrssi_en(1) + phy_get_sigrssi() give a
+ * continuously measured signal RSSI (phy_get_rssi only updates on receive
+ * events), and phy_param_track_tot(1,0) is their post-tune calibration. */
+typedef struct {
+    unsigned samples;
+    int min_dbm, max_dbm, p10_dbm, p50_dbm, p90_dbm, mean_dbm_x10;
+} phy_rx_lab_rssi_stats_t;
+/* sigRSSI mode A/B: saves the eleven AGC words the enable rewrites (0x7030,
+ * the BB-AGC gate, included), observes, enables, samples ~1 s at 1 ms,
+ * observes, restores and verifies every word. Refused while the BB-AGC gate
+ * is held (native hold/pacing). ESP_FAIL: restore unverified, reboot. */
+esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
+                                       phy_rx_lab_rssi_stats_t *stats);
+/* Temperature tracking A/B: phy_param_track_tot(1,0) = TX-power tracking,
+ * phy_i2c_correct and phy_cal_param_track (temperature-triggered RX DC/IQ and
+ * gain-table recalibration, then phy_chip_set_chan on the stored frequency,
+ * which phy_set_freq also stores). Not reversible: a normal PHY maintenance
+ * call the Wi-Fi driver would make periodically. */
+esp_err_t phy_rx_lab_run_track_probe(void (*observe)(const char *stage));
+
 /* Pre-demodulation labs (#165). Read-only status; the two A/B labs below
  * require the pinned PHY archive, pause nothing themselves (the caller pauses
  * all controllers), restore every owned field and return ESP_FAIL only when

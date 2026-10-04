@@ -3315,6 +3315,70 @@ static void agc_mask_status_print(void)
            c5vrx4_agc_mask_active() ? "off_mask_needs_every_acquisition" : "unchanged");
 }
 
+/* ---- Range labs (2026-10-04, PREDEMOD_LAB.md) ----------------------------
+ * ''' : sigRSSI mode A/B. In native mode the interesting question is whether
+ *       the sigRSSI configuration stops the ~25-50 us packet re-acquisitions
+ *       (watch Q rows and, while masking, the live flag share).
+ * '"' : phy_param_track_tot(1,0) A/B (temperature-tracked RX recalibration). */
+static void lab_observe_range(const char *stage)
+{
+    vTaskDelay(pdMS_TO_TICKS(500));
+    if (c5vrx4_agc_mask_active()) for (unsigned k = 0; k < 8u; ++k) { agc_mask_observe(); vTaskDelay(pdMS_TO_TICKS(10)); }
+    uint8_t sample[256];
+    if (!rx_probe_copy_completed(sample)) { printf("RANGELAB stage=%s sample=unavailable\n", stage); return; }
+    control_metrics_t m = analyze_control_window(sample, sizeof(sample), 0);
+    centered_q4_metrics_t center = measure_centered_q4(sample, sizeof(sample));
+    printf("RANGELAB stage=%s freq=%u native=%u G=%u P50=%d P95_center=%d Q_phase=%d "
+           "outer_permille=%d origin_permille=%d agc_flag_share_pm=%u video=hardware_pending\n",
+           stage, rf_get_frequency_mhz(), rf_native_agc_active(), s_current_gain, m.p_median,
+           center.p95, m.q_phase, m.clip_permille, m.origin_permille,
+           c5vrx4_agc_mask_active() ? s_agc_flag_share_pm : 0u);
+}
+
+/* Controllers paused for the A/B (native keeps its own hardware AGC). */
+static bool range_lab_pause(const char *tag, analog_agc_mode_t *saved)
+{
+    if (s_gain_sweep.active || s_menu_active || s_pre_q4_probe_active || s_rssi_probe_active) {
+        printf("%s refused=other_lab_or_menu\n", tag);
+        return false;
+    }
+    *saved = s_agc_mode;
+    s_rssi_probe_active = true;
+    if (!rf_native_agc_active()) s_agc_mode = ANALOG_AGC_MANUAL;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    return true;
+}
+
+static void lab_run_sigrssi(void)
+{
+    analog_agc_mode_t saved;
+    if (!range_lab_pause("SIGRSSI", &saved)) return;
+    phy_rx_lab_rssi_stats_t st = {0};
+    esp_err_t result = phy_rx_lab_run_sigrssi_probe(lab_observe_range, &st);
+    if (result == ESP_FAIL) { printf("SIGRSSI rollback_failed rebooting\n"); esp_restart(); }
+    if (result == ESP_OK)
+        printf("SIGRSSI freq=%u native=%u samples=%u min_dbm=%d p10_dbm=%d p50_dbm=%d p90_dbm=%d "
+               "max_dbm=%d mean_dbm=%d.%d source=phy_get_sigrssi\n",
+               rf_get_frequency_mhz(), rf_native_agc_active(), st.samples, st.min_dbm, st.p10_dbm,
+               st.p50_dbm, st.p90_dbm, st.max_dbm, st.mean_dbm_x10 / 10,
+               (st.mean_dbm_x10 < 0 ? -st.mean_dbm_x10 : st.mean_dbm_x10) % 10);
+    ++s_profile_generation;
+    s_agc_mode = saved;
+    s_rssi_probe_active = false;
+    printf("SIGRSSI done status=%d\n", (int)result);
+}
+
+static void lab_run_phy_track(void)
+{
+    analog_agc_mode_t saved;
+    if (!range_lab_pause("PHYTRACK", &saved)) return;
+    esp_err_t result = phy_rx_lab_run_track_probe(lab_observe_range);
+    ++s_profile_generation;
+    s_agc_mode = saved;
+    s_rssi_probe_active = false;
+    printf("PHYTRACK done status=%d\n", (int)result);
+}
+
 /* First native carrier without a stored witness: calibrate once, reboot to
  * apply (program and lane route are chosen per boot). At most three tries
  * per boot, one a minute; never in Direct Gain mode. */
@@ -6727,6 +6791,10 @@ static void console_diag_task(void *arg)
                     lab_run_native_hold(c == '(' ? 1u : 100u);
                 } else if (c == ':') {
                     lab_run_11p_probe();
+                } else if (c == '\'') {
+                    lab_run_sigrssi();
+                } else if (c == '"') {
+                    lab_run_phy_track();
                 } else if (c == '!') {
                     lab_predemod_status();
                 } else if (c == '@') {
@@ -7076,6 +7144,8 @@ static void console_diag_task(void *arg)
                     printf("  '}':         Toggle 50ms PHY monitor (L dumps bounded events)\n");
                     printf("  '('/')':     Native BB hold A/B / 100 reversible cycles (native only)\n");
                     printf("  ':':         Reversible phy_11p_set(1,0) A/B (three fresh Q4 rows)\n");
+                    printf("  '\\'':        sigRSSI mode A/B: live signal RSSI for ~1 s, exact AGC-word restore\n");
+                    printf("  '\"':         phy_param_track_tot(1,0) A/B: temperature-tracked RX recalibration\n");
                     printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");

@@ -125,6 +125,8 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `\|` | Toggle the native AGC acquisition mask, reboot |
 | `_` | Toggle the no-carrier idle raster (HDZero), reboot |
 | `y` | Toggle the V5 strong-signal radius boost, reboot |
+| `'` | sigRSSI mode A/B (live signal RSSI, exact AGC-word restore) |
+| `"` | `phy_param_track_tot` temperature-tracking A/B |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

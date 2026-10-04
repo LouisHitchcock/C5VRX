@@ -438,6 +438,94 @@ esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage))
 #endif
 }
 
+/* ---- Range labs (2026-10-04) ----------------------------------------------
+ * Idea from FPVGateC5RX (RaceFPV / Louis Hitchcock, docs/PROVENANCE.md and
+ * EXTENDED_TUNING.md: facts only, no code). Own reading of the pinned
+ * libphy: phy_get_sigrssi() = (int8_t)(0x600A706C >> 8); the enable rewrites
+ * AGC words 0x600A7008/0C/10/18/30/48/90/B0/C4/EC/150. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_check_sigrssi_en(uint8_t enable);
+extern int8_t phy_get_sigrssi(void);
+extern void phy_param_track_tot(uint8_t wifi, uint8_t bt);
+static const uint16_t s_sigrssi_words[] = {
+    0x008, 0x00C, 0x010, 0x018, 0x030, 0x048, 0x090, 0x0B0, 0x0C4, 0x0EC, 0x150,
+};
+#define SIGRSSI_WORDS (sizeof(s_sigrssi_words) / sizeof(s_sigrssi_words[0]))
+#define SIGRSSI_SAMPLES 1000u
+#endif
+esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
+                                       phy_rx_lab_rssi_stats_t *stats)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe; (void)stats;
+    printf("SIGRSSI refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe || !stats) return ESP_ERR_INVALID_STATE;
+    if (REG(0x600A7030) & PHYBIT(29)) {
+        printf("SIGRSSI refused=bb_agc_gate_held\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    phy_rx_lab_begin("sigrssi_AB");
+    uint32_t saved[SIGRSSI_WORDS];
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i) saved[i] = REG(0x600A7000u + s_sigrssi_words[i]);
+    observe("BASELINE");
+    phy_check_sigrssi_en(1);
+    unsigned hist[256] = {0};
+    int64_t sum = 0;
+    *stats = (phy_rx_lab_rssi_stats_t){.min_dbm = 127, .max_dbm = -128};
+    for (unsigned n = 0; n < SIGRSSI_SAMPLES; ++n) {
+        int v = phy_get_sigrssi();
+        ++hist[(unsigned)(v + 128) & 255u];
+        sum += v;
+        if (v < stats->min_dbm) stats->min_dbm = v;
+        if (v > stats->max_dbm) stats->max_dbm = v;
+        vTaskDelay(1);
+    }
+    stats->samples = SIGRSSI_SAMPLES;
+    stats->mean_dbm_x10 = (int)(sum * 10 / (int64_t)SIGRSSI_SAMPLES);
+    unsigned cumulative = 0;
+    bool p10 = false, p50 = false;
+    for (unsigned b = 0; b < 256u; ++b) {
+        cumulative += hist[b];
+        int dbm = (int)b - 128;
+        if (!p10 && cumulative * 10u >= SIGRSSI_SAMPLES) { stats->p10_dbm = dbm; p10 = true; }
+        if (!p50 && cumulative * 2u >= SIGRSSI_SAMPLES) { stats->p50_dbm = dbm; p50 = true; }
+        if (cumulative * 10u >= SIGRSSI_SAMPLES * 9u) { stats->p90_dbm = dbm; break; }
+    }
+    observe("SIGRSSI_ON");
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i) REG(0x600A7000u + s_sigrssi_words[i]) = saved[i];
+    __sync_synchronize();
+    bool restored = true;
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i)
+        restored &= REG(0x600A7000u + s_sigrssi_words[i]) == saved[i];
+    printf("SIGRSSI restore_verified=%u words=%u\n", restored, (unsigned)SIGRSSI_WORDS);
+    if (restored) observe("RESTORED");
+    phy_rx_lab_end();
+    return restored ? ESP_OK : ESP_FAIL;
+#endif
+}
+
+esp_err_t phy_rx_lab_run_track_probe(void (*observe)(const char *stage))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("PHYTRACK refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("track_AB");
+    observe("BASELINE");
+    int64_t start = esp_timer_get_time();
+    phy_param_track_tot(1, 0);
+    printf("PHYTRACK call_us=%u freq=%u\n", (unsigned)(esp_timer_get_time() - start),
+           rf_get_frequency_mhz());
+    observe("TRACKED");
+    phy_rx_lab_end();
+    return ESP_OK;
+#endif
+}
+
 /* Native analog patch prototype (#139): retain the hardware-selected tuple,
  * stop only BB acquisition, then use the vendor resume strobe. This bounded
  * console experiment does not infer acquisition-complete from an unknown FSM

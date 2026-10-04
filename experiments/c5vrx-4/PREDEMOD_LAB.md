@@ -106,3 +106,31 @@ and h0m3us3r/eSpDR (S3 DC DACs).
 
 Hardware acceptance is pending for every item; host tests cover only the
 restore logic, bounds and the solver.
+
+
+## Range labs (2026-10-04)
+
+Idea source: [FPVGateC5RX](https://github.com/RaceFPV/FPVGateC5RX) provenance
+and extended-tuning notes (facts only, no code). Every behaviour below is our
+own reading of the pinned libphy.
+
+| Key | Lab | What it does |
+|---|---|---|
+| `'` | sigRSSI A/B | Saves the eleven AGC words that `phy_check_sigrssi_en(1)` rewrites (0x600A7008/0C/10/18/30/48/90/B0/C4/EC/150; 0x7030 is the BB-AGC gate). It enables sigRSSI mode, samples `phy_get_sigrssi()` (= `(int8_t)(0x600A706C >> 8)`) at 1 ms for 1 s, then restores and verifies every word. Prints `SIGRSSI` min/p10/p50/p90/max/mean dBm, plus `RANGELAB` Q rows before, during and after. Refused while the BB-AGC gate is held. |
+| `"` | PHY tracking A/B | Calls `phy_param_track_tot(1,0)`: TX-power tracking, `phy_i2c_correct`, and `phy_cal_param_track`. The last one recalibrates RX DC, IQ and the gain table when the temperature changed, then calls `phy_chip_set_chan` on the stored frequency. `phy_set_freq` stores that frequency too, so the tune is kept. This is not reversible: it is the maintenance call the Wi-Fi driver would normally make periodically. |
+
+Questions to answer on hardware:
+1. Does sigRSSI follow the carrier at the range edge, where `Q_phase` no
+   longer separates carrier from noise? If so, it is a better NO_CARRIER,
+   idle-raster and diversity metric.
+2. In **native** mode, does the sigRSSI configuration stop the ~25–50 us
+   packet re-acquisitions? Watch the `RANGELAB` rows and, while masking,
+   `agc_flag_share_pm`. If it does, native AGC without line noise becomes
+   possible; an earlier walk test reached further with native AGC.
+3. After the board has warmed up, does tracking change noise, Q or DC?
+
+Modelled and rejected as range levers, with fine lanes, 4-bit and the 75 ns
+span: a modulo-2π decoder instead of Unwrap75 (identical click rate), a
+click clamp to black (no fewer false syncs), and digital IQ-imbalance
+correction (helps only at strong signal: 9.3° → 4.4° at 3 dB / 8° imbalance,
+nothing at the edge).

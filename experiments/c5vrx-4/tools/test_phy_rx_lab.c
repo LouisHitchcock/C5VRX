@@ -34,6 +34,28 @@ void phy_11p_set(uint8_t enable,uint8_t mode)
 #endif
     for (unsigned i=6;i<=13;++i) analog_regs[i]=60;
 }
+void vTaskDelay(unsigned ticks) { clock_us += (int64_t)ticks * 1000; }
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static unsigned sig_reads, sig_enables, sig_stages, track_calls, track_stages;
+void phy_check_sigrssi_en(uint8_t enable)
+{
+    assert(enable==1); ++sig_enables;
+    for (unsigned i=0;i<SIGRSSI_WORDS;++i) REG(0x600A7000u+s_sigrssi_words[i])^=0x0000FFFFu;
+}
+int8_t phy_get_sigrssi(void) { return (int8_t)(-95 + (int)((sig_reads++ * 7u) % 51u)); }
+void phy_param_track_tot(uint8_t wifi, uint8_t bt) { assert(wifi==1 && bt==0); ++track_calls; }
+static void sig_observe(const char *stage)
+{
+    assert(phy_rx_lab_busy()); ++sig_stages;
+    bool on = !strcmp(stage,"SIGRSSI_ON");
+    assert(on == (sig_enables==1 && sig_stages==2));
+}
+static void track_observe(const char *stage)
+{
+    assert(phy_rx_lab_busy()); ++track_stages;
+    assert(!strcmp(stage, track_calls ? "TRACKED" : "BASELINE"));
+}
+#endif
 static unsigned native_holds, native_releases, native_observations;
 static bool fail_native_hold, fail_native_release, interfere_native;
 void phy_disable_agc(void)
@@ -341,7 +363,29 @@ int main(void)
     for (unsigned r = 6; r <= 13; ++r) assert(analog_regs[r] == (0xC0u | (r + 10u)));
     assert(!phy_rx_lab_busy());
     phy_rx_lab_predemod_status();
+
+    /* sigRSSI lab: every AGC word the enable rewrites is restored exactly. */
+    for (unsigned i=0;i<SIGRSSI_WORDS;++i) REG(0x600A7000u+s_sigrssi_words[i])=0x01110000u+i;
+    uint32_t sig_words[SIGRSSI_WORDS];
+    for (unsigned i=0;i<SIGRSSI_WORDS;++i) sig_words[i]=REG(0x600A7000u+s_sigrssi_words[i]);
+    phy_rx_lab_rssi_stats_t st;
+    assert(phy_rx_lab_run_sigrssi_probe(sig_observe,&st)==ESP_OK);
+    assert(sig_enables==1 && sig_stages==3 && !phy_rx_lab_busy());
+    for (unsigned i=0;i<SIGRSSI_WORDS;++i) assert(REG(0x600A7000u+s_sigrssi_words[i])==sig_words[i]);
+    assert(st.samples==1000 && st.min_dbm==-95 && st.max_dbm==-45);
+    assert(st.p10_dbm<=st.p50_dbm && st.p50_dbm<=st.p90_dbm && st.p10_dbm>=-95 && st.p90_dbm<=-45);
+    assert(st.mean_dbm_x10>=-950 && st.mean_dbm_x10<=-450);
+    /* Refused while the BB-AGC gate is held (native hold / pacing). */
+    REG(0x600A7030)|=PHYBIT(29);
+    assert(phy_rx_lab_run_sigrssi_probe(sig_observe,&st)==ESP_ERR_INVALID_STATE && sig_enables==1);
+    REG(0x600A7030)&=~PHYBIT(29);
+    assert(phy_rx_lab_run_sigrssi_probe(NULL,&st)==ESP_ERR_INVALID_STATE);
+    /* Temperature tracking lab: one call between two observations. */
+    assert(phy_rx_lab_run_track_probe(track_observe)==ESP_OK);
+    assert(track_calls==1 && track_stages==2 && !phy_rx_lab_busy());
 #else
+    assert(phy_rx_lab_run_sigrssi_probe(NULL,NULL)==ESP_ERR_NOT_SUPPORTED);
+    assert(phy_rx_lab_run_track_probe(NULL)==ESP_ERR_NOT_SUPPORTED);
     assert(!phy_rx_lab_filter_capture_base() && !phy_rx_lab_filter_set_code(52));
     assert(phy_rx_lab_filter_calibrated_code() == -1);
     assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_ERR_NOT_SUPPORTED);
