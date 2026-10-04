@@ -84,6 +84,61 @@ sync regeneration, which the AGENTS invariant parks. A cheap BitScrambler
 the class is known only one bundle before the DAC byte is formed, and both
 counter-op bundles are already occupied.
 
+## TP2825 status and how to read it on the goggles
+
+Register 0x01 (video input status), per the Techpoint TP9950 datasheet, the
+family the HDZero firmware masks match:
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 7 | VDLOSS | 1 = video loss: sync missed for MISSCNT consecutive lines |
+| 6 | VLOCK | vertical PLL lock |
+| 5 | HLOCK | horizontal PLL lock |
+| 4 | SLOCK | colour carrier PLL lock |
+| 3 | VDET | video detected |
+| 2 | EQDET | in SD mode: 1 = 50 Hz |
+| 1 | NINTL | 1 = progressive |
+| 0 | CDET | colour carrier detect |
+
+Rockchip's TP2825 driver agrees on bit 7, on "locked = 0x60", and on bit 2 as
+PAL (1) / NTSC (0). It also uses register 0x26 as clamp control: 0x01 on
+loss, 0x02 when locked.
+
+**How the goggles use it** (`AV_in_detect`, revision `adb901d9`):
+- **Goggles 2:**
+  - locked = VLOCK + HLOCK (+ VDET); loss = VDLOSS, or no lock/detect at all;
+  - SLOCK is not needed;
+  - the PAL/NTSC auto-switch fires when VLOCK + VDET are set and **bit 0**
+    disagrees with the current mode on two consecutive ~100 ms polls. Each
+    switch changes decoder mode and display timing, so it is a visible
+    desync;
+  - it therefore depends on the colour carrier detection of our burst.
+- **Goggles 1:**
+  - same lock logic, but the auto-switch uses **bit 2** (50 Hz), with
+    HLOCK + VDET and NINTL = 0;
+  - it rewrites TP2825 register 0x23 (labelled clamp) on every lock-state
+    change.
+
+**Reading it on the goggles (no extra hardware):**
+1. Menu Storage → Logging on, then reboot. The app writes
+   `/mnt/extsd/HDZGOGGLE.log` on the SD card. Every standard switch logs
+   `AV_in_detect -- switch: av_pal = N, rdat = XX` with the raw register;
+   Goggles 1 also logs every `Clamp = ..` state change.
+2. Optional live view: WiFi page → SSH on, root password set there. Then:
+   `while true; do i2cget -y 2 0x44 0x01; usleep 50000; done` (busybox
+   i2cget; TP2825 at 0x44 on bus 2).
+
+**Reading the result:**
+- `0x68`/`0x78` steady: locked; the problem is downstream, or a short glitch.
+- Bit 7 flashing: syncs are being missed, so the sync is too shallow,
+  clipped, or the output stalls (gaps in the stream).
+- 0x60 dropping while VDET stays: H/V PLL loss, so line timing jumps
+  (dropped or inserted samples) or the sync edges are disturbed.
+- `switch` lines in the log: PAL/NTSC flapping. On Goggles 2 the trigger is
+  bit 0 (carrier detect), so our colour burst. Our burst is ~2 dB (NTSC) to
+  ~3 dB (PAL) below nominal from the 75 ns span and hold (sinc²), plus
+  quantization noise.
+
 ## No-carrier idle raster
 
 `idle_raster.h` (host-tested in `tools/test_idle_raster.c`) and
