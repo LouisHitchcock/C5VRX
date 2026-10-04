@@ -35,6 +35,10 @@ def main():
     assert "static int8_t active = -1;" in pipeline and "!c5vrx4_agc_mask_active() && !s_suspend_depth" in pipeline
     assert "!c5vrx4_agc_mask_active() &&" in (ROOT / "cvbs_level_hw.c").read_text()
     assert "s_c5vrx4_mask_static_program" in video and '"agc_flag"' in pipeline
+    # No-carrier idle raster: only from the control task, never during a menu
+    # timeout, last stable standard persisted, '_' opt-out.
+    assert "idle_raster_service(q_phase, fresh_sync" in video and '"idle_raster"' in pipeline
+    assert "menu_was_active && !IDLE_RASTER_ACTIVE()" in video and '"last_std"' in pipeline
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),
@@ -54,6 +58,7 @@ def main():
         ("c5vrx4_gate", ["-pthread", "-I.", "-Itools/phy_lab_stubs"]),
         ("predemod", ["-I.", "-lm"]),
         ("agc_witness", ["-I."]),
+        ("idle_raster", ["-I."]),
     ]
     with tempfile.TemporaryDirectory(prefix="c5vrx4-verify-") as td:
         for name, extra in cases:
@@ -74,7 +79,7 @@ def main():
     for name in ("test_unwrap.py", "test_cvbs.py", "test_agc_mask.py", "tools/test_phase8_hr_live.py",
                  "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
         run([sys.executable, name])
-    print("PASS: isolated C5VRX-4 integration, 23 C regressions, exhaustive unwrap and source-driven DSP tests")
+    print("PASS: isolated C5VRX-4 integration, 24 C regressions, exhaustive unwrap and source-driven DSP tests")
 
 if __name__ == "__main__":
     main()

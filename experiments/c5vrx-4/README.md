@@ -80,6 +80,12 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   data bit 0 (Q LSB) and the STATIC program holds the last DAC value through
   every walk, reseeding phase so the next clean span is exact. Native keeps
   its sub-line reaction; `|` opts out. See NATIVE_AGC_MASK.md.
+- No-carrier idle raster (default on, for HDZero/TP2825 goggles): after 2 s
+  without any carrier or sync, the standalone BT.470 raster sends clean black
+  video in the live/last stable standard instead of demodulated noise, so the
+  goggles neither show green nor switch PAL/NTSC. The first carrier or sync
+  returns to live video. The last stable standard is kept in NVS. `_` opts
+  out. See HDZERO.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
@@ -108,6 +114,7 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `^` | Toggle default-on fixed analog BW (off restores the V5 BW gear), reboot |
 | `*` | Native AGC witness calibration (VTX on, native mode): find the acquisition state bit, store, reboot |
 | `\|` | Toggle the native AGC acquisition mask, reboot |
+| `_` | Toggle the no-carrier idle raster (HDZero), reboot |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
 ultrafine, 2 protected V5); the older `force_ultra_v2` and PR146 `force_ultra`

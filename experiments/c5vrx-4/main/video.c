@@ -36,6 +36,7 @@
 #include "cvbs_snapshot.h"
 #include "predemod.h"
 #include "agc_witness.h"
+#include "idle_raster.h"
 #endif
 #include "rf.h"
 #include "phy_rx_lab.h"
@@ -294,6 +295,15 @@ static unsigned s_level_work_us;
 #endif
 static unsigned s_menu_node_count;
 static volatile bool s_menu_active;
+#ifdef C5VRX4_EXPERIMENT
+/* No-carrier idle raster: the standalone raster owns TX (s_menu_active) with
+ * a black picture instead of the menu; see idle_raster.h. */
+static idle_raster_t s_idle;
+static unsigned s_idle_failures;
+#define IDLE_RASTER_ACTIVE() (s_idle.active)
+#else
+#define IDLE_RASTER_ACTIVE() false
+#endif
 static volatile bool s_menu_boot_btn_enabled = true;
 static volatile int s_menu_cursor;
 static int s_menu_timeout_ticks;
@@ -2868,7 +2878,9 @@ static void predemod_print(const char *tag, const char *stage, int extra,
 
 static bool predemod_pause(const char *tag, analog_agc_mode_t *saved_mode)
 {
-    if (rf_native_agc_active() || s_gain_sweep.active || s_menu_active ||
+    /* These labs use RX and gain only: the idle raster may keep TX. */
+    if (rf_native_agc_active() || s_gain_sweep.active ||
+        (s_menu_active && !IDLE_RASTER_ACTIVE()) ||
         s_pre_q4_probe_active || s_rssi_probe_active) {
         printf("%s refused=other_lab_menu_or_native_owner\n", tag);
         return false;
@@ -2892,6 +2904,7 @@ static void predemod_correction_print(void);
 #endif
 static void bw_status_print(void);
 static void agc_mask_status_print(void);
+static void idle_raster_status_print(void);
 static void lab_predemod_status(void)
 {
     const arc_gain_table_t *table = rf_get_arc_gain_table();
@@ -2913,6 +2926,7 @@ static void lab_predemod_status(void)
     phy_rx_lab_predemod_status();
     bw_status_print();
     agc_mask_status_print();
+    idle_raster_status_print();
 }
 
 /* Sampling phase (#165 P0). PARLIO RX runs PLL_F240M/6 while MODEM_DIAG
@@ -4501,6 +4515,12 @@ static video_standard_t resolved_menu_standard(void)
 {
     if (s_video_std_mode == VIDEO_STD_MODE_PAL) return VIDEO_STD_PAL;
     if (s_video_std_mode == VIDEO_STD_MODE_NTSC) return VIDEO_STD_NTSC;
+#ifdef C5VRX4_EXPERIMENT
+    /* AUTO with no live detection (no carrier, menu after reboot): start in
+     * the last stable live standard so the goggles need no PAL/NTSC switch. */
+    if (!s_detected_video_std_valid && c5vrx4_last_standard() != C5VRX4_STD_UNKNOWN)
+        return c5vrx4_last_standard() ? VIDEO_STD_PAL : VIDEO_STD_NTSC;
+#endif
     return s_detected_video_std_valid ? s_detected_video_std : s_video_std;
 }
 
@@ -4665,8 +4685,28 @@ static void menu_draw_exit_page(void)
     menu_ui_text("12S AUTO EXIT ENABLED", 100, 47, UI_MUTED);
 }
 
+#ifdef C5VRX4_EXPERIMENT
+/* Idle raster picture: blanking-level black (the raster's own blank code)
+ * with one dim status line. Sync, equalizing/broad pulses and burst come
+ * unchanged from the BT.470 menu raster. */
+static void menu_render_idle(void)
+{
+    memset(s_menu_raster.ui, 20, sizeof(s_menu_raster.ui));
+    const fpv_channel_t *ch = rf_get_current_channel();
+    char buf[48];
+    int n = snprintf(buf, sizeof(buf), "C5VRX %s %uM NO SIGNAL", ch->name, ch->freq_mhz);
+    if (n < 0) n = 0;
+    if (n > (int)(MENU_UI_WIDTH / 8u)) n = (int)(MENU_UI_WIDTH / 8u);
+    menu_ui_text(buf, ((int)MENU_UI_WIDTH - n * 8) / 2, (int)MENU_UI_LINES / 2 - 4, UI_MUTED);
+    sync_dma_c2m(s_menu_raster.ui, sizeof(s_menu_raster.ui));
+}
+#endif
+
 static void menu_render_menu(void)
 {
+#ifdef C5VRX4_EXPERIMENT
+    if (s_idle.active) { menu_render_idle(); return; }
+#endif
     memset(s_menu_raster.ui, UI_ROOT, sizeof(s_menu_raster.ui));
     menu_draw_shell();
 
@@ -4942,6 +4982,9 @@ static void video_set_menu_mode(bool active)
         }
         start_menu_tx();
     } else {
+#ifdef C5VRX4_EXPERIMENT
+        idle_raster_abandon(&s_idle);
+#endif
         ESP_ERROR_CHECK(parlio_tx_unit_disable(s_tx));
         /* Menu -> live: the BitScrambler is already disabled; do not disable twice. */
         if (s_tx_unit_mode != s_output_mode) {
@@ -4978,6 +5021,21 @@ static void video_set_menu_mode(bool active)
     }
     s_menu_timeout_ticks = 0;
     s_menu_active = active;
+}
+
+/* Open the user menu; from the idle raster this only redraws (TX already
+ * belongs to the standalone raster). */
+static void video_open_menu(void)
+{
+#ifdef C5VRX4_EXPERIMENT
+    if (s_idle.active) {
+        idle_raster_abandon(&s_idle);
+        s_menu_timeout_ticks = 0;
+        menu_render_menu();
+        return;
+    }
+#endif
+    video_set_menu_mode(true);
 }
 
 static void menu_cycle_standard_mode(void)
@@ -5209,7 +5267,7 @@ static void channel_auto_search(void)
 
 static void handle_button_short_click(void)
 {
-    if (s_menu_active) {
+    if (s_menu_active && !IDLE_RASTER_ACTIVE()) {
         s_menu_cursor = (s_menu_cursor + 1) % 6;
         menu_render_menu();
         s_menu_timeout_ticks = 0;
@@ -5222,6 +5280,7 @@ static void handle_button_short_click(void)
         video_standard_detector_reset();
         settings_save();
         const fpv_channel_t *ch = rf_get_current_channel();
+        if (IDLE_RASTER_ACTIVE()) menu_render_menu();
         printf("[BTN: SHORT] Channel switched to %s (%u MHz) in %s\n",
                ch->name, ch->freq_mhz, rf_get_band_name(rf_get_current_band()));
     }
@@ -5241,7 +5300,7 @@ static void open_recovery_menu(void)
     s_menu_cursor = 0;
     s_menu_timeout_ticks = 0;
     settings_save();
-    video_set_menu_mode(true);
+    video_open_menu();
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     printf("[RECOVERY] PHASE8 HR TEST + 6BIT@40 + DIRECT GAIN V3 TEST restored; menu %s\n",
 #elif CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
@@ -5254,7 +5313,7 @@ static void open_recovery_menu(void)
 
 static void handle_button_long_click(void)
 {
-    if (!s_menu_active) {
+    if (!s_menu_active || IDLE_RASTER_ACTIVE()) {
         if (!MENU_RUNTIME_ENABLED) {
             printf("[BTN: LONG] Menu temporarily disabled; live video unchanged\n");
             return;
@@ -5265,7 +5324,7 @@ static void handle_button_long_click(void)
         }
         s_menu_cursor = 0;
         s_menu_timeout_ticks = 0;
-        video_set_menu_mode(true);
+        video_open_menu();
         printf("[BTN: LONG] Menu Opened!\n");
     } else {
         switch (s_menu_cursor) {
@@ -5494,6 +5553,16 @@ static void predemod_sphase_autocheck(void)
  * most once a minute if a carrier interrupts it. */
 #define BW_AUTO_QUIET_TICKS 12u
 #define BW_AUTO_RETRY_US    60000000
+static bool s_bw_autocal_tried;
+/* First boot: the fixed-BW calibration needs 3 s of live no-carrier
+ * listening, so the idle raster waits until it has been tried once. */
+static bool bw_autocal_waiting(void)
+{
+    return !s_bw_autocal_tried && c5vrx4_fixed_bw_enabled() &&
+           c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED &&
+           phy_rx_lab_filter_calibrated_code() >= 0;
+}
+
 static void predemod_bw_autocal(void)
 {
     static unsigned quiet_ticks;
@@ -5510,6 +5579,7 @@ static void predemod_bw_autocal(void)
     if (last_try_us && now - last_try_us < BW_AUTO_RETRY_US) return;
     last_try_us = now;
     quiet_ticks = 0;
+    s_bw_autocal_tried = true;
     (void)lab_run_bw_calibration(true);
 }
 
@@ -5535,6 +5605,85 @@ static void predemod_correction_print(void)
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
            s_sphase_auto_done ? s_sphase_auto_ppm : 0u);
     c5v4_decoder_print();
+}
+#endif
+
+#ifdef C5VRX4_EXPERIMENT
+#define IDLE_RETRY_TICKS     200u /* 10 s after the raster could not take TX */
+#define IDLE_STD_SYNC_WINDOWS 20u /* valid syncs before a standard is stored */
+static const char *s_idle_last = "none";
+
+/* One control tick (50 ms), analog_agc_task only: it also owns the menu. */
+static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_ticks)
+{
+    static unsigned std_windows, retry_ticks;
+    static int std_seen = -1;
+    /* Stable live standard: the same detection over 20 fresh sync windows. */
+    if (fresh_sync && !s_menu_active && s_detected_video_std_valid) {
+        int std = s_detected_video_std == VIDEO_STD_PAL;
+        if (std != std_seen) { std_seen = std; std_windows = 0; }
+        if (++std_windows == IDLE_STD_SYNC_WINDOWS) c5vrx4_last_standard_store((uint8_t)std);
+    }
+    if (retry_ticks) --retry_ticks;
+    const bool native = rf_native_agc_active();
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    const bool v5_max = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
+        s_agc_mode == ANALOG_AGC_ACTIVE && table &&
+        s_direct_gain_v3.current_gain == table->max_index;
+    const bool settling = !native && s_direct_gain_v3.state == DG3_SETTLE;
+    const bool bw_waiting = bw_autocal_waiting();
+#else
+    const bool v5_max = false, settling = false, bw_waiting = false;
+#endif
+    idle_raster_obs_t o = {
+        .enabled = c5vrx4_idle_raster_enabled() && MENU_RUNTIME_ENABLED,
+        .owner_free = !s_menu_active && !s_rssi_probe_active && !s_gain_sweep.active &&
+                      !s_pre_q4_probe_active && !phy_rx_lab_busy() &&
+                      !s_channel_scan_active && !bw_waiting && retry_ticks == 0u,
+        /* No-carrier survival state: V5 table maximum, or native AGC. */
+        .survival_gain = native || v5_max,
+        .settling = settling,
+        .q_phase = q_phase,
+        .fresh_sync = fresh_sync,
+        .sync_age_ticks = sync_age_ticks,
+    };
+    switch (idle_raster_step(&s_idle, &o)) {
+    case IDLE_RASTER_ENTER:
+        video_set_menu_mode(true);
+        if (!s_menu_active) {
+            idle_raster_abandon(&s_idle);
+            ++s_idle_failures;
+            retry_ticks = IDLE_RETRY_TICKS;
+            s_idle_last = "refused_menu_raster_unavailable";
+            printf("IDLE_RASTER refused=menu_raster_unavailable retry_s=10\n");
+            break;
+        }
+        s_idle_last = "entered_no_carrier";
+        printf("IDLE_RASTER enter std=%s q=%d gain=%u native=%u\n",
+               s_video_std == VIDEO_STD_PAL ? "PAL" : "NTSC", q_phase, s_current_gain, native);
+        break;
+    case IDLE_RASTER_EXIT:
+        video_set_menu_mode(false);
+        s_idle_last = fresh_sync ? "exit_sync" : "exit_carrier";
+        printf("IDLE_RASTER exit reason=%s q=%d gain=%u\n",
+               fresh_sync ? "sync" : "carrier", q_phase, s_current_gain);
+        break;
+    default:
+        break;
+    }
+}
+
+static void idle_raster_status_print(void)
+{
+    uint8_t last = c5vrx4_last_standard();
+    printf("IDLE_RASTER enabled=%u active=%u entries=%lu exits=%lu failures=%u last=%s "
+           "std=%s last_live_std=%s enter_s=2 quiet_q<%d carrier_q>=%d hardware_acceptance=pending\n",
+           c5vrx4_idle_raster_enabled(), s_idle.active, (unsigned long)s_idle.entries,
+           (unsigned long)s_idle.exits, s_idle_failures, s_idle_last,
+           video_standard_name(resolved_menu_standard()),
+           last == C5VRX4_STD_UNKNOWN ? "unknown" : last ? "PAL" : "NTSC",
+           IDLE_RASTER_QUIET_Q, IDLE_RASTER_CARRIER_Q);
 }
 #endif
 
@@ -5597,7 +5746,10 @@ static void analog_agc_task(void *arg)
         for (unsigned commands = 0; commands < 16 &&
              xQueueReceive(s_menu_commands, &command, 0) == pdTRUE; ++commands) {
             if (command == 'o') {
-                if (MENU_RUNTIME_ENABLED) video_set_menu_mode(!s_menu_active);
+                if (MENU_RUNTIME_ENABLED) {
+                    if (!s_menu_active || IDLE_RASTER_ACTIVE()) video_open_menu();
+                    else video_set_menu_mode(false);
+                }
                 else printf("[MENU] Temporarily disabled; live video unchanged\n");
             } else if (command == 'v' || command == 'V') {
                 if (MENU_RUNTIME_ENABLED) menu_cycle_standard_mode();
@@ -5610,7 +5762,7 @@ static void analog_agc_task(void *arg)
                 else printf("[MENU] BOOT menu trigger is temporarily disabled\n");
             } else if (s_menu_active && (command == ' ' || command == 'n' || command == '\t'))
                 handle_button_short_click();
-            else if (s_menu_active) handle_button_long_click();
+            else if (s_menu_active && !IDLE_RASTER_ACTIVE()) handle_button_long_click();
         }
 
         if (boot_grace_ticks > 0) {
@@ -5627,7 +5779,8 @@ static void analog_agc_task(void *arg)
                 /* This path deliberately ignores the persisted BOOT-menu bit.
                  * The ordinary 0.6 s long-click may report Safe Flight at tick
                  * 12; continuing to hold until tick 60 must still recover. */
-                if (!s_menu_active && btn_ticks >= 60 && !btn_recovery_fired) {
+                if ((!s_menu_active || IDLE_RASTER_ACTIVE()) && btn_ticks >= 60 &&
+                    !btn_recovery_fired) {
                     btn_recovery_fired = true;
                     btn_long_fired = true;
                     open_recovery_menu();
@@ -5638,7 +5791,8 @@ static void analog_agc_task(void *arg)
                     handle_button_long_click();
                 }
 
-                if (btn_ticks >= 40 && s_menu_active && s_menu_cursor == 1 && !btn_scan_fired) {
+                if (btn_ticks >= 40 && s_menu_active && !IDLE_RASTER_ACTIVE() &&
+                    s_menu_cursor == 1 && !btn_scan_fired) {
                     btn_scan_fired = true;
                     channel_auto_search();
                     s_menu_timeout_ticks = 0;
@@ -5708,7 +5862,7 @@ static void analog_agc_task(void *arg)
                               target_gain);
         }
 
-        if (menu_was_active) {
+        if (menu_was_active && !IDLE_RASTER_ACTIVE()) {
             s_menu_timeout_ticks++;
             if (s_menu_timeout_ticks >= 240) {
                 settings_save();
@@ -5858,6 +6012,9 @@ static void analog_agc_task(void *arg)
         if (fresh_sync) sync_age_ticks = 0;
         else if (sync_age_ticks < 100) ++sync_age_ticks;
         bool recent_sync = sync_age_ticks < 20;
+#ifdef C5VRX4_EXPERIMENT
+        idle_raster_service(q_phase, fresh_sync, (unsigned)sync_age_ticks);
+#endif
 
         fusion_observation_t fusion_obs = fusion_make_observation(
             p_median, q_phase, clip_permille, origin_permille,
@@ -6908,6 +7065,7 @@ static void console_diag_task(void *arg)
                     printf("  '%%' / '&':   Toggle default-on digital DC recentring / first-lock sampling-phase check, reboot\n");
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
+                    printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

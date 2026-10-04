@@ -218,6 +218,43 @@ bool c5vrx4_agc_mask_active(void)
     return active;
 }
 
+static int8_t s_idle_raster = -1;
+bool c5vrx4_idle_raster_enabled(void)
+{
+    if (s_idle_raster < 0) s_idle_raster = nvs_flag("idle_raster", true);
+    return s_idle_raster;
+}
+
+static int16_t s_last_std = -1;
+uint8_t c5vrx4_last_standard(void)
+{
+    if (s_last_std < 0) {
+        uint8_t value = C5VRX4_STD_UNKNOWN;
+        nvs_handle_t handle;
+        if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+            (void)nvs_get_u8(handle, "last_std", &value);
+            nvs_close(handle);
+        }
+        s_last_std = value > 1u ? C5VRX4_STD_UNKNOWN : value;
+    }
+    return (uint8_t)s_last_std;
+}
+
+/* Written only when the stable standard changes (normally once per camera). */
+void c5vrx4_last_standard_store(uint8_t standard)
+{
+    if (standard > 1u || standard == c5vrx4_last_standard()) return;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "last_std", standard);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) s_last_std = standard;
+    else printf("C5VRX4 last_std store err=%s\n", esp_err_to_name(err));
+}
+
 static bool toggle_flag(const char *key, bool current, const char *name)
 {
     nvs_handle_t handle;
@@ -433,6 +470,7 @@ bool c5vrx4_console(int key)
     if (key == '&') return toggle_flag("sphase_auto", c5vrx4_sphase_auto_enabled(), "sphase_auto");
     if (key == '^') return toggle_flag("fixed_bw", c5vrx4_fixed_bw_enabled(), "fixed_bw");
     if (key == '|') return toggle_flag("agc_mask", c5vrx4_agc_mask_enabled(), "agc_mask");
+    if (key == '_') return toggle_flag("idle_raster", c5vrx4_idle_raster_enabled(), "idle_raster");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

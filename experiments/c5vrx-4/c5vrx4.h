@@ -57,5 +57,15 @@ bool c5vrx4_agc_flag_store(uint8_t flag);
 bool c5vrx4_agc_mask_enabled(void);
 /* Native + enabled + calibrated + STATIC decode: masked program and lane. */
 bool c5vrx4_agc_mask_active(void);
+/* No-carrier idle raster (default on, '_' opts out with a reboot): after 2 s
+ * without any carrier or sync, the standalone raster emits clean black video
+ * in the last live standard so strict goggles (HDZero/TP2825) stay locked;
+ * live video returns at the first carrier or sync. NVS idle_raster. */
+bool c5vrx4_idle_raster_enabled(void);
+/* Last stable live standard (0 NTSC, 1 PAL, 255 unknown), NVS last_std:
+ * the idle raster and an AUTO menu start in it after a reboot. */
+#define C5VRX4_STD_UNKNOWN UINT8_MAX
+uint8_t c5vrx4_last_standard(void);
+void c5vrx4_last_standard_store(uint8_t standard);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);

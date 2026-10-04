@@ -44,5 +44,9 @@ motivated, and keep the `^` opt-out. Leon asked on 2026-10-04 for the native AGC
 acquisition mask (NATIVE_AGC_MASK.md): native mode only, witness bit measured
 on the board (never guessed), STATIC decode, six BitScrambler slots, three
 bundles per span on every path; keep the `|` opt-out, the per-boot latch, the
-pacing exclusion and the DC-recentring refusal (bank 3 is the hold plane). Run verify.py and exact-head
+pacing exclusion and the DC-recentring refusal (bank 3 is the hold plane). The
+no-carrier idle raster (HDZERO.md, 2026-10-04) only replaces demodulated
+receiver noise: keep it out of any state with a carrier or sync, exit at the
+first one, keep V5 at its no-carrier maximum while it owns TX, and keep the `_`
+opt-out. It is not sync regeneration of a received picture. Run verify.py and exact-head
 IDF CI before requesting merge approval; merge only after Leon approves.
