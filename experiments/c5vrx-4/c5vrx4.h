@@ -33,17 +33,18 @@ void c5vrx4_lane_print(void);
  * '&' one automatic sampling-phase check at the first carrier lock (sphase_auto). */
 bool c5vrx4_dc_recenter_enabled(void);
 bool c5vrx4_sphase_auto_enabled(void);
-/* Fixed analog bandwidth (default on, '^' opts out with a reboot): the RX RC
- * filter capacitors (BBTOP 0x67 regs 6..13) get one calibrated offset from the
- * per-chip baseline, chosen from the measured receiver-noise width so the
- * full -3 dB width is as close as possible to (not below) bw_target (24 MHz).
- * The digital path stays BW40 and the BW20/BW40 gear is retired. The offset is
- * measured once without a carrier ('=' repeats it) and kept in NVS. */
+/* Fixed analog bandwidth (default on, '^' opts out with a reboot), after
+ * ESPARGOS esp-sdr's C5 BANDWIDTH control: one absolute RX0 capacitor code in
+ * BBTOP 0x67 regs 6/7, chosen from the receiver-noise width measured on this
+ * chip so the full -3 dB width is the narrowest still >= bw_target (24 MHz),
+ * or the widest available when none reaches it. The digital path stays BW40
+ * and the BW20/BW40 gear is retired. Measured once without a carrier ('='
+ * repeats it); NVS bw_code (255 = not yet measured) and bw_width. */
 #define C5VRX4_BW_UNCALIBRATED UINT8_MAX
 bool c5vrx4_fixed_bw_enabled(void);
-uint8_t c5vrx4_bw_offset(void);
+uint8_t c5vrx4_bw_code(void);
 unsigned c5vrx4_bw_width_khz(void);
 unsigned c5vrx4_bw_target_khz(void);
-bool c5vrx4_bw_store(uint8_t offset, unsigned width_khz);
+bool c5vrx4_bw_store(uint8_t code, unsigned width_khz);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);

@@ -128,7 +128,7 @@ bool c5vrx4_sphase_auto_enabled(void)
     return s_sphase_auto;
 }
 
-/* Fixed analog bandwidth: one calibrated RX filter offset, never geared. */
+/* Fixed analog bandwidth: one measured RX filter code, never geared. */
 static int8_t s_fixed_bw = -1;
 bool c5vrx4_fixed_bw_enabled(void)
 {
@@ -137,37 +137,37 @@ bool c5vrx4_fixed_bw_enabled(void)
 }
 
 static bool s_bw_loaded;
-static uint8_t s_bw_offset = C5VRX4_BW_UNCALIBRATED, s_bw_target_mhz = 24;
+static uint8_t s_bw_code = C5VRX4_BW_UNCALIBRATED, s_bw_target_mhz = 24;
 static uint16_t s_bw_width_khz;
 static void bw_load(void)
 {
     if (s_bw_loaded) return;
     nvs_handle_t handle;
     if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
-        (void)nvs_get_u8(handle, "bw_offset", &s_bw_offset);
+        (void)nvs_get_u8(handle, "bw_code", &s_bw_code);
         (void)nvs_get_u16(handle, "bw_width", &s_bw_width_khz);
         (void)nvs_get_u8(handle, "bw_target", &s_bw_target_mhz);
         nvs_close(handle);
     }
-    if (s_bw_offset != C5VRX4_BW_UNCALIBRATED && s_bw_offset > 60u) s_bw_offset = C5VRX4_BW_UNCALIBRATED;
+    if (s_bw_code != C5VRX4_BW_UNCALIBRATED && s_bw_code > 63u) s_bw_code = C5VRX4_BW_UNCALIBRATED;
     if (s_bw_target_mhz < 12u || s_bw_target_mhz > 40u) s_bw_target_mhz = 24u;
     s_bw_loaded = true;
 }
-uint8_t c5vrx4_bw_offset(void) { bw_load(); return s_bw_offset; }
+uint8_t c5vrx4_bw_code(void) { bw_load(); return s_bw_code; }
 unsigned c5vrx4_bw_width_khz(void) { bw_load(); return s_bw_width_khz; }
 unsigned c5vrx4_bw_target_khz(void) { bw_load(); return s_bw_target_mhz * 1000u; }
-bool c5vrx4_bw_store(uint8_t offset, unsigned width_khz)
+bool c5vrx4_bw_store(uint8_t code, unsigned width_khz)
 {
     bw_load();
     nvs_handle_t handle;
     esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
     if (err == ESP_OK) {
-        err = nvs_set_u8(handle, "bw_offset", offset);
+        err = nvs_set_u8(handle, "bw_code", code);
         if (err == ESP_OK) err = nvs_set_u16(handle, "bw_width", (uint16_t)(width_khz > 65535u ? 65535u : width_khz));
         if (err == ESP_OK) err = nvs_commit(handle);
         nvs_close(handle);
     }
-    if (err == ESP_OK) { s_bw_offset = offset; s_bw_width_khz = (uint16_t)(width_khz > 65535u ? 65535u : width_khz); }
+    if (err == ESP_OK) { s_bw_code = code; s_bw_width_khz = (uint16_t)(width_khz > 65535u ? 65535u : width_khz); }
     else printf("C5VRX4 bw_store err=%s\n", esp_err_to_name(err));
     return err == ESP_OK;
 }

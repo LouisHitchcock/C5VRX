@@ -34,8 +34,11 @@ do not claim their proof from default-on authorization or host tests. H/V
 regeneration and pre-Q4 (PHY) DC correction remain absent outside the reversible `#`
 lab. Leon authorized default-on digital DC recentring of the static decoder and
 a first-lock sampling-phase check on 2026-10-04; keep their opt-outs, refusal
-conditions and verified LUT path. Leon also authorized a fixed, self-calibrated
-analog RX filter width (target 24 MHz) replacing the BW20/BW40 gear on
-2026-10-04: offsets stay relative to the boot-captured per-chip baseline,
-calibrate only without a carrier, and keep the `^` opt-out. Run verify.py and exact-head
+conditions and verified LUT path. Leon also authorized a fixed, measured analog
+RX filter width (target 24 MHz) replacing the BW20/BW40 gear on 2026-10-04.
+It extends ESPARGOS esp-sdr's C5 BANDWIDTH control (absolute regs 6/7 code,
+noise-FFT curves, commit ac627b0b) and zerowidth PR #3's 11p noise result;
+keep that credit, keep regs 8..13 and upper bits calibrated, calibrate only
+without a carrier, never go below the 24 MHz floor that C5VRX's BW20 test
+motivated, and keep the `^` opt-out. Run verify.py and exact-head
 IDF CI before requesting merge approval; merge only after Leon approves.

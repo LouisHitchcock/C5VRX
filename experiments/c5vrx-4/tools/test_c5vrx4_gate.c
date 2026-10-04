@@ -32,17 +32,17 @@ esp_err_t gptimer_set_alarm_action(gptimer_handle_t t,const gptimer_alarm_config
 uint8_t rf_get_iq_lanes(void) { return 2; }
 esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *h)
 { assert(!strcmp(name,"c5vrx4")); (void)mode; *h=1; return ESP_OK; }
-static int saved_bw_offset = -1;
+static int saved_bw_code = -1;
 static uint16_t saved_bw_width;
 esp_err_t nvs_get_u8(nvs_handle_t h,const char *key,uint8_t *v)
 {
     (void)h;
     if (!strcmp(key,"level_lab") && saved_level >= 0) { *v=saved_level; return ESP_OK; }
-    if (!strcmp(key,"bw_offset") && saved_bw_offset >= 0) { *v=(uint8_t)saved_bw_offset; return ESP_OK; }
+    if (!strcmp(key,"bw_code") && saved_bw_code >= 0) { *v=(uint8_t)saved_bw_code; return ESP_OK; }
     return ESP_FAIL;
 }
 esp_err_t nvs_set_u8(nvs_handle_t h,const char *key,uint8_t v)
-{ (void)h; if (!strcmp(key,"bw_offset")) { saved_bw_offset=v; return ESP_OK; } return ESP_FAIL; }
+{ (void)h; if (!strcmp(key,"bw_code")) { saved_bw_code=v; return ESP_OK; } return ESP_FAIL; }
 esp_err_t nvs_get_u16(nvs_handle_t h,const char *key,uint16_t *v)
 { (void)h; if (!strcmp(key,"bw_width") && saved_bw_width) { *v=saved_bw_width; return ESP_OK; } return ESP_FAIL; }
 esp_err_t nvs_set_u16(nvs_handle_t h,const char *key,uint16_t v)
@@ -57,11 +57,11 @@ int main(void)
 {
     /* Fixed analog BW: on by default, uncalibrated until a measurement is stored. */
     assert(c5vrx4_fixed_bw_enabled());
-    assert(c5vrx4_bw_offset() == C5VRX4_BW_UNCALIBRATED && c5vrx4_bw_target_khz() == 24000u);
-    assert(c5vrx4_bw_store(12, 24375) && c5vrx4_bw_offset() == 12 && c5vrx4_bw_width_khz() == 24375u);
-    assert(saved_bw_offset == 12 && saved_bw_width == 24375u);
-    s_bw_loaded = false; saved_bw_offset = 99; /* corrupt value is ignored */
-    assert(c5vrx4_bw_offset() == C5VRX4_BW_UNCALIBRATED);
+    assert(c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED && c5vrx4_bw_target_khz() == 24000u);
+    assert(c5vrx4_bw_store(52, 24375) && c5vrx4_bw_code() == 52 && c5vrx4_bw_width_khz() == 24375u);
+    assert(saved_bw_code == 52 && saved_bw_width == 24375u);
+    s_bw_loaded = false; saved_bw_code = 64; /* out-of-range code is ignored */
+    assert(c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED);
     assert(c5vrx4_cvbs_mode() == C5VRX4_CVBS_STD150);
     assert(!strcmp(c5vrx4_cvbs_mode_name(), "STD150"));
     assert(c5vrx4_level_enabled()); /* absent NVS enables the new default */

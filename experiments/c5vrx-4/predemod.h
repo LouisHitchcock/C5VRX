@@ -229,10 +229,10 @@ static inline unsigned predemod_psd_width_khz(const float psd[PREDEMOD_FFT_N])
     return (edge[0] + edge[1] + 1) * PREDEMOD_BIN_KHZ;
 }
 
-/* Narrowest filter offset whose measured width still covers the target.
- * widths[] follow offsets[] in increasing order; invalid (0) entries are
- * skipped. Returns the chosen index, or -1 when even the calibrated filter
- * is narrower than the target (keep the calibrated base, offset 0). */
+/* Narrowest filter setting whose measured width still covers the target.
+ * widths[] follow the swept codes in increasing (narrowing) order; invalid
+ * (0) entries are skipped. Returns the chosen index, or -1 when even the
+ * widest setting is narrower than the target (the caller keeps the widest). */
 static inline int predemod_bw_choose(const unsigned *widths_khz, unsigned count,
                                      unsigned target_khz)
 {
@@ -240,4 +240,50 @@ static inline int predemod_bw_choose(const unsigned *widths_khz, unsigned count,
     for (unsigned k = 0; k < count; ++k)
         if (widths_khz[k] && widths_khz[k] >= target_khz) best = (int)k;
     return best;
+}
+
+/* Reference only: ESPARGOS esp-sdr (GPL-3.0), main/common/rx_bandwidth.h at
+ * commit ac627b0b, C5 BBTOP 0x67 regs 6/7 absolute code -> approximate full
+ * noise width, median noise FFTs at 2300/5500 MHz, 80 MS/s IQ10. Mode 0 is
+ * PHY channel mode 0 (11-23 MHz); mode 1 the wide path (22-48 MHz). Measured
+ * on their board; C5VRX measures its own chip and uses this to identify the
+ * mode and to report the expected width. */
+static inline unsigned predemod_bw_reference_khz(unsigned mode, unsigned code)
+{
+    static const uint8_t code0[] = {0, 4, 8, 12, 16, 24, 32, 40, 48, 60};
+    static const uint8_t mhz0[] = {23, 22, 21, 20, 18, 16, 15, 13, 12, 11};
+    static const uint8_t code1[] = {0, 4, 8, 12, 16, 24, 32, 40, 48, 56, 60};
+    static const uint8_t mhz1[] = {48, 45, 42, 40, 37, 34, 30, 27, 25, 23, 22};
+    const uint8_t *c = mode ? code1 : code0, *m = mode ? mhz1 : mhz0;
+    unsigned n = mode ? sizeof(code1) : sizeof(code0);
+    if (code >= c[n - 1]) return m[n - 1] * 1000u;
+    for (unsigned k = 1; k < n; ++k)
+        if (code <= c[k]) {
+            unsigned span = c[k] - c[k - 1];
+            return (m[k - 1] * 1000u * (c[k] - code) + m[k] * 1000u * (code - c[k - 1]) + span / 2) / span;
+        }
+    return m[0] * 1000u;
+}
+
+/* Which esp-sdr curve the measured widths follow: mean absolute error in kHz
+ * per mode, with the reference capped at the 40 MHz our 40-MS/s view can
+ * show. Returns the better mode (0/1), or -1 without valid widths. */
+static inline int predemod_bw_mode_fit(const uint8_t *codes, const unsigned *widths_khz,
+                                       unsigned count, unsigned *error_khz)
+{
+    unsigned long err[2] = {0, 0};
+    unsigned used = 0;
+    for (unsigned k = 0; k < count; ++k) {
+        if (!widths_khz[k]) continue;
+        for (unsigned mode = 0; mode < 2; ++mode) {
+            unsigned ref = predemod_bw_reference_khz(mode, codes[k]);
+            if (ref > 40000u) ref = 40000u;
+            err[mode] += (unsigned long)predemod_abs((int)widths_khz[k] - (int)ref);
+        }
+        ++used;
+    }
+    if (!used) return -1;
+    int mode = err[1] < err[0] ? 1 : 0;
+    if (error_khz) *error_khz = (unsigned)(err[mode] / used);
+    return mode;
 }

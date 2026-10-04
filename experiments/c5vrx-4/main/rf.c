@@ -575,8 +575,8 @@ esp_err_t rf_start(void)
     phy_rx_lab_begin("boot");
 #ifdef C5VRX4_EXPERIMENT
     /* The RX filter capacitors still hold the per-chip calibration from
-     * rf_init; keep it as the baseline every fixed-BW offset is computed from.
-     * The restore below then applies the stored offset. */
+     * rf_init; keep those bytes (upper bits, regs 8..13, restore target).
+     * The restore below then applies the stored fixed-BW code. */
     (void)phy_rx_lab_filter_capture_base();
 #endif
     analog_phy_restore_lock();
@@ -627,17 +627,17 @@ static void analog_phy_restore_lock(void)
 }
 
 #ifdef C5VRX4_EXPERIMENT
-/* Fixed analog bandwidth: the stored calibrated filter offset, re-applied in
- * every tuning/bandwidth transaction (and at boot). Not gain: it is applied in
- * native-AGC mode too. Before the first calibration nothing is written. */
+/* Fixed analog bandwidth: the stored measured RX0 capacitor code, re-applied
+ * in every tuning/bandwidth transaction (and at boot). Not gain: it is applied
+ * in native-AGC mode too. Before the first measurement nothing is written. */
 static uint32_t s_fixed_bw_failures;
 void rf_apply_fixed_bw(void)
 {
     if (!c5vrx4_fixed_bw_enabled()) return;
-    uint8_t offset = c5vrx4_bw_offset();
-    if (offset == C5VRX4_BW_UNCALIBRATED) return;
-    if (!phy_rx_lab_filter_apply(offset) && ++s_fixed_bw_failures == 1u)
-        ESP_EARLY_LOGW(TAG, "fixed BW offset=%u not applied (no baseline or read-back mismatch)", offset);
+    uint8_t code = c5vrx4_bw_code();
+    if (code == C5VRX4_BW_UNCALIBRATED) return;
+    if (!phy_rx_lab_filter_set_code(code) && ++s_fixed_bw_failures == 1u)
+        ESP_EARLY_LOGW(TAG, "fixed BW code=%u not applied (no baseline or read-back mismatch)", code);
 }
 uint32_t rf_fixed_bw_failures(void) { return s_fixed_bw_failures; }
 #endif

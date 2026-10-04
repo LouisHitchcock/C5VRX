@@ -125,6 +125,30 @@ int main(void)
         unsigned narrow_already[] = {20000, 18000};
         assert(predemod_bw_choose(narrow_already, 2, 24000) == -1);
     }
-    puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring, DC decision, FFT, noise-width estimate and BW choice");
+    /* esp-sdr C5 reference curves (ac627b0b): mode 1 reaches 24 MHz near code
+     * 52, code 60 is 22 MHz; mode 0 is 23 MHz wide open. */
+    assert(predemod_bw_reference_khz(1, 0) == 48000u && predemod_bw_reference_khz(1, 52) == 24000u);
+    assert(predemod_bw_reference_khz(1, 60) == 22000u && predemod_bw_reference_khz(1, 63) == 22000u);
+    assert(predemod_bw_reference_khz(0, 0) == 23000u && predemod_bw_reference_khz(0, 20) == 17000u);
+    {
+        uint8_t codes[16];
+        unsigned w0[16], w1[16], err = 0;
+        for (unsigned k = 0; k < 16; ++k) {
+            codes[k] = (uint8_t)(4 * k);
+            w0[k] = predemod_bw_reference_khz(0, codes[k]) + 600u;
+            unsigned r1 = predemod_bw_reference_khz(1, codes[k]);
+            w1[k] = r1 > 40000u ? 40000u : r1 - 500u;
+        }
+        assert(predemod_bw_mode_fit(codes, w0, 16, &err) == 0 && err == 600u);
+        assert(predemod_bw_mode_fit(codes, w1, 16, &err) == 1 && err < 500u);
+        /* Mode 1: narrowest code still >= 24 MHz is code 48 on this coarse grid. */
+        int c = predemod_bw_choose(w1, 16, 24000);
+        assert(c >= 0 && codes[c] == 48);
+        /* Mode 0 never reaches 24 MHz: the caller keeps the widest code. */
+        assert(predemod_bw_choose(w0, 16, 24000) == -1);
+        unsigned none[2] = {0, 0};
+        assert(predemod_bw_mode_fit(codes, none, 2, &err) == -1);
+    }
+    puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring, DC decision, FFT, noise-width estimate, BW choice and esp-sdr curve/mode fit");
     return 0;
 }

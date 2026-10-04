@@ -2999,15 +2999,21 @@ static void lab_run_filter_sweep(void)
 }
 
 /* ---- Fixed optimal analog bandwidth -------------------------------------
- * Replaces the BW20/BW40 gear. With no carrier and maximum analog gain the
- * MODEM_DIAG samples are receiver noise shaped by the analog RX filter, so
- * its -3 dB width can be measured directly: a 64-point PSD over the observer
- * regions, for each filter offset 0..60 (BBTOP 0x67 regs 6..13, relative to
- * the per-chip calibration). The kept offset is the narrowest whose measured
- * full width is still >= bw_target (24 MHz): an FPV FM video channel stays
- * inside it while out-of-channel noise and adjacent energy are cut. The
- * digital path stays BW40. Measured once (automatically, see predemod_task)
- * and stored; '=' repeats it. The VTX must be off. */
+ * Replaces the BW20/BW40 gear, whose phy_wifi_fbw_sel() only moves the
+ * digital filter. Built on ESPARGOS esp-sdr's C5 BANDWIDTH control (GPL-3.0,
+ * commit ac627b0b): an absolute 6-bit code in the RX0 capacitor DAC (BBTOP
+ * 0x67 regs 6/7), curves from median noise FFTs, mode 0 = 11-23 MHz, mode 1 =
+ * 22-48 MHz, a mode change needs a full channel setup. zerowidth/C5VRX PR #3
+ * measured the hardware benefit of a narrower filter (phy_11p_set on R8:
+ * sync-tip noise ~102-105 -> ~87-91 kHz); C5VRX's own WIFI_BW20 test lost
+ * detail and chroma, so the target stays at a 24 MHz FPV FM channel.
+ * Which mode C5VRX's BW40-config/secondary-NONE tune lands in is not proven,
+ * so this chip's noise width is measured with no carrier at maximum gain for
+ * the calibrated bytes and codes 0..60 (64-point PSD over the observer
+ * regions), the result is matched against both esp-sdr curves, and the
+ * narrowest code still >= bw_target is kept (the widest if none reaches it).
+ * Measured once (automatically, see predemod_task) and stored; '=' repeats
+ * it. The VTX must be off. */
 #define BW_CAL_WINDOWS     96u
 #define BW_CAL_STEP        4
 #define BW_CAL_QUIET_QPHASE 34 /* V5 coherence < 25 */
@@ -3047,93 +3053,119 @@ static bool bw_quiet(const char *stage, unsigned width, int q_phase, int clip_pm
     return quiet;
 }
 
-/* Returns true when an offset was measured and stored. Caller context: a task
+static int s_bw_mode_fit = -1;
+static unsigned s_bw_fit_err_khz, s_bw_calibrated_width_khz;
+
+/* Returns true when a code was measured and stored. Caller context: a task
  * that may block for a few seconds (console or predemod_task). */
 static bool lab_run_bw_calibration(bool automatic)
 {
     ++s_bw_cal_runs;
     if (!c5vrx4_fixed_bw_enabled()) { printf("BW_CAL refused=fixed_bw_disabled ('^')\n"); return false; }
     if (!s_current_bw40) { printf("BW_CAL refused=digital_bw20_selected\n"); return false; }
+    if (phy_rx_lab_filter_calibrated_code() < 0) {
+        printf("BW_CAL refused=no_calibrated_filter_bytes_or_unpinned_PHY\n");
+        s_bw_cal_result = "unsupported";
+        return false;
+    }
     analog_agc_mode_t saved_mode;
     if (!predemod_pause("BW_CAL", &saved_mode)) { s_bw_cal_result = "busy"; return false; }
     const arc_gain_table_t *table = rf_get_arc_gain_table();
     const uint8_t saved_gain = s_current_gain;
     lab_apply_vendor_gain(table->max_index);
     vTaskDelay(pdMS_TO_TICKS(50));
-    const uint8_t previous = c5vrx4_bw_offset();
+    const uint8_t previous = c5vrx4_bw_code();
+    const int restore = previous == C5VRX4_BW_UNCALIBRATED ? PHY_RX_LAB_FILTER_CALIBRATED : (int)previous;
     const unsigned target = c5vrx4_bw_target_khz();
-    printf("BW_CAL begin mode=%s freq=%u gain=%u lane=%u target_khz=%u previous=%d\n",
-           automatic ? "auto" : "manual", rf_get_frequency_mhz(), s_current_gain,
-           rf_get_iq_lanes(), target, previous == C5VRX4_BW_UNCALIBRATED ? -1 : (int)previous);
+    printf("BW_CAL begin mode=%s freq=%u gain=%u lane=%u target_khz=%u calibrated_code=%d previous=%d "
+           "reference=ESPARGOS_esp-sdr_ac627b0b\n",
+           automatic ? "auto" : "manual", rf_get_frequency_mhz(), s_current_gain, rf_get_iq_lanes(),
+           target, phy_rx_lab_filter_calibrated_code(),
+           previous == C5VRX4_BW_UNCALIBRATED ? -1 : (int)previous);
+    uint8_t codes[60 / BW_CAL_STEP + 1];
     unsigned widths[60 / BW_CAL_STEP + 1];
     int noise_q[60 / BW_CAL_STEP + 1];
-    unsigned count = 0;
-    bool quiet = true, applied = true;
+    unsigned count = 0, width = 0;
     int q_phase = 0, clip_pm = 0;
     phy_rx_lab_begin("BW_CAL");
-    for (int offset = 0; quiet && applied && offset <= 60; offset += BW_CAL_STEP) {
-        applied = phy_rx_lab_filter_apply(offset);
-        if (!applied) { printf("BW_CAL offset=%d refused=filter_write\n", offset); break; }
+    /* Carrier pre-check on the calibrated bytes; narrower noise is legitimately
+     * more coherent, so Q_phase is judged only here and in the re-check. */
+    bool applied = phy_rx_lab_filter_set_code(PHY_RX_LAB_FILTER_CALIBRATED);
+    bool quiet = false;
+    if (applied) {
         vTaskDelay(pdMS_TO_TICKS(20));
-        unsigned width = 0;
+        applied = bw_noise_measure(BW_CAL_WINDOWS, &width, &q_phase, &clip_pm);
+        if (applied) {
+            s_bw_calibrated_width_khz = width;
+            printf("BW_CAL code=calibrated(%d) width_khz=%u Q_phase=%d clip_pm=%d\n",
+                   phy_rx_lab_filter_calibrated_code(), width, q_phase, clip_pm);
+            quiet = bw_quiet("CALIBRATED", width, q_phase, clip_pm);
+        }
+    }
+    for (int code = 0; quiet && applied && code <= 60; code += BW_CAL_STEP) {
+        applied = phy_rx_lab_filter_set_code(code);
+        if (!applied) { printf("BW_CAL code=%d refused=filter_write\n", code); break; }
+        vTaskDelay(pdMS_TO_TICKS(20));
         if (!bw_noise_measure(BW_CAL_WINDOWS, &width, &q_phase, &clip_pm)) { applied = false; break; }
-        printf("BW_CAL offset=%d width_khz=%u Q_phase=%d clip_pm=%d\n", offset, width, q_phase, clip_pm);
-        /* Narrower noise is legitimately more coherent from sample to sample,
-         * so the carrier test uses Q_phase only at the baseline (here and in
-         * the final re-check); clipping is checked at every stage. */
-        quiet = offset == 0 ? bw_quiet("BASELINE", width, q_phase, clip_pm)
-                            : bw_quiet("SWEEP", width, 0, clip_pm);
+        printf("BW_CAL code=%d width_khz=%u ref_mode0_khz=%u ref_mode1_khz=%u Q_phase=%d clip_pm=%d\n",
+               code, width, predemod_bw_reference_khz(0, (unsigned)code),
+               predemod_bw_reference_khz(1, (unsigned)code), q_phase, clip_pm);
+        quiet = bw_quiet("SWEEP", width, 0, clip_pm);
+        codes[count] = (uint8_t)code;
         widths[count] = width;
         noise_q[count++] = q_phase;
     }
-    /* A VTX switched on mid-sweep would bias the later widths: re-check at
-     * the calibrated baseline before trusting the result. */
-    if (quiet && applied && phy_rx_lab_filter_apply(0)) {
+    /* A VTX switched on mid-sweep would bias the later widths: re-check on
+     * the calibrated bytes before trusting the result. */
+    if (quiet && applied && phy_rx_lab_filter_set_code(PHY_RX_LAB_FILTER_CALIBRATED)) {
         vTaskDelay(pdMS_TO_TICKS(20));
-        unsigned width = 0;
         quiet = bw_noise_measure(BW_CAL_WINDOWS, &width, &q_phase, &clip_pm) &&
                 bw_quiet("POSTCHECK", width, q_phase, clip_pm);
     }
     bool stored = false;
     if (quiet && applied && count) {
+        s_bw_mode_fit = predemod_bw_mode_fit(codes, widths, count, &s_bw_fit_err_khz);
         int choice = predemod_bw_choose(widths, count, target);
-        const char *reason = choice < 0 ? "baseline_already_narrower" : "narrowest_at_or_above_target";
+        const char *reason = "narrowest_at_or_above_target";
+        if (choice < 0) { choice = 0; reason = "target_unreachable_widest_code"; }
         /* V5 must still recognise receiver noise as NO_CARRIER (coherence
          * < 25) so a lost VTX returns to the high-gain survival state. */
         while (choice > 0 && noise_q[choice] >= BW_CAL_QUIET_QPHASE) {
             --choice;
             reason = "limited_by_v5_noise_coherence";
         }
-        uint8_t offset = choice < 0 ? 0u : (uint8_t)(choice * BW_CAL_STEP);
-        unsigned width = choice < 0 ? widths[0] : widths[choice];
-        stored = phy_rx_lab_filter_apply(offset) && c5vrx4_bw_store(offset, width);
-        printf("BW_CAL chosen offset=%u width_khz=%u noise_Q_phase=%d target_khz=%u %s stored=%u\n",
-               offset, width, noise_q[choice < 0 ? 0 : choice], target, reason, stored);
+        stored = phy_rx_lab_filter_set_code(codes[choice]) && c5vrx4_bw_store(codes[choice], widths[choice]);
+        printf("BW_CAL chosen code=%u width_khz=%u noise_Q_phase=%d target_khz=%u %s "
+               "esp_sdr_mode_fit=%d fit_error_khz=%u stored=%u\n",
+               codes[choice], widths[choice], noise_q[choice], target, reason,
+               s_bw_mode_fit, s_bw_fit_err_khz, stored);
         s_bw_cal_result = stored ? "stored" : "store_failed";
     } else {
         s_bw_cal_result = !applied ? "filter_or_sample_failure" : "carrier_present";
     }
     if (!stored) {
         /* Back to what was in force before the calibration. */
-        bool ok = phy_rx_lab_filter_apply(previous == C5VRX4_BW_UNCALIBRATED ? 0 : previous);
-        printf("BW_CAL kept_previous=%d restore_verified=%u\n",
-               previous == C5VRX4_BW_UNCALIBRATED ? -1 : (int)previous, ok);
+        bool ok = phy_rx_lab_filter_set_code(restore);
+        printf("BW_CAL kept_previous=%d restore_verified=%u\n", restore, ok);
     }
     phy_rx_lab_end();
     lab_apply_vendor_gain(saved_gain);
     predemod_resume(saved_mode);
-    printf("BW_CAL done result=%s offset=%d\n", s_bw_cal_result, phy_rx_lab_filter_offset());
+    printf("BW_CAL done result=%s code=%d\n", s_bw_cal_result, phy_rx_lab_filter_code());
     return stored;
 }
 
 static void bw_status_print(void)
 {
-    uint8_t stored = c5vrx4_bw_offset();
-    printf("PREDEMOD_BW fixed=%u stored_offset=%d width_khz=%u target_khz=%u applied_offset=%d "
+    uint8_t stored = c5vrx4_bw_code();
+    printf("PREDEMOD_BW fixed=%u stored_code=%d width_khz=%u target_khz=%u applied_code=%d "
+           "calibrated_code=%d calibrated_width_khz=%u esp_sdr_mode_fit=%d fit_error_khz=%u "
            "digital=%s gear=%s apply_failures=%lu calibrations=%u last=%s\n",
            c5vrx4_fixed_bw_enabled(), stored == C5VRX4_BW_UNCALIBRATED ? -1 : (int)stored,
-           c5vrx4_bw_width_khz(), c5vrx4_bw_target_khz(), phy_rx_lab_filter_offset(),
-           s_current_bw40 ? "BW40" : "BW20", c5vrx4_fixed_bw_enabled() ? "retired" : "v5",
+           c5vrx4_bw_width_khz(), c5vrx4_bw_target_khz(), phy_rx_lab_filter_code(),
+           phy_rx_lab_filter_calibrated_code(), s_bw_calibrated_width_khz, s_bw_mode_fit,
+           s_bw_fit_err_khz, s_current_bw40 ? "BW40" : "BW20",
+           c5vrx4_fixed_bw_enabled() ? "retired" : "v5",
            (unsigned long)rf_fixed_bw_failures(), s_bw_cal_runs, s_bw_cal_result);
 }
 
@@ -5319,7 +5351,8 @@ static void predemod_bw_autocal(void)
     static unsigned quiet_ticks;
     static int64_t last_try_us;
     const arc_gain_table_t *table = rf_get_arc_gain_table();
-    bool want = c5vrx4_fixed_bw_enabled() && c5vrx4_bw_offset() == C5VRX4_BW_UNCALIBRATED &&
+    bool want = c5vrx4_fixed_bw_enabled() && c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED &&
+                phy_rx_lab_filter_calibrated_code() >= 0 &&
                 table && predemod_quiet_owner() && s_current_bw40 &&
                 s_direct_gain_v3.current_gain == table->max_index &&
                 s_direct_gain_v3.state != DG3_SETTLE && s_v3_coherence < 25;

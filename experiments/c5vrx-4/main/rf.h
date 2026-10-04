@@ -44,7 +44,7 @@ void rf_dump_tracked_timers(void);
 /** Runtime analog receive filter: true=BW40, false=BW20. */
 void rf_set_analog_bandwidth(bool bw40);
 bool rf_get_analog_bandwidth(void);
-/* C5VRX-4 fixed analog BW: re-apply the stored calibrated RX filter offset
+/* C5VRX-4 fixed analog BW: re-apply the stored measured RX filter code
  * (inside a phy_rx_lab transaction). No-op when disabled or uncalibrated. */
 void rf_apply_fixed_bw(void);
 uint32_t rf_fixed_bw_failures(void);

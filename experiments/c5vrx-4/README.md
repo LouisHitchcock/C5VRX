@@ -62,13 +62,17 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 - Default-on first-lock sampling-phase check: one glitch measurement at the
   first stable carrier HOLD; only >=5000 ppm mid-transition reads trigger the
   RX clock-slip scan. NVS `c5vrx4/sphase_auto=0` (`&`) opts out.
-- Default-on fixed optimal analog bandwidth replaces the BW20/BW40 gear. With
-  no carrier at maximum gain, the receiver noise is measured through the RX
-  filter-capacitor offsets 0..60 (relative to the per-chip calibration) with a
-  64-point PSD; the narrowest offset whose -3 dB width is still >=24 MHz is
-  stored in NVS (`bw_offset`, `bw_width`) and re-applied at boot and on every
-  retune. The digital path stays BW40. Runs automatically once (VTX off);
-  `=` repeats it, NVS `c5vrx4/fixed_bw=0` (`^`) restores the gear.
+- Default-on fixed analog bandwidth replaces the BW20/BW40 gear, which only
+  moved the digital filter. It builds on [ESPARGOS esp-sdr](https://github.com/ESPARGOS/esp-sdr)'s C5 `BANDWIDTH`
+  control (absolute RX0 capacitor code in BBTOP 0x67 regs 6/7, noise-FFT
+  width curves, commit `ac627b0b`) and on [zerowidth/C5VRX PR #3](https://github.com/zerowidth/C5VRX/pull/3)'s measured noise reduction from a
+  narrower filter. Without a carrier at maximum gain the receiver-noise width
+  is measured on this chip for the calibrated bytes and codes 0..60, matched
+  against both esp-sdr curves, and the narrowest code still >=24 MHz (the
+  widest if none reaches it) is stored (NVS `bw_code`, `bw_width`) and
+  re-applied at boot and on every retune. C5VRX's own `WIFI_BW20` test lost
+  detail and chroma, hence the 24 MHz floor. Runs automatically once (VTX
+  off); `=` repeats it, NVS `c5vrx4/fixed_bw=0` (`^`) restores the gear.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
@@ -93,7 +97,7 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `$` | Reversible RX filter-capacitor sweep (0x67 regs 6..13), pinned PHY only |
 | `%` | Toggle default-on digital DC recentring of the static decoder, reboot |
 | `&` | Toggle default-on first-lock sampling-phase check, reboot |
-| `=` | Measure the receiver-noise width per filter offset and store the fixed BW (VTX off) |
+| `=` | Measure the receiver-noise width per RX filter code and store the fixed BW (VTX off) |
 | `^` | Toggle default-on fixed analog BW (off restores the V5 BW gear), reboot |
 
 The lane policy uses the NVS key `c5vrx4/lane_mode` (0 fixed fine, 1 fixed
