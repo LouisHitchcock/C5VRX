@@ -51,6 +51,8 @@ void rf_restore_iq_routes(void);
  * (inside a phy_rx_lab transaction). No-op when disabled or uncalibrated. */
 void rf_apply_fixed_bw(void);
 uint32_t rf_fixed_bw_failures(void);
+void rf_set_fixed_bw_edge(bool edge);
+bool rf_fixed_bw_edge_active(void);
 
 void rf_set_rx_gain(bool force, uint8_t gain_idx);
 /* True only when vendor gain write ran under the expected PHY generation. */

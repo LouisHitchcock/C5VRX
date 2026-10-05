@@ -52,6 +52,14 @@ bool c5vrx4_bw_store(uint8_t code, unsigned width_khz);
 unsigned c5vrx4_bw_skirt(void);
 unsigned c5vrx4_bw_nbw_khz(void);
 bool c5vrx4_bw_skirt_store(unsigned skirt, unsigned nbw_khz);
+/* Edge profile (measured by the same calibration, VTX off): the filter
+ * setting the V5 bandwidth gear selects at the range edge. Code 255 = none
+ * (no measured setting was >= 0.5 dB better in noise bandwidth); digital =
+ * phy_wifi_fbw_sel(0) with that analog code. NVS bw_ecode, bw_edig, bw_enbw. */
+uint8_t c5vrx4_bw_edge_code(void);
+bool c5vrx4_bw_edge_digital(void);
+unsigned c5vrx4_bw_edge_nbw_khz(void);
+bool c5vrx4_bw_edge_store(uint8_t code, bool digital_bw20, unsigned nbw_khz);
 /* Native AGC acquisition mask (native mode only, '|' opts out with a
  * reboot). PARLIO data bit 0 (fine Q LSB) carries a MODEM_DIAG AGC state bit
  * found by the witness calibration ('*'); the static program holds the DAC

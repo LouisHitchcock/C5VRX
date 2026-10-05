@@ -88,6 +88,34 @@ and h0m3us3r/eSpDR (S3 DC DACs).
     automatically. `!` shows `nbw_khz`/`skirt`.
   - Host model of the stake: at 24 MHz, a 1st-order skirt costs +1.1 dB vs
     +0.2 dB at 3rd order.
+- **Edge profile for the V5 bandwidth gear** (2026-10-05). The fixed analog BW
+  had retired the gear. At the range edge the noise bandwidth costs twice:
+  pre-detection CNR, and post-detection aliasing, because span75 resamples
+  at 13.33 MS/s without an anti-alias filter (`docs/range-max.md`).
+  - Host model (`tools/postdetect_alias_model.py`, 3rd-order filter,
+    generated LUTs): a 14 MHz −3 dB width beats 24 MHz by ~2 dB of input at
+    the edge. At wide widths and strong signal it is no better, and its
+    nonlinear SDR stays ≥ 28 dB.
+  - Under BW40 the analog code reaches only ~22 MHz on esp-sdr's mode-1
+    curve. Whether the digital BW20 filter acts ahead of the tap is
+    unproven. So the calibration measures it instead of assuming.
+  - After `BW_SKIRT`, `BW_EDGE` sweeps codes 0/8/…/56/60 with the digital
+    filter in BW40 and in BW20 (stored skirt kept). It prints width,
+    `nbw_khz`, gain over normal, Q_phase and clip.
+  - It stores the lowest noise bandwidth that still covers 14 MHz, keeps
+    noise incoherent for V5 NO_CARRIER and is ≥ 0.5 dB (11 %) better than
+    normal. Otherwise it stores none (NVS `bw_ecode`, `bw_edig`, `bw_enbw`).
+  - The AUTO gear switches to that profile only on the existing edge
+    conditions: table-maximum gain, lane cap, present but starved or
+    incoherent carrier for 1 s. It returns after 1 s of clear recovery.
+    Without a profile the gear stays off.
+  - Before calibration the original digital BW20 gear runs. A calibration,
+    a manual BW mode or any explicit bandwidth leaves the edge profile
+    first.
+  - The vendor BW20 channel mode (`;`) is not used as a live gear: a full
+    channel setup recaptures the gain table.
+  - `!` shows `edge_code`/`edge_digital`/`edge_nbw_khz`/`edge_active`.
+    Range benefit is hardware-pending.
 
 ## Commands
 

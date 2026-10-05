@@ -154,6 +154,19 @@ int main(void)
         assert(predemod_skirt_choose(nbw, narrow0, quiet, 2, 24000) == -1);
     }
     {
+        /* Edge: lowest nbw with width >= 14 MHz, valid, >= 0.5 dB better. */
+        unsigned nbw[] = {26000, 21000, 16500, 15000, 12000};
+        unsigned width[] = {22000, 18000, 15000, 14200, 12500};
+        bool valid[] = {true, true, true, true, true};
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 27000) == 3);
+        valid[3] = false; /* noise too coherent for V5 NO_CARRIER */
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 27000) == 2);
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 18000) == -1); /* < 0.5 dB */
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 0) == -1);
+        unsigned too_narrow[] = {13000, 12000};
+        assert(predemod_edge_choose(nbw, too_narrow, valid, 2, 14000, 27000) == -1);
+    }
+    {
         unsigned widths[] = {40000, 33000, 27500, 24400, 21000, 0};
         assert(predemod_bw_choose(widths, 6, 24000) == 3);
         unsigned narrow_already[] = {20000, 18000};

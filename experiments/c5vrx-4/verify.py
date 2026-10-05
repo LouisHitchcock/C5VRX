@@ -51,7 +51,12 @@ def main():
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
     assert '"radius_boost"' in pipeline and "direct_gain_v3_enable_boost(&s_direct_gain_v3" in video
     assert "phy_rx_lab_run_dfilt_probe(lab_observe_dfilt)" in video and "lab_run_dfilt();" in video
-    assert "if (stored) bw_skirt_stage(codes[choice], target);" in video and '"bw_skirt"' in pipeline
+    assert "bw_skirt_stage(codes[choice], target);\n            bw_edge_stage();" in video and '"bw_skirt"' in pipeline
+    # Edge profile: measured by calibration, used only by the AUTO gear, left
+    # on any explicit bandwidth and before a calibration.
+    assert "predemod_edge_choose(nbw, width, valid, 2u * BW_EDGE_CODES," in video and '"bw_ecode"' in pipeline
+    assert "if (fixed) bw_set_edge(true);" in video and "if (rf_fixed_bw_edge_active()) bw_set_edge(false);" in video
+    assert "s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */" in (ROOT / "main/rf.c").read_text()
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
     assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
     assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video

@@ -1284,8 +1284,23 @@ static void apply_rf_bandwidth(bool bw40)
     rf_set_analog_bandwidth(bw40);
 }
 
+/* Fixed analog BW calibrated: the V5 gear then moves between the normal
+ * code and the measured edge profile. */
+static bool bw_fixed_calibrated(void)
+{
+    return c5vrx4_fixed_bw_enabled() && c5vrx4_bw_code() != C5VRX4_BW_UNCALIBRATED;
+}
+static void bw_set_edge(bool edge)
+{
+    s_last_phy_write_us = esp_timer_get_time();
+    s_last_phy_write_kind = PHY_WRITE_BW;
+    s_current_bw40 = !(edge && c5vrx4_bw_edge_digital());
+    rf_set_fixed_bw_edge(edge);
+}
+
 static void cycle_rf_bandwidth_mode(void)
 {
+    if (rf_fixed_bw_edge_active()) bw_set_edge(false);
     if (s_rf_bw_mode == RF_BW_MODE_BW40) {
         s_rf_bw_mode = RF_BW_MODE_BW20;
         apply_rf_bandwidth(false);
@@ -1711,19 +1726,32 @@ static void direct_gain_v5_dc_observe(const uint8_t *sample, size_t bytes,
     s_v3_dc_q_mstep = (7 * s_v3_dc_q_mstep + dq) / 8;
 }
 
-/* V5 bandwidth gear (RF BW mode AUTO). BW20 halves the noise bandwidth (~3 dB
- * CNR) but trims wideband-FM detail/chroma, so it is the last gear: only at
- * maximum analog gain, on the noise-referenced lane cap, with a present but
- * starved or incoherent carrier for 1 s. It returns to BW40 after 1 s of
- * clear recovery. Each switch is a rare PHY write; the gain epoch is bumped
- * so no measurement straddles it. */
+/* V5 bandwidth gear (RF BW mode AUTO). A narrower filter lowers the noise
+ * bandwidth (pre-detection CNR and, because span75 resamples at 13.33 MS/s
+ * without an anti-alias filter, post-detection aliasing) but trims
+ * wideband-FM detail/chroma, so it is the last gear: only at maximum analog
+ * gain, on the noise-referenced lane cap, with a present but starved or
+ * incoherent carrier for 1 s. It returns after 1 s of clear recovery. Each
+ * switch is a rare PHY write; the gain epoch is bumped so no measurement
+ * straddles it.
+ * With the fixed analog BW calibrated, the gear switches between the normal
+ * code and the measured edge profile (c5vrx4_bw_edge_code: analog code,
+ * optionally the digital BW20 filter), and stays off when calibration found
+ * no setting >= 0.5 dB better. Before calibration it is the original digital
+ * BW20/BW40 gear. */
 #define V5_BW_DWELL_US 1000000u
+static bool bw_in_narrow_gear(void)
+{
+    return bw_fixed_calibrated() ? rf_fixed_bw_edge_active() : !s_current_bw40;
+}
 static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
 {
     static uint64_t weak_since, strong_since;
     const direct_gain_v3_t *v3 = &s_direct_gain_v3;
-    /* Fixed optimal analog BW retires the gear: BW40 digital, one filter. */
-    if (s_rf_bw_mode != RF_BW_MODE_AUTO || c5vrx4_fixed_bw_enabled()) {
+    const bool fixed = bw_fixed_calibrated();
+    if (s_rf_bw_mode != RF_BW_MODE_AUTO ||
+        (fixed && c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED)) {
+        if (fixed && rf_fixed_bw_edge_active()) bw_set_edge(false);
         weak_since = strong_since = 0;
         return;
     }
@@ -1734,18 +1762,20 @@ static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
                 (o->p50 < 13u || o->coherence < 70u);
     bool clear = (!at_max || v3->lane == 0u) && o->p50 >= 13u &&
                  o->coherence >= 85u;
-    if (s_current_bw40) {
+    if (!bw_in_narrow_gear()) {
         strong_since = 0;
         if (!edge) { weak_since = 0; return; }
         if (!weak_since) weak_since = now;
         if (now - weak_since < V5_BW_DWELL_US) return;
-        apply_rf_bandwidth(false);
+        if (fixed) bw_set_edge(true);
+        else apply_rf_bandwidth(false);
     } else {
         weak_since = 0;
         if (!clear) { strong_since = 0; return; }
         if (!strong_since) strong_since = now;
         if (now - strong_since < V5_BW_DWELL_US) return;
-        apply_rf_bandwidth(true);
+        if (fixed) bw_set_edge(false);
+        else apply_rf_bandwidth(true);
     }
     weak_since = strong_since = 0;
     ++s_v3_bw_switches;
@@ -3164,12 +3194,76 @@ static void bw_skirt_stage(uint8_t code0, unsigned target)
     }
 }
 
+/* Edge profile stage (2026-10-05). VTX off, maximum gain, normal code and
+ * skirt stored. Sweeps the analog code with the digital filter in BW40 and
+ * BW20 (skirt kept) and stores the lowest-noise-bandwidth setting that still
+ * covers PREDEMOD_EDGE_TARGET_KHZ, keeps receiver noise incoherent for V5
+ * NO_CARRIER and is >= 0.5 dB better than normal (predemod_edge_choose). The
+ * V5 gear uses it only at the range edge. Measured, so it does not depend on
+ * whether the digital filter or the analog mode sits ahead of the tap.
+ * Ends on BW40 + the normal code; bw_enbw = best candidate nbw (1 = none
+ * valid, 0 = never measured). */
+#define BW_EDGE_CODES 9u
+static void bw_edge_stage(void)
+{
+    static const uint8_t codes[BW_EDGE_CODES] = {0, 8, 16, 24, 32, 40, 48, 56, 60};
+    unsigned nbw[2 * BW_EDGE_CODES] = {0}, width[2 * BW_EDGE_CODES] = {0};
+    bool valid[2 * BW_EDGE_CODES] = {false};
+    const unsigned normal = c5vrx4_bw_nbw_khz();
+    bool carrier = false;
+    unsigned best_nbw = 0;
+    for (unsigned dig = 0; dig < 2u && !carrier; ++dig) {
+        apply_rf_bandwidth(dig == 0u); /* restore applies the normal code + skirt */
+        for (unsigned k = 0; k < BW_EDGE_CODES; ++k) {
+            unsigned i = dig * BW_EDGE_CODES + k, w = 0;
+            int q = 0, clip = 0;
+            if (!phy_rx_lab_filter_set_code(codes[k])) {
+                printf("BW_EDGE digital=%s code=%u refused=filter_write\n", dig ? "BW20" : "BW40", codes[k]);
+                continue;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            if (!bw_noise_measure(BW_CAL_WINDOWS, &w, &q, &clip)) continue;
+            width[i] = w;
+            nbw[i] = s_bw_last_nbw_khz;
+            valid[i] = q < BW_CAL_QUIET_QPHASE && clip < BW_CAL_QUIET_CLIP;
+            if (valid[i] && w >= PREDEMOD_EDGE_TARGET_KHZ && (!best_nbw || nbw[i] < best_nbw))
+                best_nbw = nbw[i];
+            printf("BW_EDGE digital=%s code=%u width_khz=%u nbw_khz=%u gain_db_x10=%d Q_phase=%d clip_pm=%d valid=%u\n",
+                   dig ? "BW20" : "BW40", codes[k], w, nbw[i],
+                   -predemod_nbw_excess_db_x10(nbw[i], normal), q, clip, valid[i]);
+            /* A carrier switched on mid-sweep shows up on wide settings too. */
+            if (clip >= BW_CAL_QUIET_CLIP) carrier = true;
+        }
+    }
+    apply_rf_bandwidth(true);
+    unsigned w = 0;
+    int q = 0, clip = 0;
+    bool restored = phy_rx_lab_filter_code() == (int)c5vrx4_bw_code();
+    if (!carrier && bw_noise_measure(BW_CAL_WINDOWS, &w, &q, &clip))
+        carrier = !bw_quiet("EDGE_POSTCHECK", w, q, clip);
+    int choice = carrier ? -1 : predemod_edge_choose(nbw, width, valid, 2u * BW_EDGE_CODES,
+                                                     PREDEMOD_EDGE_TARGET_KHZ, normal);
+    bool stored = choice >= 0
+        ? c5vrx4_bw_edge_store(codes[choice % BW_EDGE_CODES], choice >= (int)BW_EDGE_CODES, nbw[choice])
+        : c5vrx4_bw_edge_store(C5VRX4_BW_UNCALIBRATED, false, carrier ? 0u : (best_nbw ? best_nbw : 1u));
+    printf("BW_EDGE chosen=%s code=%d digital=%s nbw_khz=%u normal_nbw_khz=%u gain_db_x10=%d "
+           "target_khz=%u stored=%u restore_verified=%u\n",
+           carrier ? "aborted_carrier" : choice >= 0 ? "edge_profile" : "none_0p5dB_better",
+           choice >= 0 ? (int)codes[choice % BW_EDGE_CODES] : -1,
+           choice >= (int)BW_EDGE_CODES ? "BW20" : "BW40", choice >= 0 ? nbw[choice] : 0u, normal,
+           choice >= 0 ? -predemod_nbw_excess_db_x10(nbw[choice], normal) : 0,
+           PREDEMOD_EDGE_TARGET_KHZ, stored, restored);
+}
+
 /* Returns true when a code was measured and stored. Caller context: a task
  * that may block for a few seconds (console or predemod_task). */
 static bool lab_run_bw_calibration(bool automatic)
 {
     ++s_bw_cal_runs;
     if (!c5vrx4_fixed_bw_enabled()) { printf("BW_CAL refused=fixed_bw_disabled ('^')\n"); return false; }
+    /* The AUTO gear's narrow setting is left first; a manual BW20 is refused. */
+    if (rf_fixed_bw_edge_active()) bw_set_edge(false);
+    if (!s_current_bw40 && s_rf_bw_mode == RF_BW_MODE_AUTO) apply_rf_bandwidth(true);
     if (!s_current_bw40) { printf("BW_CAL refused=digital_bw20_selected\n"); return false; }
     if (phy_rx_lab_filter_calibrated_code() < 0) {
         printf("BW_CAL refused=no_calibrated_filter_bytes_or_unpinned_PHY\n");
@@ -3250,7 +3344,10 @@ static bool lab_run_bw_calibration(bool automatic)
                codes[choice], widths[choice], noise_q[choice], target, reason,
                s_bw_mode_fit, s_bw_fit_err_khz, stored);
         s_bw_cal_result = stored ? "stored" : "store_failed";
-        if (stored) bw_skirt_stage(codes[choice], target);
+        if (stored) {
+            bw_skirt_stage(codes[choice], target);
+            bw_edge_stage();
+        }
     } else {
         s_bw_cal_result = !applied ? "filter_or_sample_failure" : "carrier_present";
     }
@@ -3273,13 +3370,19 @@ static void bw_status_print(void)
     printf("PREDEMOD_BW fixed=%u stored_code=%d width_khz=%u nbw_khz=%u skirt=%u applied_skirt=%d "
            "target_khz=%u applied_code=%d "
            "calibrated_code=%d calibrated_width_khz=%u esp_sdr_mode_fit=%d fit_error_khz=%u "
-           "digital=%s gear=%s apply_failures=%lu calibrations=%u last=%s\n",
+           "digital=%s gear=%s edge_code=%d edge_digital=%s edge_nbw_khz=%u edge_active=%u "
+           "apply_failures=%lu calibrations=%u last=%s\n",
            c5vrx4_fixed_bw_enabled(), stored == C5VRX4_BW_UNCALIBRATED ? -1 : (int)stored,
            c5vrx4_bw_width_khz(), c5vrx4_bw_nbw_khz(), c5vrx4_bw_skirt(), phy_rx_lab_filter_skirt(),
            c5vrx4_bw_target_khz(), phy_rx_lab_filter_code(),
            phy_rx_lab_filter_calibrated_code(), s_bw_calibrated_width_khz, s_bw_mode_fit,
            s_bw_fit_err_khz, s_current_bw40 ? "BW40" : "BW20",
-           c5vrx4_fixed_bw_enabled() ? "retired" : "v5",
+           s_rf_bw_mode != RF_BW_MODE_AUTO ? "manual" :
+           bw_fixed_calibrated() ? (c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED ? "off_no_edge" : "edge")
+                                 : "digital_bw20",
+           c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED ? -1 : (int)c5vrx4_bw_edge_code(),
+           c5vrx4_bw_edge_digital() ? "BW20" : "BW40", c5vrx4_bw_edge_nbw_khz(),
+           rf_fixed_bw_edge_active(),
            (unsigned long)rf_fixed_bw_failures(), s_bw_cal_runs, s_bw_cal_result);
 }
 
@@ -5814,7 +5917,8 @@ static bool bw_autocal_waiting(void)
     return !s_bw_autocal_tried && c5vrx4_fixed_bw_enabled() &&
            /* Also once for a code stored before the second stage existed
             * (no measured noise bandwidth yet). */
-           (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz()) &&
+           (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz() ||
+            !c5vrx4_bw_edge_nbw_khz()) &&
            phy_rx_lab_filter_calibrated_code() >= 0;
 }
 
@@ -5824,9 +5928,11 @@ static void predemod_bw_autocal(void)
     static int64_t last_try_us;
     const arc_gain_table_t *table = rf_get_arc_gain_table();
     bool want = c5vrx4_fixed_bw_enabled() &&
-                (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz()) &&
+                (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED || !c5vrx4_bw_nbw_khz() ||
+                 !c5vrx4_bw_edge_nbw_khz()) &&
                 phy_rx_lab_filter_calibrated_code() >= 0 &&
-                table && predemod_quiet_owner() && s_current_bw40 &&
+                table && predemod_quiet_owner() &&
+                (s_current_bw40 || s_rf_bw_mode == RF_BW_MODE_AUTO) &&
                 s_direct_gain_v3.current_gain == table->max_index &&
                 s_direct_gain_v3.state != DG3_SETTLE && s_v3_coherence < 25;
     if (!want) { quiet_ticks = 0; return; }

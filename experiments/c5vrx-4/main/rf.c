@@ -678,11 +678,14 @@ static void analog_phy_restore_lock(void)
  * in every tuning/bandwidth transaction (and at boot). Not gain: it is applied
  * in native-AGC mode too. Before the first measurement nothing is written. */
 static uint32_t s_fixed_bw_failures;
+static bool s_fixed_bw_edge;
 void rf_apply_fixed_bw(void)
 {
     if (!c5vrx4_fixed_bw_enabled()) return;
     uint8_t code = c5vrx4_bw_code();
     if (code == C5VRX4_BW_UNCALIBRATED) return;
+    if (s_fixed_bw_edge && c5vrx4_bw_edge_code() != C5VRX4_BW_UNCALIBRATED)
+        code = c5vrx4_bw_edge_code();
     if (!phy_rx_lab_filter_set_code(code) && ++s_fixed_bw_failures == 1u)
         ESP_EARLY_LOGW(TAG, "fixed BW code=%u not applied (no baseline or read-back mismatch)", code);
     unsigned skirt = c5vrx4_bw_skirt();
@@ -690,6 +693,21 @@ void rf_apply_fixed_bw(void)
         ESP_EARLY_LOGW(TAG, "fixed BW skirt=%u not applied", skirt);
 }
 uint32_t rf_fixed_bw_failures(void) { return s_fixed_bw_failures; }
+/* Edge gear actuator: the measured edge profile (analog code, optionally the
+ * digital BW20 filter) or back to the normal fixed code + BW40. One restore
+ * transaction, the same cost as the former BW20/BW40 gear switch. */
+void rf_set_fixed_bw_edge(bool edge)
+{
+    if (edge && c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED) edge = false;
+    c5vrx4_suspend();
+    phy_rx_lab_begin("bw_edge");
+    s_fixed_bw_edge = edge;
+    s_analog_bw40 = !(edge && c5vrx4_bw_edge_digital());
+    analog_phy_restore_lock();
+    phy_rx_lab_end();
+    c5vrx4_resume();
+}
+bool rf_fixed_bw_edge_active(void) { return s_fixed_bw_edge; }
 #endif
 
 /* Read-only C5 PHY observations. Estimator/calibration routines are not called
@@ -791,6 +809,9 @@ void rf_set_analog_bandwidth(bool bw40)
 #endif
     phy_rx_lab_begin("bandwidth");
     s_analog_bw40 = bw40;
+#ifdef C5VRX4_EXPERIMENT
+    s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */
+#endif
     analog_phy_restore_lock();
     phy_rx_lab_end();
 #ifdef C5VRX4_EXPERIMENT

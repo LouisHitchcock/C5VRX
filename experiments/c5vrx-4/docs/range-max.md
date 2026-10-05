@@ -41,7 +41,9 @@ single-window bursts/s); 5 ms re-entry hold-off.
 BW20 only at maximum gain, on the lane cap, with a present but starved or
 incoherent carrier for 1 s; back to BW40 after 1 s of clear recovery. BW20
 was rejected as a fixed mode (chroma/detail); at the edge it trades a little
-colour for ~3 dB of CNR, as analog receivers narrow their IF.
+colour for ~3 dB of CNR, as analog receivers narrow their IF. In C5VRX-4
+with the fixed analog BW calibrated, the gear switches to the measured edge
+profile instead (see "Post-detection aliasing").
 
 ### Sync flywheel + colour killer (parked on `feat/sync-flywheel`)
 The BitScrambler demodulates on the fly from the ring TX reads ~409 us after
@@ -145,6 +147,21 @@ C/N0 of 82 dB-Hz, with the AGC rescaling the noise to the lane:
   MODEM_DIAG tap* is the open hardware question that `/`, `;` and
   `nbw_khz` answer. If they do, the BW gear is worth more than its
   threshold CNR alone.
+
+**Built (2026-10-05): edge profile.** The calibration measures the analog
+code × digital filter combinations at the tap (`BW_EDGE`). The V5 gear uses
+the best one (≥ 14 MHz, ≥ 0.5 dB better in noise bandwidth) only at the
+edge. The same 3rd-order model, with distortion and noise combined, gives
+the target:
+
+| Video SNR at C/N0 | 14 MHz width | 24 MHz width |
+|---|---|---|
+| 80 dB-Hz | 7.3 dB | 4.8 dB |
+| 82 dB-Hz | 9.4 dB | 7.2 dB |
+| 84 dB-Hz | 11.4 dB | 9.4 dB |
+
+That is about 2 dB of input. A narrower filter cannot undo the aliasing
+inside span75; only a detector change can (avg3, beyond the TX budget).
 
 ## Demodulator: what fits two bundles
 

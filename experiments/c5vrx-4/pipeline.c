@@ -140,6 +140,8 @@ static bool s_bw_loaded;
 static uint8_t s_bw_code = C5VRX4_BW_UNCALIBRATED, s_bw_target_mhz = 24;
 static uint16_t s_bw_width_khz, s_bw_nbw_khz;
 static uint8_t s_bw_skirt;
+static uint8_t s_bw_edge_code = C5VRX4_BW_UNCALIBRATED, s_bw_edge_dig;
+static uint16_t s_bw_edge_nbw_khz;
 static void bw_load(void)
 {
     if (s_bw_loaded) return;
@@ -150,11 +152,15 @@ static void bw_load(void)
         (void)nvs_get_u8(handle, "bw_target", &s_bw_target_mhz);
         (void)nvs_get_u8(handle, "bw_skirt", &s_bw_skirt);
         (void)nvs_get_u16(handle, "bw_nbw", &s_bw_nbw_khz);
+        (void)nvs_get_u8(handle, "bw_ecode", &s_bw_edge_code);
+        (void)nvs_get_u8(handle, "bw_edig", &s_bw_edge_dig);
+        (void)nvs_get_u16(handle, "bw_enbw", &s_bw_edge_nbw_khz);
         nvs_close(handle);
     }
     if (s_bw_skirt > 60u) s_bw_skirt = 0;
     if (s_bw_code != C5VRX4_BW_UNCALIBRATED && s_bw_code > 63u) s_bw_code = C5VRX4_BW_UNCALIBRATED;
     if (s_bw_target_mhz < 12u || s_bw_target_mhz > 40u) s_bw_target_mhz = 24u;
+    if (s_bw_edge_code > 63u) s_bw_edge_code = C5VRX4_BW_UNCALIBRATED;
     s_bw_loaded = true;
 }
 uint8_t c5vrx4_bw_code(void) { bw_load(); return s_bw_code; }
@@ -177,6 +183,31 @@ bool c5vrx4_bw_skirt_store(unsigned skirt, unsigned nbw_khz)
     }
     if (err == ESP_OK) { s_bw_skirt = (uint8_t)skirt; s_bw_nbw_khz = nbw; }
     else printf("C5VRX4 bw_skirt_store err=%s\n", esp_err_to_name(err));
+    return err == ESP_OK;
+}
+uint8_t c5vrx4_bw_edge_code(void)
+{
+    bw_load();
+    return s_bw_code == C5VRX4_BW_UNCALIBRATED ? C5VRX4_BW_UNCALIBRATED : s_bw_edge_code;
+}
+bool c5vrx4_bw_edge_digital(void) { bw_load(); return s_bw_edge_dig != 0; }
+unsigned c5vrx4_bw_edge_nbw_khz(void) { bw_load(); return s_bw_edge_nbw_khz; }
+bool c5vrx4_bw_edge_store(uint8_t code, bool digital_bw20, unsigned nbw_khz)
+{
+    bw_load();
+    if (code != C5VRX4_BW_UNCALIBRATED && code > 63u) return false;
+    uint16_t nbw = (uint16_t)(nbw_khz > 65535u ? 65535u : nbw_khz);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "bw_ecode", code);
+        if (err == ESP_OK) err = nvs_set_u8(handle, "bw_edig", digital_bw20 ? 1u : 0u);
+        if (err == ESP_OK) err = nvs_set_u16(handle, "bw_enbw", nbw);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) { s_bw_edge_code = code; s_bw_edge_dig = digital_bw20; s_bw_edge_nbw_khz = nbw; }
+    else printf("C5VRX4 bw_edge_store err=%s\n", esp_err_to_name(err));
     return err == ESP_OK;
 }
 bool c5vrx4_bw_store(uint8_t code, unsigned width_khz)

@@ -273,6 +273,31 @@ static inline int predemod_skirt_choose(const unsigned *nbw_khz, const unsigned 
     return (uint64_t)nbw_khz[best] * 100u <= (uint64_t)nbw_khz[0] * 93u ? (int)best : 0;
 }
 
+/* Edge profile (2026-10-05). At the range edge the noise bandwidth costs
+ * twice: pre-detection CNR (FM threshold) and post-detection aliasing, because
+ * span75 resamples the endpoint delta at 13.33 MS/s with no anti-alias filter
+ * and FM noise grows as f^2 up to the pre-detection half-width. Host model
+ * (tools/postdetect_alias_model.py, 3rd-order filter, generated LUTs): a
+ * 14 MHz -3 dB width beats 24 MHz by ~2 dB of input at the edge, with >= 28
+ * dB nonlinear SDR. Candidates are measured settings (digital filter x analog
+ * code, stored skirt kept); the lowest noise bandwidth whose width still
+ * covers edge_target, whose noise stays incoherent for V5 NO_CARRIER and that
+ * beats the normal setting by >= 11 % (0.5 dB) wins. -1: no edge gear. */
+#define PREDEMOD_EDGE_TARGET_KHZ 14000u
+static inline int predemod_edge_choose(const unsigned *nbw_khz, const unsigned *width_khz,
+                                       const bool *valid, unsigned count,
+                                       unsigned edge_target_khz, unsigned normal_nbw_khz)
+{
+    int best = -1;
+    if (!normal_nbw_khz) return -1;
+    for (unsigned k = 0; k < count; ++k)
+        if (valid[k] && nbw_khz[k] && width_khz[k] >= edge_target_khz &&
+            (best < 0 || nbw_khz[k] < nbw_khz[best]))
+            best = (int)k;
+    if (best < 0) return -1;
+    return (uint64_t)nbw_khz[best] * 100u <= (uint64_t)normal_nbw_khz * 89u ? best : -1;
+}
+
 /* Noise-bandwidth excess over the -3 dB width, in 0.1 dB. */
 static inline int predemod_nbw_excess_db_x10(unsigned nbw_khz, unsigned width_khz)
 {

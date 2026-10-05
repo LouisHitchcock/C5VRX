@@ -333,7 +333,9 @@ own revision.
   - avg3 (span-mean phase difference, still 13.33 MS/s) recovers it, but
     needs about five lookups per span, beyond the measured TX BitScrambler
     throughput.
-  - A narrower pre-detection width also reduces the loss.
+  - A narrower pre-detection width also reduces the loss. The C5VRX-4 V5
+    gear therefore uses a measured edge profile (`BW_EDGE`: ≥ 14 MHz, ≥ 0.5 dB
+    lower noise bandwidth) at the range edge.
   - Host evidence only; see `experiments/c5vrx-4/docs/range-max.md`.
 - **Wider IQ / complex filter / FM tracking / external DSP:** investigated C5-only
   tap/filter/lane options and a twelve-lane I6/Q6 external-processing route with
