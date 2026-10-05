@@ -125,7 +125,7 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 | `\|` | Toggle the native AGC acquisition mask, reboot |
 | `_` | Toggle the no-carrier idle raster (HDZero), reboot |
 | `y` | Toggle the V5 strong-signal radius boost, reboot |
-| `w` | Toggle the sync flywheel (default on: missing/noisy H and V sync rebuilt so the goggles always see valid PAL/NTSC), reboot |
+| `w` | Toggle the sync flywheel (default off: on hardware the 100 µs wake starved IDLE, the USB console and the menu; when on, missing/noisy H and V sync are rebuilt), reboot |
 | `'` | sigRSSI mode A/B (live signal RSSI, exact AGC-word restore) |
 | `"` | `phy_param_track_tot` temperature-tracking A/B |
 | `/` | Digital RX filter mode 0..15 and other ADC rate A/B (is a digital filter ahead of the tap?), exact restore |

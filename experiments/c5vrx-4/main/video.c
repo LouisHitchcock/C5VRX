@@ -91,6 +91,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "soc/parl_io_struct.h"
 #include "soc/bitscrambler_struct.h"
@@ -848,12 +849,24 @@ static void video_standard_vote(video_standard_t standard, uint16_t period)
 /* Frozen stride-3 Phase8/winding estimate: ~63 unique samples per H-sync,
  * ~847.4/853.3 per NTSC/PAL line. Exact live alignment/history is not tagged.
  * Standard voting retains its historical period-in-20M-units interface. */
+/* c5v4_cvbs_analyze has one static workspace (no 9.7 KiB frame per task):
+ * analog_agc, cvbs_level and the J capture take turns. Created in
+ * video_start before any of them, without heap. */
+static StaticSemaphore_t s_cvbs_analyze_lock_buf;
+static SemaphoreHandle_t s_cvbs_analyze_lock;
+
+static void cvbs_analyze_locked(const uint8_t *raw, size_t bytes, c5v4_cvbs_stats_t *stats)
+{
+    xSemaphoreTake(s_cvbs_analyze_lock, portMAX_DELAY);
+    c5v4_cvbs_analyze(raw, bytes, c5vrx4_history_enabled(), c5vrx4_cvbs_mode(), stats);
+    xSemaphoreGive(s_cvbs_analyze_lock);
+}
+
 static int video_semantic_observe(const uint8_t *raw, size_t bytes, size_t ring_offset)
 {
     (void)ring_offset;
     c5v4_cvbs_stats_t stats;
-    c5v4_cvbs_analyze(raw, bytes, c5vrx4_history_enabled(),
-                      c5vrx4_cvbs_mode(), &stats);
+    cvbs_analyze_locked(raw, bytes, &stats);
     unsigned period = stats.period_raw;
     int quality = stats.levels_valid && stats.repeated ? 90 : 0;
     s_last_sync_width_20m = 0; /* No fabricated Phase5-width measurement. */
@@ -5821,8 +5834,7 @@ static void cvbs_level_task(void *arg)
             !copy_level_snapshot(raw)) { c5v4_level_hw_invalidate(); continue; }
         last_capture_us = start; have_capture = true;
         c5v4_cvbs_stats_t stats;
-        c5v4_cvbs_analyze(raw, C5V4_LEVEL_SAMPLE_BYTES, c5vrx4_history_enabled(),
-                         c5vrx4_cvbs_mode(), &stats);
+        cvbs_analyze_locked(raw, C5V4_LEVEL_SAMPLE_BYTES, &stats);
         s_level_work_us = (unsigned)(esp_timer_get_time()-start);
         if (!phy_rx_lab_try_actuator(epoch.phy)) { c5v4_level_hw_invalidate(); continue; }
         bool fresh = !s_menu_active && !s_rssi_probe_active && !s_gain_sweep.active &&
@@ -5953,17 +5965,20 @@ static void predemod_bw_autocal(void)
     (void)lab_run_bw_calibration(true);
 }
 
-/* Every 250 ms from console_diag_task, which already runs the same labs on
- * operator keys: no task of its own (6 KiB stack + TCB pushed video_start
- * into ESP_ERR_NO_MEM at boot; this path needs ~2.3 KiB), and an automatic
- * lab can no longer race an operator one. */
-static void predemod_service_tick(void)
+/* Own task, not the console: the BW calibration runs for over a minute and
+ * the console must keep draining USB meanwhile (else host writes and
+ * esptool time out). 4 KiB: -fcallgraph-info worst case is 2240 B. */
+static void predemod_task(void *arg)
 {
-    predemod_dc_service();
-    predemod_sphase_autocheck();
-    predemod_bw_autocal();
-    agc_witness_autocheck();
-    agc_mask_observe();
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        predemod_dc_service();
+        predemod_sphase_autocheck();
+        predemod_bw_autocal();
+        agc_witness_autocheck();
+        agc_mask_observe();
+    }
 }
 
 static void predemod_correction_print(void)
@@ -7019,8 +7034,7 @@ static void cvbs_capture_task(void *arg)
         } else {
             c5v4_cvbs_stats_t stats;
             int64_t processing = esp_timer_get_time();
-            c5v4_cvbs_analyze(raw, CONTROL_SAMPLE_BYTES, c5vrx4_history_enabled(),
-                              c5vrx4_cvbs_mode(), &stats);
+            cvbs_analyze_locked(raw, CONTROL_SAMPLE_BYTES, &stats);
             unsigned work_us = (unsigned)(esp_timer_get_time() - processing);
             printf("C5V4_CVBS snapshot=%u semantic_estimate=1 valid=%d mode=%s "
                    "period_raw=%u pulses=%u repeated=%u sync_bins=%d blank_bins=%d span_bins=%d "
@@ -7047,9 +7061,6 @@ done:
 static void console_diag_task(void *arg)
 {
     (void)arg;
-#if defined(C5VRX4_EXPERIMENT) && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-    unsigned predemod_ticks = 0;
-#endif
 
     for (;;) {
         /* IDF 6.0's O_NONBLOCK VFS read consults the installed driver's
@@ -7080,7 +7091,7 @@ static void console_diag_task(void *arg)
                 }
                 if (c == 'J') {
                     if (__sync_bool_compare_and_swap(&s_cvbs_capture_running, 0u, 1u) &&
-                        xTaskCreate(cvbs_capture_task, "cvbs_capture", 16384, NULL, 1, NULL) != pdPASS) {
+                        xTaskCreate(cvbs_capture_task, "cvbs_capture", 4096, NULL, 1, NULL) != pdPASS) {
                         __sync_lock_release(&s_cvbs_capture_running);
                         printf("C5V4_CVBS refused=task_memory\n");
                     }
@@ -7574,9 +7585,6 @@ static void console_diag_task(void *arg)
             }
         }
         lab_gain_sweep_tick();
-#if defined(C5VRX4_EXPERIMENT) && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-        if (++predemod_ticks >= 25u) { predemod_ticks = 0; predemod_service_tick(); }
-#endif
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -7600,6 +7608,7 @@ esp_err_t video_start(void)
     init_boot_button();
 
     /* Menu control is serialized with BOOT handling in the AGC task. */
+    s_cvbs_analyze_lock = xSemaphoreCreateMutexStatic(&s_cvbs_analyze_lock_buf);
     s_menu_commands = xQueueCreate(16, sizeof(int));
     if (!s_menu_commands) return ESP_ERR_NO_MEM;
 
@@ -7735,9 +7744,10 @@ esp_err_t video_start(void)
     xTaskCreate(console_diag_task, "console_diag", 6144, NULL, 1, NULL);
 
     /* Start dedicated Analog Video AGC engine (slow physical actuator). */
-    /* The slow task now also calls the stride-3 diagnostic (bounded ~6 KiB
-     * workspace on its call stack). Keep it outside the sample-paced path. */
-    if (xTaskCreate(analog_agc_task, "analog_agc", 16384, NULL, 3, NULL) != pdPASS)
+    /* The slow task now also calls the stride-3 diagnostic, whose workspace
+     * is static (cvbs_analyze_locked). -fcallgraph-info worst case 6288 B;
+     * 9 KiB leaves room for printf. Keep it outside the sample-paced path. */
+    if (xTaskCreate(analog_agc_task, "analog_agc", 9216, NULL, 3, NULL) != pdPASS)
         return ESP_ERR_NO_MEM;
 
 
@@ -7746,18 +7756,30 @@ esp_err_t video_start(void)
      * (sync/standard, AFC, level servo, J) decodes the same Q3 as the program. */
     c5v4_cvbs_set_mask_decode(c5vrx4_agc_mask_active());
     if (c5vrx4_level_enabled()) {
-        uint8_t *level_raw = malloc(C5V4_LEVEL_SAMPLE_BYTES);
+        /* CPU-only copy: LP RAM first, so DMA-capable RAM stays free for the
+         * menu descriptors (allocated when the menu opens). */
+        uint8_t *level_raw = heap_caps_malloc(C5V4_LEVEL_SAMPLE_BYTES, MALLOC_CAP_RTCRAM);
+        if (!level_raw) level_raw = malloc(C5V4_LEVEL_SAMPLE_BYTES);
         if (!level_raw) return ESP_ERR_NO_MEM;
-        if (xTaskCreate(cvbs_level_task, "cvbs_level", 16384, level_raw, 2, &s_level_task) != pdPASS) {
+        /* 4 KiB: -fcallgraph-info worst case 1712 B now that the analyzer
+         * workspace is static; no printf on this path. 'T' prints the
+         * high-water mark. */
+        if (xTaskCreate(cvbs_level_task, "cvbs_level", 4096, level_raw, 2, &s_level_task) != pdPASS) {
             free(level_raw); return ESP_ERR_NO_MEM;
         }
     }
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    if (xTaskCreate(predemod_task, "predemod", 4096, NULL, 2, NULL) != pdPASS)
+        return ESP_ERR_NO_MEM;
+#endif
 #endif
     /* Boot RAM margin, so a feature that eats it shows here before it
      * turns into ESP_ERR_NO_MEM. */
-    printf("C5V4_HEAP after_video_start free=%u largest=%u\n",
+    printf("C5V4_HEAP after_video_start free=%u largest=%u dma_free=%u dma_largest=%u\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
     /* Print startup stamp (visible on serial monitor at boot). */
 #ifdef C5VRX4_EXPERIMENT

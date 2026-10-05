@@ -321,8 +321,11 @@ own revision.
   - It also rebuilds vertical-interval slots, keeping the field timing on the
     PLL line grid.
   - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
-    re-lock and mask-safe bytes. On-chip CPU cost and goggle behaviour are not
-    measured.
+    re-lock and mask-safe bytes. Goggle behaviour is not measured.
+  - Hardware, 2026-10-06: default on starved IDLE (task watchdog in
+    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Now
+    default off, `w` opts in; the CPU gate in `SYNC_FLYWHEEL.md` must pass
+    first.
 - **Span75 post-detection aliasing (host model, 2026-10-05):**
   `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated
   Unwrap75 LUTs on simulated Q4/I4 bytes.

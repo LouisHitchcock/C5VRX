@@ -291,8 +291,10 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
-    /* Default on: operator decision 2026-10-05 (SYNC_FLYWHEEL.md). */
-    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", true);
+    /* Default off (operator, 2026-10-05): on hardware the 100 us wake starved
+     * IDLE and the USB console (task watchdog) and the menu stopped working.
+     * 'w' opts in until its CPU gate passes (SYNC_FLYWHEEL.md). */
+    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", false);
     return s_sync_fw;
 }
 

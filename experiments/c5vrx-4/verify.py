@@ -24,7 +24,7 @@ def main():
     assert (ROOT / "partitions.csv").is_file() and (ROOT / "sdkconfig.base.defaults").is_file()
     video = (ROOT / "main/video.c").read_text()
     semantic = video.split("static int video_semantic_observe(", 1)[1].split("typedef struct {", 1)[0]
-    assert "c5v4_cvbs_analyze" in semantic and "phase5_pair_is_sync" not in semantic
+    assert "cvbs_analyze_locked" in semantic and "phase5_pair_is_sync" not in semantic
     assert "afc_ticks" not in video and "afc2_ctrl_decide" in video
     assert "goto afc_control;" in video and "phy_rx_lab_try_actuator(afc_epoch.phy)" in video
     pipeline = (ROOT / "pipeline.c").read_text()
@@ -60,7 +60,7 @@ def main():
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
     assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
     assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video
-    assert '"sync_fw", true' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, s_sfw_task_handle ? 100 : 200)" in video
+    assert '"sync_fw", false' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, s_sfw_task_handle ? 100 : 200)" in video
     assert "sync_flywheel.c" in (ROOT / "component.cmake").read_text()
 
     cases = [
