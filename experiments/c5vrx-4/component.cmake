@@ -11,6 +11,7 @@ target_bitscrambler_add_src("${PROJECT_DIR}/c5vrx4_phase8_static_mask.bsasm")
 target_bitscrambler_add_src("${PROJECT_DIR}/c5vrx4_phase8_static_mask_legacy.bsasm")
 target_bitscrambler_add_src("${PROJECT_DIR}/c5vrx4_phase8_static_mask_cvbs150.bsasm")
 target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/cvbs_monitor.c")
+target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/sync_flywheel.c")
 
 target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/lanes.c")
 

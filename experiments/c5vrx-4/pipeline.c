@@ -257,6 +257,14 @@ bool c5vrx4_radius_boost_enabled(void)
     return s_radius_boost;
 }
 
+static int8_t s_sync_fw = -1;
+bool c5vrx4_sync_flywheel_enabled(void)
+{
+    /* Default on: operator decision 2026-10-05 (SYNC_FLYWHEEL.md). */
+    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", true);
+    return s_sync_fw;
+}
+
 static int16_t s_last_std = -1;
 uint8_t c5vrx4_last_standard(void)
 {
@@ -504,6 +512,7 @@ bool c5vrx4_console(int key)
     if (key == '|') return toggle_flag("agc_mask", c5vrx4_agc_mask_enabled(), "agc_mask");
     if (key == '_') return toggle_flag("idle_raster", c5vrx4_idle_raster_enabled(), "idle_raster");
     if (key == 'y') return toggle_flag("radius_boost", c5vrx4_radius_boost_enabled(), "radius_boost");
+    if (key == 'w') return toggle_flag("sync_fw", c5vrx4_sync_flywheel_enabled(), "sync_fw");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
         static const char *const next_name[] = {"fixed_ultrafine", "protected_v5", "fixed_fine"};

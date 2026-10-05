@@ -63,7 +63,7 @@ The repository evidence:
 | Carrier offset (CFO) | 0.150 V/MHz: -1.5 MHz leaves <150 mV sync (`test_cvbs.py`); the fixed transfer has 10 mV sync margin | Servo removes the offset in the phase domain |
 | Close-in overload | #158: 73.8 % clipping, HDZero black while a scope locked | G20 severe-overload escape |
 | No carrier | Noise; HDZero firmware may switch PAL/NTSC on two polls | Idle raster (below) |
-| Weak, damaged sync | Community reports of rolling at weak signal; FM clicks; ambiguous spans emit blanking level inside sync | Open: needs sync keeping (`feat/sync-flywheel`, CPU-limited) |
+| Weak, damaged sync | Community reports of rolling at weak signal; FM clicks; ambiguous spans emit blanking level inside sync | Sync flywheel (2026-10-05, `SYNC_FLYWHEEL.md`): missing or noisy H and V sync rebuilt on a PLL grid; hardware pending |
 
 **Gap fixed here.** The servo was off whenever native AGC owned the gain, so
 native mode, and with it the native acquisition mask, ran the fixed transfer:
@@ -229,10 +229,9 @@ carriers below `q_phase` 40 without sync are hidden by the raster.
 
 ## Limits
 
-- The raster hides receiver noise only when no carrier is present. It cannot
-  keep HDZero locked through a weak, damaged signal: the live path still
-  recovers the transmitted waveform and does not regenerate sync (AGENTS
-  invariant; the flywheel experiment stays parked).
+- The raster hides receiver noise only when no carrier is present. Through a
+  weak, damaged signal the sync flywheel (`SYNC_FLYWHEEL.md`, AGENTS exception
+  of 2026-10-05) keeps the H and V sync valid instead.
 - Carrier detection uses the existing coherence metric at maximum gain. The
   thresholds (25 / 40) come from the BW calibration and witness gates and are
   not measured at the range edge.

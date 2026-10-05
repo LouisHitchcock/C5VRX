@@ -43,6 +43,7 @@ static int delta_for(unsigned idx)
 }
 static bool s_mask_decode;
 void c5v4_cvbs_set_mask_decode(bool enabled) { s_mask_decode = enabled; }
+const uint8_t *c5v4_cvbs_phase_table(bool mask) { return mask ? c5v4_phase_mask : c5v4_phase_static; }
 static unsigned decode(uint8_t r,unsigned previous,bool history)
 {
     if(!history) return (s_mask_decode ? c5v4_phase_mask : c5v4_phase_static)[r];

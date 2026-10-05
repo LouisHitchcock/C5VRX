@@ -78,5 +78,9 @@ void c5vrx4_last_standard_store(uint8_t standard);
  * 13..32 to 30..46 for finer phase quantization; the first rail code, P95
  * or level jump drops it. NVS radius_boost. */
 bool c5vrx4_radius_boost_enabled(void);
+/* Sync flywheel (default on, 'w' toggles, reboot; SYNC_FLYWHEEL.md): missing
+ * or noisy H/V sync pulses are rebuilt in the raw ring ahead of the TX read so
+ * the goggles always see a valid PAL/NTSC raster. NVS sync_fw. */
+bool c5vrx4_sync_flywheel_enabled(void);
 /* u: experimental automatic CVBS level servo, opt-in/reboot. */
 bool c5vrx4_level_enabled(void);

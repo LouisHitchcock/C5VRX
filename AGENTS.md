@@ -311,6 +311,18 @@ own revision.
   `{9,6,5,4}` at every distance, deliberately without automatic coarse fallback.
   ADC-window folding and phase-endpoint winding are different failure modes.
   Read its `experiments/c5vrx-4/ULTRAFINE_TEST.md`.
+- **Sync flywheel (C5VRX-4, 2026-10-05):** extends the C5VRX-3
+  `feat/sync-flywheel` idea (PLL line tracker, repair in the raw ring before
+  the TX read).
+  - It detects without demodulation, from the 75 ns endpoint phase step at a
+    few points per line (~32 evaluations per clean line in the host model).
+  - It synthesizes a constant per-sample phase step, so the result is valid
+    for every 3-byte span alignment.
+  - It also rebuilds vertical-interval slots, keeping the field timing on the
+    PLL line grid.
+  - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
+    re-lock and mask-safe bytes. On-chip CPU cost and goggle behaviour are not
+    measured.
 - **Wider IQ / complex filter / FM tracking / external DSP:** investigated C5-only
   tap/filter/lane options and a twelve-lane I6/Q6 external-processing route with
   DC/IQ correction, complex channel filtering, adjacent/tracking FM, matched
@@ -403,6 +415,19 @@ requirements by themselves**.
   decode pixels or regenerate PAL/NTSC. (A sync-flywheel experiment that
   repairs broken H-sync is parked on branch `feat/sync-flywheel`; see
   docs/range-max.md for why it is not in main.)
+  **Exception, C5VRX-4 only (operator decision 2026-10-05):** the goggles must
+  never see a moment without valid PAL/NTSC sync, so the C5VRX-4 sync flywheel
+  (`experiments/c5vrx-4/SYNC_FLYWHEEL.md`) rebuilds missing or noisy H-sync
+  pulses (with part of the front porch) and vertical-interval slots in the raw
+  ring ahead of the TX read, on a PLL line grid locked to the real VTX sync.
+  It must keep these properties:
+  - picture content is never decoded or altered;
+  - clean pulses are left untouched;
+  - the colour burst is not killed;
+  - it never writes the newest completed RX descriptor, which the control
+    observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
+  It is on by default (`w` / NVS `sync_fw` opts out) and hardware-pending.
+  The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical
   8.2k/3.9k/2k/1k/470R/240R plus 200R network.

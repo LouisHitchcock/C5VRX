@@ -37,6 +37,7 @@
 #include "predemod.h"
 #include "agc_witness.h"
 #include "idle_raster.h"
+#include "sync_flywheel.h"
 #endif
 #include "rf.h"
 #include "phy_rx_lab.h"
@@ -300,6 +301,7 @@ static volatile bool s_menu_active;
  * a black picture instead of the menu; see idle_raster.h. */
 static idle_raster_t s_idle;
 static unsigned s_idle_failures;
+static TaskHandle_t s_sfw_task_handle;
 #define IDLE_RASTER_ACTIVE() (s_idle.active)
 #else
 #define IDLE_RASTER_ACTIVE() false
@@ -1618,6 +1620,15 @@ static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32
 static void direct_gain_v3_sentinel_timer_cb(void *arg)
 {
     (void)arg;
+#ifdef C5VRX4_EXPERIMENT
+    /* With the sync flywheel the timer runs at 100 us: it wakes the
+     * flywheel every tick and everything else every second tick. */
+    static unsigned tick;
+    if (s_sfw_task_handle) {
+        xTaskNotifyGive(s_sfw_task_handle);
+        if (++tick & 1u) return;
+    }
+#endif
     if (s_v3_sentinel_task_handle)
         xTaskNotifyGive(s_v3_sentinel_task_handle);
     /* V5: the observer runs on the same 200 us cadence instead of the 1 ms
@@ -2908,6 +2919,7 @@ static void predemod_correction_print(void);
 static void bw_status_print(void);
 static void agc_mask_status_print(void);
 static void idle_raster_status_print(void);
+static void sync_flywheel_status_print(void);
 static void lab_predemod_status(void)
 {
     const arc_gain_table_t *table = rf_get_arc_gain_table();
@@ -2930,6 +2942,7 @@ static void lab_predemod_status(void)
     bw_status_print();
     agc_mask_status_print();
     idle_raster_status_print();
+    sync_flywheel_status_print();
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     printf("RADIUS_BOOST enabled=%u active=%u entries=%lu exits=%lu streak=%u "
            "band_p50=30..46 normal_p50=13..32 gain=%u p50=%d p95=%d clip_pm=%d coherence=%d "
@@ -5917,6 +5930,110 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
     }
 }
 
+/* Sync flywheel (SYNC_FLYWHEEL.md, operator decision 2026-10-05). 100 us
+ * cadence from the V5 timer. RX writes the ring and the TX BitScrambler reads
+ * it ~16 KiB (~409 us) later: the flywheel works on data older than the newest
+ * completed RX descriptor and writes only beyond the TX descriptor in flight
+ * (a ~180 us window per line, hence the 100 us wake).
+ * Absolute byte positions use the timer as wrap disambiguator (40 bytes/us).
+ * Internal SRAM is not cached on the C5, so no cache maintenance. The work
+ * per wake is budgeted from the learned cost per evaluation. */
+#define SFW_TARGET_US 30u
+static sync_flywheel_t s_sfw;
+static volatile bool s_sfw_running;
+static volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
+static volatile uint32_t s_sfw_budget = 600u, s_sfw_ns_per_eval = 150u;
+
+static void sync_flywheel_task(void *arg)
+{
+    (void)arg;
+    uint64_t rx_abs = 0;
+    uint32_t last_rx_off = UINT32_MAX;
+    int64_t last_us = 0;
+    sfw_init(&s_sfw);
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* Labs measure raw receiver noise and IQ: no synthetic pulses then. */
+        bool active = c5vrx4_sync_flywheel_enabled() && !s_menu_active && !IDLE_RASTER_ACTIVE() &&
+                      !phy_rx_lab_busy() && !s_rssi_probe_active && !s_gain_sweep.active &&
+                      !s_pre_q4_probe_active && s_output_mode == VIDEO_OUTPUT_6BIT_40 &&
+                      s_rx_dma_ch >= 0 && s_rx_dma_ch < 3 && s_tx_dma_ch >= 0 && s_tx_dma_ch < 3 &&
+                      s_rx_dscr_count >= 2 && s_tx_dscr_count >= 2;
+        s_sfw_running = active;
+        if (!active) { last_rx_off = UINT32_MAX; continue; }
+        int ri = find_dscr_index(s_rx_dscr_nodes, s_rx_dscr_count,
+                                 AHB_DMA.channel[s_rx_dma_ch].in.in_dscr_bf0.val);
+        int ti = find_dscr_index(s_tx_dscr_nodes, s_tx_dscr_count,
+                                 AHB_DMA.channel[s_tx_dma_ch].out.out_dscr_bf0.val);
+        if (ri < 0 || ti < 0) continue;
+        uint8_t *rx_buf = s_rx_dscr_nodes[ri].buffer, *tx_buf = s_tx_dscr_nodes[ti].buffer;
+        if (rx_buf < s_raw_ring || rx_buf >= s_raw_ring + RAW_RING_BYTES ||
+            tx_buf < s_raw_ring || tx_buf >= s_raw_ring + RAW_RING_BYTES) continue;
+        uint32_t rx_off = (uint32_t)(rx_buf - s_raw_ring), tx_off = (uint32_t)(tx_buf - s_raw_ring);
+        int64_t now = esp_timer_get_time();
+        if (last_rx_off == UINT32_MAX) {
+            sfw_init(&s_sfw);
+            rx_abs = (uint64_t)RAW_RING_BYTES * 4u + rx_off;
+            ++s_sfw_rebases;
+        } else {
+            uint64_t d = (rx_off - last_rx_off) & (RAW_RING_BYTES - 1u);
+            uint64_t expected = (uint64_t)(now - last_us) * 40u;
+            while (d + RAW_RING_BYTES / 2u < expected) d += RAW_RING_BYTES;
+            rx_abs += d;
+        }
+        last_rx_off = rx_off;
+        last_us = now;
+        uint64_t lag = (rx_off - tx_off) & (RAW_RING_BYTES - 1u);
+        uint64_t floor = rx_abs - lag + s_tx_dscr_nodes[ti].length + 512u;
+        /* Never touch the newest completed descriptor: every control
+         * observer (V5, idle raster, level servo, AFC) copies exactly that
+         * one, so they always see the unmodified reception. */
+        int ni = (ri - 1 + s_rx_dscr_count) % s_rx_dscr_count;
+        uint64_t newest = (rx_off - (uint32_t)(s_rx_dscr_nodes[ni].buffer - s_raw_ring)) &
+                          (RAW_RING_BYTES - 1u);
+        uint64_t ceiling = rx_abs - (newest ? newest : s_rx_dscr_nodes[ni].length);
+        bool mask = c5vrx4_agc_mask_active();
+        uint8_t flag = c5vrx4_agc_flag();
+        const sfw_ring_t ring = {
+            s_raw_ring, RAW_RING_BYTES, c5v4_cvbs_phase_table(mask), mask,
+            (uint8_t)((flag != C5VRX4_AGC_FLAG_UNKNOWN && (flag & 0x80u)) ? 1u : 0u),
+        };
+        int64_t t0 = esp_timer_get_time();
+        (void)sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget);
+        uint32_t spent = (uint32_t)(esp_timer_get_time() - t0);
+        s_sfw_last_us = spent;
+        if (spent > s_sfw_max_us) s_sfw_max_us = spent;
+        if (s_sfw.evals >= 64u) {
+            uint32_t ns = spent * 1000u / s_sfw.evals;
+            s_sfw_ns_per_eval = (7u * s_sfw_ns_per_eval + ns) / 8u;
+            if (!s_sfw_ns_per_eval) s_sfw_ns_per_eval = 1u;
+        }
+        uint32_t budget = SFW_TARGET_US * 1000u / s_sfw_ns_per_eval;
+        s_sfw_budget = budget < 64u ? 64u : budget > 20000u ? 20000u : budget;
+    }
+}
+
+static void sync_flywheel_status_print(void)
+{
+    const sync_flywheel_t *f = &s_sfw;
+    int std = sfw_standard(f);
+    printf("SYNC_FW enabled=%u running=%u locked=%u std=%s state=%u lines=%lu clean=%lu "
+           "repaired=%lu slots=%lu rebuilt=%lu missed=%lu vsyncs=%lu v_coasted=%lu parity=%lu "
+           "relocks=%lu acq=%lu skipped=%lu floor_skips=%lu fast=%lu thr=%d sync_q4=%d blank_q4=%d "
+           "period_q8=%ld noisy=%u last_us=%lu max_us=%lu budget=%lu ns_per_eval=%lu rebases=%lu "
+           "hardware_acceptance=pending\n",
+           c5vrx4_sync_flywheel_enabled(), s_sfw_running, sfw_locked(f),
+           std == 1 ? "PAL" : std == 2 ? "NTSC" : "none", (unsigned)f->state,
+           (unsigned long)f->lines, (unsigned long)f->clean, (unsigned long)f->repaired,
+           (unsigned long)f->slots_repaired, (unsigned long)f->rebuilt, (unsigned long)f->missed,
+           (unsigned long)f->vsyncs, (unsigned long)f->v_coasted, (unsigned long)f->v_parity,
+           (unsigned long)f->relocks, (unsigned long)f->acquisitions, (unsigned long)f->skipped_lines,
+           (unsigned long)f->skipped_floor, (unsigned long)f->fast_lines, f->thr, f->sync_q4,
+           f->blank_q4, (long)f->period_q8, f->rebuild_lines ? 1u : 0u,
+           (unsigned long)s_sfw_last_us, (unsigned long)s_sfw_max_us, (unsigned long)s_sfw_budget,
+           (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases);
+}
+
 static void idle_raster_status_print(void)
 {
     uint8_t last = c5vrx4_last_standard();
@@ -7322,6 +7439,7 @@ static void console_diag_task(void *arg)
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
+                    printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");
@@ -7470,6 +7588,13 @@ esp_err_t video_start(void)
                                 3072, NULL, 4,
                                 &s_v3_sentinel_task_handle) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
+#ifdef C5VRX4_EXPERIMENT
+    /* Created before the timer so it starts at 100 us; same priority as the
+     * observer. */
+    if (c5vrx4_sync_flywheel_enabled())
+        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 3,
+                                    &s_sfw_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+#endif
     const esp_timer_create_args_t v3_timer_args = {
         .callback = direct_gain_v3_sentinel_timer_cb,
         .arg = NULL,
@@ -7478,7 +7603,11 @@ esp_err_t video_start(void)
     };
     ESP_ERROR_CHECK(esp_timer_create(&v3_timer_args,
                                      &s_v3_sentinel_timer));
+#ifdef C5VRX4_EXPERIMENT
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_v3_sentinel_timer, s_sfw_task_handle ? 100 : 200));
+#else
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_v3_sentinel_timer, 200));
+#endif
 #endif
 
     /* Start interactive console for on-demand diagnostics (zero periodic CPU/bus traffic) */

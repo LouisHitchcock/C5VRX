@@ -54,6 +54,9 @@ def main():
     assert "if (stored) bw_skirt_stage(codes[choice], target);" in video and '"bw_skirt"' in pipeline
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
     assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
+    assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video
+    assert '"sync_fw", true' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, s_sfw_task_handle ? 100 : 200)" in video
+    assert "sync_flywheel.c" in (ROOT / "component.cmake").read_text()
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),
@@ -74,6 +77,7 @@ def main():
         ("predemod", ["-I.", "-lm"]),
         ("agc_witness", ["-I."]),
         ("idle_raster", ["-I."]),
+        ("sync_flywheel", ["-I.", "-O2", "sync_flywheel.c", "-lm"]),
     ]
     with tempfile.TemporaryDirectory(prefix="c5vrx4-verify-") as td:
         for name, extra in cases:
@@ -94,7 +98,7 @@ def main():
     for name in ("test_unwrap.py", "test_cvbs.py", "test_agc_mask.py", "tools/test_phase8_hr_live.py",
                  "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
         run([sys.executable, name])
-    print("PASS: isolated C5VRX-4 integration, 24 C regressions, exhaustive unwrap and source-driven DSP tests")
+    print("PASS: isolated C5VRX-4 integration, 25 C regressions, exhaustive unwrap and source-driven DSP tests")
 
 if __name__ == "__main__":
     main()
