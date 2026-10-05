@@ -3412,7 +3412,14 @@ static bool lab_run_agc_witness(bool automatic)
         s_witness_result = "busy";
         return false;
     }
-    static uint8_t window[CONTROL_SAMPLE_BYTES];
+    /* Heap for the run only: a static 4 KiB window cost every boot the RAM
+     * that video_start's tasks need (ESP_ERR_NO_MEM at boot). */
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) {
+        printf("AGC_WITNESS refused=no_memory\n");
+        s_witness_result = "no_memory";
+        return false;
+    }
     agc_witness_t w;
     agc_witness_init(&w);
     s_rssi_probe_active = true;   /* observers and the level servo stand aside */
@@ -3423,12 +3430,13 @@ static bool lab_run_agc_witness(bool automatic)
         rf_route_diag_capture(diag);
         for (unsigned n = 0; n < WITNESS_WINDOWS; ++n) {
             vTaskDelay(pdMS_TO_TICKS(2)); /* > one 32-KiB ring lap after routing */
-            uint8_t *src = get_completed_rx_sample_window(sizeof(window));
-            sync_dma_m2c(src, sizeof(window));
-            memcpy(window, src, sizeof(window));
-            agc_witness_add(&w, window, sizeof(window), bit);
+            uint8_t *src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
+            sync_dma_m2c(src, CONTROL_SAMPLE_BYTES);
+            memcpy(window, src, CONTROL_SAMPLE_BYTES);
+            agc_witness_add(&w, window, CONTROL_SAMPLE_BYTES, bit);
         }
     }
+    free(window);
     rf_restore_iq_routes();
     c5vrx4_resume();
     ++s_profile_generation;
@@ -5945,17 +5953,17 @@ static void predemod_bw_autocal(void)
     (void)lab_run_bw_calibration(true);
 }
 
-static void predemod_task(void *arg)
+/* Every 250 ms from console_diag_task, which already runs the same labs on
+ * operator keys: no task of its own (6 KiB stack + TCB pushed video_start
+ * into ESP_ERR_NO_MEM at boot; this path needs ~2.3 KiB), and an automatic
+ * lab can no longer race an operator one. */
+static void predemod_service_tick(void)
 {
-    (void)arg;
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(250));
-        predemod_dc_service();
-        predemod_sphase_autocheck();
-        predemod_bw_autocal();
-        agc_witness_autocheck();
-        agc_mask_observe();
-    }
+    predemod_dc_service();
+    predemod_sphase_autocheck();
+    predemod_bw_autocal();
+    agc_witness_autocheck();
+    agc_mask_observe();
 }
 
 static void predemod_correction_print(void)
@@ -7039,6 +7047,9 @@ done:
 static void console_diag_task(void *arg)
 {
     (void)arg;
+#if defined(C5VRX4_EXPERIMENT) && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    unsigned predemod_ticks = 0;
+#endif
 
     for (;;) {
         /* IDF 6.0's O_NONBLOCK VFS read consults the installed driver's
@@ -7563,6 +7574,9 @@ static void console_diag_task(void *arg)
             }
         }
         lab_gain_sweep_tick();
+#if defined(C5VRX4_EXPERIMENT) && CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+        if (++predemod_ticks >= 25u) { predemod_ticks = 0; predemod_service_tick(); }
+#endif
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -7738,11 +7752,12 @@ esp_err_t video_start(void)
             free(level_raw); return ESP_ERR_NO_MEM;
         }
     }
-#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-    if (xTaskCreate(predemod_task, "predemod", 6144, NULL, 2, NULL) != pdPASS)
-        return ESP_ERR_NO_MEM;
 #endif
-#endif
+    /* Boot RAM margin, so a feature that eats it shows here before it
+     * turns into ESP_ERR_NO_MEM. */
+    printf("C5V4_HEAP after_video_start free=%u largest=%u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     /* Print startup stamp (visible on serial monitor at boot). */
 #ifdef C5VRX4_EXPERIMENT
