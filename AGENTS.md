@@ -323,6 +323,18 @@ own revision.
   - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
     re-lock and mask-safe bytes. On-chip CPU cost and goggle behaviour are not
     measured.
+- **Span75 post-detection aliasing (host model, 2026-10-05):**
+  `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated
+  Unwrap75 LUTs on simulated Q4/I4 bytes.
+  - The 75 ns endpoint delta is resampled at 13.33 MS/s with no anti-alias
+    filter. FM noise from 6.67–20 MHz folds into the video band: about
+    -3 dB total and -3.5 to -4.6 dB per 1 MHz band versus a filtered
+    detector.
+  - avg3 (span-mean phase difference, still 13.33 MS/s) recovers it, but
+    needs about five lookups per span, beyond the measured TX BitScrambler
+    throughput.
+  - A narrower pre-detection width also reduces the loss.
+  - Host evidence only; see `experiments/c5vrx-4/docs/range-max.md`.
 - **Wider IQ / complex filter / FM tracking / external DSP:** investigated C5-only
   tap/filter/lane options and a twelve-lane I6/Q6 external-processing route with
   DC/IQ correction, complex channel filtering, adjacent/tracking FM, matched
