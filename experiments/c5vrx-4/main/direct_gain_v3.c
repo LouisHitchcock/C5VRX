@@ -220,10 +220,27 @@ static int ratio_db_q8(int ratio_q10)
     return ((whole * 256 + fraction) * 771 + 128) / 256;
 }
 
+#define DG3_MAGIC 0x44473321u
+static bool same_table(const arc_gain_table_t *a, const arc_gain_table_t *b)
+{
+    if (!a || !b || a->max_index != b->max_index) return false;
+    for (unsigned k = 0; k < ARC_RX_STAGE_COUNT; ++k)
+        if (a->spans[k] != b->spans[k]) return false;
+    return true;
+}
+
 void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
                           uint8_t current_gain, uint8_t survival_gain)
 {
     if (!v3) return;
+    /* A tracking reset (profile, PHY lab, epoch) used to drop every measured
+     * tuple response, so V5 explored the same unknown or mis-modelled steps
+     * again after each one - a burst of corrective writes, each a little
+     * grain (operator, 2026-10-06: VTX 1 m -> 2 m). Keep the map when the
+     * gain table is unchanged. */
+    dg3_map_blob_t kept;
+    bool keep = v3->magic == DG3_MAGIC && v3->learned && table && same_table(&v3->table, table) &&
+                direct_gain_v3_export_map(v3, &kept) > 0u;
     memset(v3, 0, sizeof(*v3));
     prepare_lut();
     if (table && table->max_index >= 20u &&
@@ -238,6 +255,44 @@ void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
     v3->confidence[v3->current_gain] = 1u;
     v3->uncertainty_pm[v3->current_gain] = 50u;
     v3->state = DG3_ACQUIRE;
+    v3->magic = DG3_MAGIC;
+    if (keep) (void)direct_gain_v3_import_map(v3, &kept);
+}
+
+unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *blob)
+{
+    if (!v3 || !blob) return 0u;
+    memset(blob, 0, sizeof(*blob));
+    blob->version = DG3_MAP_VERSION;
+    blob->max_index = v3->table.max_index;
+    unsigned confident = 0;
+    for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
+        blob->bad_state[g] = v3->bad_state[g];
+        if (!v3->confidence[g] || !v3->relative_power_q10[g]) continue;
+        blob->confidence[g] = v3->confidence[g];
+        blob->power_q10[g] = v3->relative_power_q10[g];
+        blob->uncertainty_pm[g] = v3->uncertainty_pm[g];
+        ++confident;
+    }
+    /* A lone anchor (the reset state) carries no information. */
+    return confident > 1u ? confident : 0u;
+}
+
+bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
+{
+    if (!v3 || !blob || blob->version != DG3_MAP_VERSION ||
+        blob->max_index != v3->table.max_index) return false;
+    const uint8_t anchor = v3->current_gain;
+    if (!blob->confidence[anchor] || !blob->power_q10[anchor]) return false;
+    for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
+        v3->bad_state[g] = blob->bad_state[g];
+        if (!blob->confidence[g] || !blob->power_q10[g]) continue;
+        v3->relative_power_q10[g] = blob->power_q10[g];
+        v3->uncertainty_pm[g] = blob->uncertainty_pm[g];
+        v3->confidence[g] = blob->confidence[g];
+    }
+    v3->learned = 1u; /* the map is known; a later reset keeps it */
+    return true;
 }
 
 /* An unknown bank or RF stage is never assigned a fabricated dB value.
@@ -399,19 +454,28 @@ static void learn_transition(direct_gain_v3_t *v3,
     uint8_t a = v3->prior_gain, b = v3->current_gain;
     uint32_t base = v3->relative_power_q10[a];
     if (!base) return;
+    /* The tuple model can call a step "fine" that the 5 GHz vendor table
+     * makes a BB jump (external review; the old medium sweep went G62 P=17,
+     * G63 P=1, G64 P=17). Rejecting such a measurement meant that exact
+     * index was never learned and kept being mis-predicted - a corrective
+     * write, and a little grain, every time V5 crossed it. The stable
+     * before/after windows above already qualify the measurement, so it is
+     * learned anyway, with high uncertainty and the lowest confidence. */
+    bool model_mismatch = false;
     if (v3->transition == DG3_FINE) {
         int steps = abs_i((int)v3->tuple[a].fine_code -
                           (int)v3->tuple[b].fine_code);
         int high = 1024, low = 1024;
         while (steps-- > 0) { high = high * 18 / 10; low = low * 10 / 18; }
         int observed_ratio = (int)after->p50 * 1024 / v3->before.p50;
-        if (observed_ratio < low || observed_ratio > high) return;
+        model_mismatch = observed_ratio < low || observed_ratio > high;
     }
     uint32_t estimate = base * after->p50 / v3->before.p50;
     estimate = (uint32_t)clamp_i((int)estimate, 1, 65535);
+    if (model_mismatch) ++v3->model_mismatches;
     if (!v3->confidence[b]) {
         v3->relative_power_q10[b] = (uint16_t)estimate;
-        v3->uncertainty_pm[b] = 350u;
+        v3->uncertainty_pm[b] = model_mismatch ? 600u : 350u;
     } else {
         uint32_t old = v3->relative_power_q10[b];
         uint32_t residual_pm = old ?

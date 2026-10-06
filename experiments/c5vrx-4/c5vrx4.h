@@ -45,6 +45,9 @@ bool c5vrx4_options_pending(void);
 bool c5vrx4_native_patch_enabled(void);
 /* Range-edge hardware DC correction (NVS dco_auto, default on). */
 bool c5vrx4_hw_dco_enabled(void);
+/* Opaque NVS blob store (c5vrx4/<key>); returns false when absent/short. */
+bool c5vrx4_blob_load(const char *key, void *data, size_t size);
+bool c5vrx4_blob_store(const char *key, const void *data, size_t size);
 
 bool c5vrx4_lane_window_ready(uint64_t now_us);
 uint8_t c5vrx4_lane_target(uint8_t current, uint8_t requested, const uint8_t *sample, size_t bytes, uint64_t now_us);

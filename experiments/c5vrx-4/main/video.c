@@ -316,6 +316,14 @@ static unsigned s_menu_item;
 /* Calibrations chosen in the menu run after it closes (labs refuse while
  * the standalone menu owns TX). */
 static volatile bool s_menu_bw_cal_request, s_menu_witness_request;
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT && defined(C5VRX4_EXPERIMENT)
+/* V5's measured gain map, persisted (NVS c5vrx4/dg3_map): after a reset or
+ * a reboot V5 starts from what this board measured instead of the tuple
+ * model, so it does not explore unknown steps (each a little grain) again. */
+static dg3_map_blob_t s_dg3_saved;
+static bool s_dg3_saved_valid;
+static uint32_t s_dg3_map_imports, s_dg3_map_saves;
+#endif
 static int s_menu_timeout_ticks;
 
 typedef enum {
@@ -1841,6 +1849,13 @@ static void direct_gain_v3_observer_task(void *arg)
             s_direct_gain_v3.current_gain != s_current_gain) {
             direct_gain_v3_reset(&s_direct_gain_v3, rf_get_arc_gain_table(),
                                  s_current_gain, rf_get_arc_survival_gain());
+#ifdef C5VRX4_EXPERIMENT
+            /* The reset keeps an in-RAM map on the same table; a fresh boot
+             * starts from the persisted one. */
+            if (!s_direct_gain_v3.learned && s_dg3_saved_valid &&
+                direct_gain_v3_import_map(&s_direct_gain_v3, &s_dg3_saved))
+                ++s_dg3_map_imports;
+#endif
             direct_gain_v3_enable_lanes(&s_direct_gain_v3,
                                         (uint8_t)(RF_IQ_LANE_SETS - 1u));
 #ifdef C5VRX4_EXPERIMENT
@@ -6701,6 +6716,32 @@ static void predemod_dco_service(void)
         ++s_dco_holds;
 }
 
+/* Persist V5's measured gain map: at most every 2 minutes, only when the
+ * map changed and V5 is holding (flash wear and no write mid-transition). */
+static void predemod_dg3_map_service(void)
+{
+    static int64_t last_us;
+    static uint32_t last_learned;
+    const int64_t now = esp_timer_get_time();
+    if (now - last_us < 120000000LL || rf_native_agc_active() ||
+        s_direct_gain_v3.state != DG3_HOLD || s_direct_gain_v3.learned == last_learned) return;
+    last_us = now;
+    last_learned = s_direct_gain_v3.learned;
+    dg3_map_blob_t blob;
+    /* The observer task owns the controller; a torn copy only costs one
+     * slightly stale entry, which the next save replaces. */
+    if (!direct_gain_v3_export_map(&s_direct_gain_v3, &blob)) return;
+    if (s_dg3_saved_valid && !memcmp(&blob, &s_dg3_saved, sizeof(blob))) return;
+    if (c5vrx4_blob_store("dg3_map", &blob, sizeof(blob))) {
+        s_dg3_saved = blob;
+        s_dg3_saved_valid = true;
+        ++s_dg3_map_saves;
+        printf("DG3_MAP saved=%lu imports=%lu model_mismatches=%lu\n",
+               (unsigned long)s_dg3_map_saves, (unsigned long)s_dg3_map_imports,
+               (unsigned long)s_direct_gain_v3.model_mismatches);
+    }
+}
+
 static void predemod_dc_service(void)
 {
     /* Disabled (board 2026-10-06): live LUT read-back returned random words
@@ -6816,6 +6857,7 @@ static void predemod_task(void *arg)
         }
         predemod_dc_service();
         predemod_dco_service();
+        predemod_dg3_map_service();
         static unsigned hb_ticks;
         if (++hb_ticks >= 20u) {
             hb_ticks = 0;
@@ -8493,6 +8535,11 @@ esp_err_t video_start(void)
     settings_load();
 #ifdef C5VRX4_EXPERIMENT
     c5vrx4_options_snapshot();
+#if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
+    s_dg3_saved_valid = c5vrx4_blob_load("dg3_map", &s_dg3_saved, sizeof(s_dg3_saved)) &&
+                        s_dg3_saved.version == DG3_MAP_VERSION;
+    printf("DG3_MAP loaded=%u\n", s_dg3_saved_valid);
+#endif
 #endif
 #if defined(C5VRX4_EXPERIMENT) || CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     s_output_mode = VIDEO_OUTPUT_6BIT_40;

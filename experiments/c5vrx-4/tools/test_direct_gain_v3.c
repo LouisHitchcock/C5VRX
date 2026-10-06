@@ -445,6 +445,30 @@ int main(void)
         assert(v3.current_gain > 52u);
     }
 
+    /* The measured map survives a tracking reset on the same table and
+     * round-trips through the NVS blob; an unknown anchor drops it. */
+    {
+        memset(&v3, 0, sizeof(v3)); /* earlier scenarios left a learned map */
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
+        v3.relative_power_q10[61] = 1300u;
+        v3.confidence[61] = 3u;
+        v3.uncertainty_pm[61] = 100u;
+        v3.learned = 5u;
+        dg3_map_blob_t blob;
+        assert(direct_gain_v3_export_map(&v3, &blob) == 2u);
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
+        assert(v3.confidence[61] == 3u && v3.relative_power_q10[61] == 1300u);
+        direct_gain_v3_t fresh;
+        memset(&fresh, 0, sizeof(fresh));
+        direct_gain_v3_reset(&fresh, &table, 60u, 62u);
+        assert(!fresh.confidence[61]);
+        assert(direct_gain_v3_import_map(&fresh, &blob) && fresh.relative_power_q10[61] == 1300u);
+        direct_gain_v3_reset(&fresh, &table, 70u, 62u);
+        assert(!fresh.confidence[61]);
+        direct_gain_v3_reset(&fresh, &table, 70u, 62u);
+        assert(!direct_gain_v3_import_map(&fresh, &blob)); /* anchor 70 unknown */
+    }
+
     puts("direct gain v3 core: OK");
     return 0;
 }

@@ -120,6 +120,29 @@ static bool nvs_flag(const char *key, bool fallback)
 }
 
 static int8_t s_hw_dco = -1;
+bool c5vrx4_blob_load(const char *key, void *data, size_t size)
+{
+    nvs_handle_t handle;
+    if (nvs_open("c5vrx4", NVS_READONLY, &handle) != ESP_OK) return false;
+    size_t length = size;
+    esp_err_t err = nvs_get_blob(handle, key, data, &length);
+    nvs_close(handle);
+    return err == ESP_OK && length == size;
+}
+
+bool c5vrx4_blob_store(const char *key, const void *data, size_t size)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(handle, key, data, size);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) printf("C5VRX4 blob_store key=%s err=%s\n", key, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
 bool c5vrx4_hw_dco_enabled(void)
 {
     if (s_hw_dco < 0) s_hw_dco = nvs_flag("dco_auto", true);

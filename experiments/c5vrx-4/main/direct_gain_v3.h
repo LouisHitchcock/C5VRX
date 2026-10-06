@@ -68,6 +68,10 @@ typedef struct {
     uint64_t lane_us, lane_hold_until_us, last_fold_us;
     uint8_t fold_streak;      /* consecutive fold drops -> longer hold-off */
     uint32_t lane_changes, fold_drops;
+    /* Transitions whose measured ratio disagreed with the tuple model's
+     * fine-step prediction (learned anyway, see learn_transition). */
+    uint32_t model_mismatches;
+    uint32_t magic;           /* DG3_MAGIC once reset: the map may be kept */
     /* Strong-signal radius boost: on a strong, steady carrier the healthy
      * band moves from P50 13..32 (r ~3.5..5.6 cells) to 30..46 (r ~5.4..6.8)
      * for finer phase quantization; any clip/P95/jump warning drops it at
@@ -81,6 +85,23 @@ typedef struct {
 
 void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
                           uint8_t current_gain, uint8_t survival_gain);
+
+/* Measured gain map, kept across tracking resets on the same table and
+ * persisted in NVS so V5 does not explore blindly after every reset/boot.
+ * Powers are relative to each other (Q10); only confident states count. */
+#define DG3_MAP_VERSION 1u
+typedef struct {
+    uint8_t version, max_index;
+    uint8_t confidence[DG3_STATES];
+    uint8_t bad_state[DG3_STATES];
+    uint16_t power_q10[DG3_STATES];
+    uint16_t uncertainty_pm[DG3_STATES];
+} dg3_map_blob_t;
+/* Number of confident states written to the blob (0 = nothing worth saving). */
+unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *blob);
+/* Applies a blob to a freshly reset controller on the same table. Needs the
+ * current gain to be in the blob (the anchor of every relative power). */
+bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob);
 /* Strong-signal radius boost on/off (cleared by reset). */
 void direct_gain_v3_enable_boost(direct_gain_v3_t *v3, bool enabled);
 /* Allow lanes 0..lane_max (0 disables range lanes). Resets to lane 0. */
