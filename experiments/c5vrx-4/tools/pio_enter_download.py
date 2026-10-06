@@ -14,10 +14,11 @@ from enter_download import enter_download  # noqa: E402
 
 
 def _before_upload(source, target, env):
+    # This pre-action runs before PlatformIO's own port detection.
+    env.AutodetectUploadPort()
     port = env.subst("$UPLOAD_PORT")
     if not port:
-        print("enter_download: no upload_port set; skipping")
-        return
+        raise RuntimeError("enter_download: no upload port detected")
     enter_download(port)
 
 

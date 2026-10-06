@@ -93,19 +93,21 @@ def main():
             time.sleep(min(0.01, nxt - now))
             continue
         nxt += args.period
-        t0 = time.time()
-        try:
-            s.write(cmd)
-            ok = True
-        except serial.SerialTimeoutException:
-            ok = False
         with lock:
-            rows.append((t0, ok, None))
-            if ok:
-                pending.append((len(rows) - 1, t0))
             # Replies older than the timeout are counted lost.
             while pending and time.time() - pending[0][1] > args.reply_timeout:
                 pending.pop(0)
+            # Register before writing, and prevent the reader from matching
+            # a reply until the write result is known.
+            t0 = time.time()
+            idx = len(rows)
+            rows.append((t0, True, None))
+            pending.append((idx, t0))
+            try:
+                s.write(cmd)
+            except serial.SerialTimeoutException:
+                rows[idx] = (t0, False, None)
+                pending.pop()
     time.sleep(args.reply_timeout)
     stop.set()
     th.join(1.0)
