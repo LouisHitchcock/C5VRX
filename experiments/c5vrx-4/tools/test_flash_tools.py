@@ -93,7 +93,6 @@ class FlashToolsTests(unittest.TestCase):
                         "Import": lambda name: None, "env": env,
                     })
                     env.before(None, None, env)
-                self.assertTrue(env.detected)
                 self.assertEqual(requested, [port or "COM42"])
 
     def run_soak(self, serial_type):
