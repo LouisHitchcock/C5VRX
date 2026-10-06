@@ -32,7 +32,7 @@ samples are hidden.
 2. **Calibration (`*`, or automatically at the first native carrier).**
    - Native AGC, pacing off.
    - For each state bit DIAG[28+n], the eight PARLIO lanes capture DIAG[20..26]
-     (gain index) plus that bit, six 4092-sample windows each (~50 ms garbage
+     (gain index) plus that bit, 24 4092-sample windows each (~0.2 s garbage
      video).
    - Gain changes closer than 4 us form one acquisition. Among the bits and
      polarities active on at most 5 % of trapped samples (guard and settle

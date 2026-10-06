@@ -3449,7 +3449,9 @@ static void bw_status_print(void)
  * capture DIAG[20..26] plus one state bit per pass; gain changes mark the
  * acquisitions and the state bit that separates them becomes the hold flag
  * on data bit 0 for the masked program. Live video is garbage for ~50 ms. */
-#define WITNESS_WINDOWS 6u
+/* 24 per bit: with the native restart patch walks are rare (5 in 24 windows
+ * on the board, 2026-10-06) and the choice needs >= 8 acquisitions. */
+#define WITNESS_WINDOWS 24u
 static const char *s_witness_result = "never";
 static agc_witness_result_t s_witness_last = {.bit = -1};
 static unsigned s_witness_runs;
@@ -4260,10 +4262,13 @@ static void lab_request_fresh_phy_calibration(void)
  * decides ownership before PHY use. */
 static void lab_toggle_native_agc_boot(void)
 {
-    if (s_gain_sweep.active || s_menu_active || s_pre_q4_probe_active) {
+    /* The no-carrier idle raster is not the user menu: switching the gain
+     * owner (a reboot) is exactly what a stuck native receiver may need. */
+    const bool menu = s_menu_active && !IDLE_RASTER_ACTIVE();
+    if (s_gain_sweep.active || menu || s_pre_q4_probe_active) {
         printf("C5VRX_NATIVE_AGC_REFUSED reason=%s\n",
                s_gain_sweep.active ? "gain_sweep_active" :
-               s_menu_active ? "menu_active" : "preq4_busy");
+               menu ? "menu_active" : "preq4_busy");
         return;
     }
     bool enable = !rf_native_agc_active();
