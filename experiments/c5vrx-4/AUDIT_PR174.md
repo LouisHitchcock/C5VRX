@@ -25,3 +25,20 @@ what remains open, and why. Host evidence is not an RF measurement; every
 The audit's sensitivity procedure (calibrated attenuator, three endpoints,
 many boots) is the way to turn these into a measured dB total; nothing here
 claims one.
+
+## Public SDR research (2026-10-07)
+
+"Wat openbare SDR-code ons leert over meer C5VRX-range" (six pinned source
+trees, against `d3af38e`).
+
+| Item | Status | Where |
+|---|---|---|
+| P1 Vendor RX DC/IQ calibration at the tuned frequency (ESPARGOS esp-sdr) | **Built as lab `~`**: adapted from ESPARGOS `rx_recalibration.c` (C5, 06a5ca4, GPL-3.0, credited); re-verified on C5VRX's own PHY pin by disassembling `phy_bb_init()` (call arguments and the 0x80/0x400 flag bits); a link `--wrap` keeps the vendor's internal reference tunes on the tuned frequency (13 PHY calls go through it in the linked image). DC logged before/after; per-gain DC table rebuilt. **Open**: board comparison at R3/R8/A1, cold/warm boot | `main/rx_recal.c`, `main/video.c` |
+| Fade detector misled by clean fast rotors (coherence 66-72) | Already fixed in `80cbdb5` (raw-ring implausible-step detector, integral test) | `sync_flywheel.c` |
+| P1 Sampling acceptance including native AGC | **Built**: autocheck and scan run under native AGC (sync fragment within 1 s as the carrier test; no AGC pause). **Open**: many boots / retunes / temperature on the board | `main/video.c` |
+| P2 Hardware gain readback | **Built**: forced index in 0x600A702C vs V5's index every 250 ms, mismatch counter, vendor tuple in `!` | `main/video.c` |
+| P1 Filter labs `;` `/`, 11p split | **Open (measurement)**: labs exist; NBW plus wanted-signal transfer must be measured at equal gain/DC/CFO | `PREDEMOD_LAB.md` |
+| P2 LP-core quality observer | **Open**: observer-only design (DC-corrected envelope, phase spread, origin/rail, raw sync) after an LP clock/latency benchmark | — |
+| P2 Blocker sweep, P2 safe CVBS level update, emphasis | **Open (measurement / proven LUT path first)** | — |
+| P3 Offline PLL/FMFB reference | **Open (offline)**: not executable on C5 at 40 MS/s | — |
+| P0 Conducted attenuator baseline | **Open (bench)**: the only way to a measured dB total | — |
