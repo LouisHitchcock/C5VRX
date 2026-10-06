@@ -142,6 +142,7 @@ static uint16_t s_bw_width_khz, s_bw_nbw_khz;
 static uint8_t s_bw_skirt;
 static uint8_t s_bw_edge_code = C5VRX4_BW_UNCALIBRATED, s_bw_edge_dig;
 static uint16_t s_bw_edge_nbw_khz;
+static uint8_t s_bw_edge_skirt = C5VRX4_BW_EDGE_SKIRT_NONE;
 static void bw_load(void)
 {
     if (s_bw_loaded) return;
@@ -155,12 +156,14 @@ static void bw_load(void)
         (void)nvs_get_u8(handle, "bw_ecode", &s_bw_edge_code);
         (void)nvs_get_u8(handle, "bw_edig", &s_bw_edge_dig);
         (void)nvs_get_u16(handle, "bw_enbw", &s_bw_edge_nbw_khz);
+        (void)nvs_get_u8(handle, "bw_eskirt", &s_bw_edge_skirt);
         nvs_close(handle);
     }
     if (s_bw_skirt > 60u) s_bw_skirt = 0;
     if (s_bw_code != C5VRX4_BW_UNCALIBRATED && s_bw_code > 63u) s_bw_code = C5VRX4_BW_UNCALIBRATED;
     if (s_bw_target_mhz < 12u || s_bw_target_mhz > 40u) s_bw_target_mhz = 24u;
     if (s_bw_edge_code > 63u) s_bw_edge_code = C5VRX4_BW_UNCALIBRATED;
+    if (s_bw_edge_skirt > 60u) s_bw_edge_skirt = C5VRX4_BW_EDGE_SKIRT_NONE;
     s_bw_loaded = true;
 }
 uint8_t c5vrx4_bw_code(void) { bw_load(); return s_bw_code; }
@@ -191,6 +194,26 @@ uint8_t c5vrx4_bw_edge_code(void)
     return s_bw_code == C5VRX4_BW_UNCALIBRATED ? C5VRX4_BW_UNCALIBRATED : s_bw_edge_code;
 }
 bool c5vrx4_bw_edge_digital(void) { bw_load(); return s_bw_edge_dig != 0; }
+uint8_t c5vrx4_bw_edge_skirt(void)
+{
+    bw_load();
+    return c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED ? C5VRX4_BW_EDGE_SKIRT_NONE : s_bw_edge_skirt;
+}
+bool c5vrx4_bw_edge_skirt_store(uint8_t skirt)
+{
+    bw_load();
+    if (skirt != C5VRX4_BW_EDGE_SKIRT_NONE && skirt > 60u) return false;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, "bw_eskirt", skirt);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err == ESP_OK) s_bw_edge_skirt = skirt;
+    else printf("C5VRX4 bw_edge_skirt_store err=%s\n", esp_err_to_name(err));
+    return err == ESP_OK;
+}
 unsigned c5vrx4_bw_edge_nbw_khz(void) { bw_load(); return s_bw_edge_nbw_khz; }
 bool c5vrx4_bw_edge_store(uint8_t code, bool digital_bw20, unsigned nbw_khz)
 {

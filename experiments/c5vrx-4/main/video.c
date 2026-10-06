@@ -3224,11 +3224,18 @@ static void bw_skirt_stage(uint8_t code0, unsigned target)
  * Ends on BW40 + the normal code; bw_enbw = best candidate nbw (1 = none
  * valid, 0 = never measured). */
 #define BW_EDGE_CODES 9u
+/* Second-stage candidates (regs 8..13) at the normal code and BW40. On the
+ * first board (2026-10-06) regs 6/7 and the digital BW20/BW40 choice did not
+ * move the measured width (19.4 MHz, tap ahead of the digital filter), but
+ * this stage did (skirt 16: 15.6 MHz wide, nbw 20.9 -> 16.9 MHz). */
+#define BW_EDGE_SKIRTS 4u
+#define BW_EDGE_CANDIDATES (2u * BW_EDGE_CODES + BW_EDGE_SKIRTS)
 static void bw_edge_stage(void)
 {
     static const uint8_t codes[BW_EDGE_CODES] = {0, 8, 16, 24, 32, 40, 48, 56, 60};
-    unsigned nbw[2 * BW_EDGE_CODES] = {0}, width[2 * BW_EDGE_CODES] = {0};
-    bool valid[2 * BW_EDGE_CODES] = {false};
+    static const uint8_t skirts[BW_EDGE_SKIRTS] = {8, 16, 24, 32};
+    unsigned nbw[BW_EDGE_CANDIDATES] = {0}, width[BW_EDGE_CANDIDATES] = {0};
+    bool valid[BW_EDGE_CANDIDATES] = {false};
     const unsigned normal = c5vrx4_bw_nbw_khz();
     bool carrier = false;
     unsigned best_nbw = 0;
@@ -3256,21 +3263,47 @@ static void bw_edge_stage(void)
         }
     }
     apply_rf_bandwidth(true);
+    for (unsigned k = 0; k < BW_EDGE_SKIRTS && !carrier; ++k) {
+        unsigned i = 2u * BW_EDGE_CODES + k, w = 0;
+        int q = 0, clip = 0;
+        if (!phy_rx_lab_filter_set_skirt(skirts[k])) {
+            printf("BW_EDGE skirt=%u refused=filter_write\n", skirts[k]);
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!bw_noise_measure(BW_CAL_WINDOWS, &w, &q, &clip)) continue;
+        width[i] = w;
+        nbw[i] = s_bw_last_nbw_khz;
+        valid[i] = q < BW_CAL_QUIET_QPHASE && clip < BW_CAL_QUIET_CLIP;
+        if (valid[i] && w >= PREDEMOD_EDGE_TARGET_KHZ && (!best_nbw || nbw[i] < best_nbw))
+            best_nbw = nbw[i];
+        printf("BW_EDGE skirt=%u code=%u width_khz=%u nbw_khz=%u gain_db_x10=%d Q_phase=%d clip_pm=%d valid=%u\n",
+               skirts[k], c5vrx4_bw_code(), w, nbw[i],
+               -predemod_nbw_excess_db_x10(nbw[i], normal), q, clip, valid[i]);
+        if (clip >= BW_CAL_QUIET_CLIP) carrier = true;
+    }
+    (void)phy_rx_lab_filter_set_skirt((int)c5vrx4_bw_skirt());
     unsigned w = 0;
     int q = 0, clip = 0;
     bool restored = phy_rx_lab_filter_code() == (int)c5vrx4_bw_code();
     if (!carrier && bw_noise_measure(BW_CAL_WINDOWS, &w, &q, &clip))
         carrier = !bw_quiet("EDGE_POSTCHECK", w, q, clip);
-    int choice = carrier ? -1 : predemod_edge_choose(nbw, width, valid, 2u * BW_EDGE_CODES,
+    int choice = carrier ? -1 : predemod_edge_choose(nbw, width, valid, BW_EDGE_CANDIDATES,
                                                      PREDEMOD_EDGE_TARGET_KHZ, normal);
+    const bool by_skirt = choice >= (int)(2u * BW_EDGE_CODES);
+    const int edge_code = choice < 0 ? -1 : by_skirt ? (int)c5vrx4_bw_code() : (int)codes[choice % BW_EDGE_CODES];
+    const bool edge_bw20 = !by_skirt && choice >= (int)BW_EDGE_CODES;
     bool stored = choice >= 0
-        ? c5vrx4_bw_edge_store(codes[choice % BW_EDGE_CODES], choice >= (int)BW_EDGE_CODES, nbw[choice])
+        ? c5vrx4_bw_edge_store((uint8_t)edge_code, edge_bw20, nbw[choice])
         : c5vrx4_bw_edge_store(C5VRX4_BW_UNCALIBRATED, false, carrier ? 0u : (best_nbw ? best_nbw : 1u));
-    printf("BW_EDGE chosen=%s code=%d digital=%s nbw_khz=%u normal_nbw_khz=%u gain_db_x10=%d "
+    stored = c5vrx4_bw_edge_skirt_store(by_skirt ? skirts[choice - (int)(2u * BW_EDGE_CODES)]
+                                                 : C5VRX4_BW_EDGE_SKIRT_NONE) && stored;
+    printf("BW_EDGE chosen=%s code=%d digital=%s skirt=%d nbw_khz=%u normal_nbw_khz=%u gain_db_x10=%d "
            "target_khz=%u stored=%u restore_verified=%u\n",
            carrier ? "aborted_carrier" : choice >= 0 ? "edge_profile" : "none_0p5dB_better",
-           choice >= 0 ? (int)codes[choice % BW_EDGE_CODES] : -1,
-           choice >= (int)BW_EDGE_CODES ? "BW20" : "BW40", choice >= 0 ? nbw[choice] : 0u, normal,
+           edge_code, edge_bw20 ? "BW20" : "BW40",
+           by_skirt ? (int)skirts[choice - (int)(2u * BW_EDGE_CODES)] : -1,
+           choice >= 0 ? nbw[choice] : 0u, normal,
            choice >= 0 ? -predemod_nbw_excess_db_x10(nbw[choice], normal) : 0,
            PREDEMOD_EDGE_TARGET_KHZ, stored, restored);
 }
@@ -3390,7 +3423,7 @@ static void bw_status_print(void)
     printf("PREDEMOD_BW fixed=%u stored_code=%d width_khz=%u nbw_khz=%u skirt=%u applied_skirt=%d "
            "target_khz=%u applied_code=%d "
            "calibrated_code=%d calibrated_width_khz=%u esp_sdr_mode_fit=%d fit_error_khz=%u "
-           "digital=%s gear=%s edge_code=%d edge_digital=%s edge_nbw_khz=%u edge_active=%u "
+           "digital=%s gear=%s edge_code=%d edge_digital=%s edge_skirt=%d edge_nbw_khz=%u edge_active=%u "
            "apply_failures=%lu calibrations=%u last=%s\n",
            c5vrx4_fixed_bw_enabled(), stored == C5VRX4_BW_UNCALIBRATED ? -1 : (int)stored,
            c5vrx4_bw_width_khz(), c5vrx4_bw_nbw_khz(), c5vrx4_bw_skirt(), phy_rx_lab_filter_skirt(),
@@ -3401,7 +3434,9 @@ static void bw_status_print(void)
            bw_fixed_calibrated() ? (c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED ? "off_no_edge" : "edge")
                                  : "digital_bw20",
            c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED ? -1 : (int)c5vrx4_bw_edge_code(),
-           c5vrx4_bw_edge_digital() ? "BW20" : "BW40", c5vrx4_bw_edge_nbw_khz(),
+           c5vrx4_bw_edge_digital() ? "BW20" : "BW40",
+           c5vrx4_bw_edge_skirt() == C5VRX4_BW_EDGE_SKIRT_NONE ? -1 : (int)c5vrx4_bw_edge_skirt(),
+           c5vrx4_bw_edge_nbw_khz(),
            rf_fixed_bw_edge_active(),
            (unsigned long)rf_fixed_bw_failures(), s_bw_cal_runs, s_bw_cal_result);
 }
@@ -3489,6 +3524,116 @@ static bool lab_run_agc_witness(bool automatic)
            r.separation_pm, r.active_acq_pm, r.active_trapped_pm, r.lead_samples,
            r.lag_samples, r.lead_samples >= 2u);
     return stored;
+}
+
+/* PHY bit scan for the native packet-AGC restart (native, VTX on, 'i').
+ * On a continuous carrier the C5 packet AGC re-acquires every 25-50 us
+ * (docs/native-agc-v2.md); no decoded register stops that while keeping it
+ * tracking. This flips one bit at a time in the BB AGC/detection blocks,
+ * measures gain-walk starts per ms on DIAG[20..26] (the witness capture)
+ * and restores the word. A bit that moves the restart rate past 2x, either
+ * way, is re-measured on 16 windows and reported. Video is garbage while it
+ * runs; nothing is persisted. */
+#define AGC_SCAN_WINDOWS 4u
+extern void phy_enable_agc(void);
+static void agc_scan_measure(uint8_t *window, unsigned windows, agc_witness_result_t *r)
+{
+    agc_witness_t w;
+    agc_witness_init(&w);
+    for (unsigned n = 0; n < windows; ++n) {
+        vTaskDelay(pdMS_TO_TICKS(2)); /* > one 32-KiB ring lap */
+        uint8_t *src = get_completed_rx_sample_window(CONTROL_SAMPLE_BYTES);
+        sync_dma_m2c(src, CONTROL_SAMPLE_BYTES);
+        memcpy(window, src, CONTROL_SAMPLE_BYTES);
+        agc_witness_add(&w, window, CONTROL_SAMPLE_BYTES, 0);
+    }
+    (void)agc_witness_choose(&w, r);
+}
+
+static void lab_run_agc_bitscan(void)
+{
+    if (!rf_native_agc_active()) {
+        printf("AGC_SCAN refused=native_agc_only (RF menu GAIN -> NATIVE AGC)\n");
+        return;
+    }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_SCAN refused=other_lab_or_menu\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_SCAN refused=no_memory\n"); return; }
+    s_rssi_probe_active = true;   /* observers and the level servo stand aside */
+    c5vrx4_suspend();             /* no pacing gate: every native acquisition */
+    const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, 28};
+    rf_route_diag_capture(diag);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    agc_witness_result_t r;
+    unsigned base = 0, tried = 0, hits = 0;
+    for (unsigned k = 0; k < 3u; ++k) {
+        agc_scan_measure(window, 8u, &r);
+        base += r.acq_per_ms_x10;
+        printf("AGC_SCAN baseline acq_per_ms=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
+               r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u, r.acq_share_pm,
+               r.trapped_min, r.trapped_max, r.gain_min_acq);
+    }
+    base /= 3u;
+    if (base < 20u) {
+        printf("AGC_SCAN refused=no_restarts_carrier_needed\n");
+    } else {
+        static const struct { uint32_t first, last; } blocks[] = {
+            {0x600A7000u, 0x600A71FCu}, {0x600A8000u, 0x600A807Cu},
+        };
+        for (unsigned b = 0; b < sizeof(blocks) / sizeof(blocks[0]); ++b) {
+            for (uint32_t addr = blocks[b].first; addr <= blocks[b].last; addr += 4u) {
+                if (addr == 0x600A70B8u) continue; /* diag source mux: the measurement */
+                volatile uint32_t *reg = (volatile uint32_t *)addr;
+                const uint32_t orig = *reg;
+                for (unsigned bit = 0; bit < 32u; ++bit) {
+                    *reg = orig ^ (1u << bit);
+                    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                    vTaskDelay(pdMS_TO_TICKS(3));
+                    agc_scan_measure(window, AGC_SCAN_WINDOWS, &r);
+                    unsigned rate = r.acq_per_ms_x10;
+                    if (rate * 2u < base || rate > base * 2u) {
+                        agc_scan_measure(window, 16u, &r); /* confirm */
+                        rate = r.acq_per_ms_x10;
+                        if (rate * 2u < base || rate > base * 2u) {
+                            ++hits;
+                            printf("AGC_SCAN hit reg=0x%08lx bit=%u orig=0x%08lx acq_per_ms=%u.%u "
+                                   "base=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
+                                   (unsigned long)addr, bit, (unsigned long)orig,
+                                   rate / 10u, rate % 10u, base / 10u, base % 10u,
+                                   r.acq_share_pm, r.trapped_min, r.trapped_max, r.gain_min_acq);
+                        }
+                    }
+                    *reg = orig;
+                    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                    if (rate * 2u < base || rate > base * 2u) {
+                        /* A stopped BB AGC resumes only with the vendor
+                         * strobe (702C[23], native-agc-analog-patch.md). */
+                        vTaskDelay(pdMS_TO_TICKS(3));
+                        agc_scan_measure(window, AGC_SCAN_WINDOWS, &r);
+                        if (r.acq_per_ms_x10 * 2u < base) {
+                            phy_enable_agc();
+                            printf("AGC_SCAN resume_strobe after reg=0x%08lx bit=%u\n",
+                                   (unsigned long)addr, bit);
+                        }
+                    }
+                    ++tried;
+                    vTaskDelay(pdMS_TO_TICKS(2));
+                }
+            }
+            printf("AGC_SCAN block=0x%08lx done tried=%u hits=%u\n",
+                   (unsigned long)blocks[b].first, tried, hits);
+        }
+    }
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("AGC_SCAN done tried=%u hits=%u base_acq_per_ms=%u.%u\n",
+           tried, hits, base / 10u, base % 10u);
 }
 
 /* While masking: share of samples with the hold flag set (data bit 0),
@@ -7457,6 +7602,8 @@ static void console_diag_task(void *arg)
                     lab_run_filter_sweep();
                 } else if (c == '=') {
                     (void)lab_run_bw_calibration(false);
+                } else if (c == 'i') {
+                    lab_run_agc_bitscan();
                 } else if (c == '*') {
                     if (lab_run_agc_witness(false) && c5vrx4_agc_mask_enabled()) {
                         printf("AGC_WITNESS rebooting to apply the acquisition mask\n");
@@ -7807,6 +7954,7 @@ static void console_diag_task(void *arg)
                     printf("  '%%' / '&':   Toggle default-on digital DC recentring / first-lock sampling-phase check, reboot\n");
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
+                    printf("  'i':         PHY bit scan for the native AGC restart (VTX on, native; ~2 min garbage video)\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");

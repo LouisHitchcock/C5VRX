@@ -78,6 +78,11 @@ uint8_t c5vrx4_bw_edge_code(void);
 bool c5vrx4_bw_edge_digital(void);
 unsigned c5vrx4_bw_edge_nbw_khz(void);
 bool c5vrx4_bw_edge_store(uint8_t code, bool digital_bw20, unsigned nbw_khz);
+/* Edge-profile second stage (regs 8..13), NVS bw_eskirt; NONE keeps the
+ * normal skirt in the edge profile. */
+#define C5VRX4_BW_EDGE_SKIRT_NONE UINT8_MAX
+uint8_t c5vrx4_bw_edge_skirt(void);
+bool c5vrx4_bw_edge_skirt_store(uint8_t skirt);
 /* Native AGC acquisition mask (native mode only, '|' opts out with a
  * reboot). PARLIO data bit 0 (fine Q LSB) carries a MODEM_DIAG AGC state bit
  * found by the witness calibration ('*'); the static program holds the DAC

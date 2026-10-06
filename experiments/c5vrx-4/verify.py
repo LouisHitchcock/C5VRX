@@ -54,7 +54,8 @@ def main():
     assert "bw_skirt_stage(codes[choice], target);\n            bw_edge_stage();" in video and '"bw_skirt"' in pipeline
     # Edge profile: measured by calibration, used only by the AUTO gear, left
     # on any explicit bandwidth and before a calibration.
-    assert "predemod_edge_choose(nbw, width, valid, 2u * BW_EDGE_CODES," in video and '"bw_ecode"' in pipeline
+    assert "predemod_edge_choose(nbw, width, valid, BW_EDGE_CANDIDATES," in video and '"bw_ecode"' in pipeline
+    assert '"bw_eskirt"' in pipeline and "c5vrx4_bw_edge_skirt()" in (ROOT / "main/rf.c").read_text()
     assert "if (fixed) bw_set_edge(true);" in video and "if (rf_fixed_bw_edge_active()) bw_set_edge(false);" in video
     assert "s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */" in (ROOT / "main/rf.c").read_text()
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
