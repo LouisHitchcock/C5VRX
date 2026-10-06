@@ -2997,6 +2997,7 @@ static void predemod_resume(analog_agc_mode_t saved_mode)
 static void predemod_correction_print(void);
 #endif
 static void bw_status_print(void);
+static void gain_readback_print(void);
 static void agc_mask_status_print(void);
 static void idle_raster_status_print(void);
 static void sync_flywheel_status_print(void);
@@ -3023,6 +3024,7 @@ static void lab_predemod_status(void)
     agc_mask_status_print();
     idle_raster_status_print();
     sync_flywheel_status_print();
+    gain_readback_print();
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     printf("RADIUS_BOOST enabled=%u active=%u entries=%lu exits=%lu streak=%u "
            "band_p50=30..46 normal_p50=13..32 gain=%u p50=%d p95=%d clip_pm=%d coherence=%d "
@@ -3057,9 +3059,19 @@ static void rx_clock_slip(uint32_t us)
 typedef enum { SPHASE_SCAN_REFUSED, SPHASE_SCAN_UNSETTLED, SPHASE_SCAN_SETTLED } sphase_scan_t;
 static sphase_scan_t lab_run_sample_phase_scan_result(unsigned *final_ppm)
 {
-    analog_agc_mode_t saved_mode;
+    analog_agc_mode_t saved_mode = s_agc_mode;
     if (final_ppm) *final_ppm = UINT32_MAX;
-    if (!predemod_pause("SPHASE", &saved_mode)) return SPHASE_SCAN_REFUSED;
+    /* Clock slips are gain-independent: under native AGC the hardware AGC
+     * keeps running and nothing is paused (there is no firmware gain owner). */
+    const bool native = rf_native_agc_active();
+    if (native) {
+        if (s_menu_active || s_rssi_probe_active || s_gain_sweep.active || s_pre_q4_probe_active) {
+            printf("SPHASE refused=other_lab_or_menu\n");
+            return SPHASE_SCAN_REFUSED;
+        }
+    } else if (!predemod_pause("SPHASE", &saved_mode)) {
+        return SPHASE_SCAN_REFUSED;
+    }
     printf("SPHASE begin rx_div=%lu lane=%u slip_us=1 positions=%u "
            "metric=mid_transition_reads hardware_acceptance=pending\n",
            (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul,
@@ -3086,7 +3098,7 @@ static sphase_scan_t lab_run_sample_phase_scan_result(unsigned *final_ppm)
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     if (w.windows) predemod_print("SPHASE", settled ? "FINAL" : "UNSETTLED", (int)best, &w);
-    predemod_resume(saved_mode);
+    if (!native) predemod_resume(saved_mode);
     printf("SPHASE done best_ppm=%u settled=%u persistent=0\n", best, settled);
     if (final_ppm) *final_ppm = settled ? last_ppm : UINT32_MAX;
     return settled ? SPHASE_SCAN_SETTLED : SPHASE_SCAN_UNSETTLED;
@@ -6879,6 +6891,43 @@ static void lab_run_rx_recal(void)
            mhz, gain, took, esp_err_to_name(err), before[0], before[1], w.dc_i, w.dc_q, ok0, ok1);
 }
 
+/* Gain readback (external research 2026-10-07, eSpDR practice): compare the
+ * gain the hardware is actually forced to (0x600A702C: index [31:24], force
+ * bit 23 - phy_force_rx_gain's fields) with V5's own index, outside a
+ * settle. The tuple printed with it is the exact vendor 5 GHz decode. */
+#define GAIN_FORCE_REG 0x600A702Cu
+static uint32_t s_gain_readback_checks, s_gain_readback_mismatch;
+static uint32_t s_gain_readback_last;
+static void predemod_gain_readback_service(void)
+{
+    if (rf_native_agc_active() || s_rx_profile != RX_PROFILE_DIRECT_GAIN ||
+        s_agc_mode != ANALOG_AGC_ACTIVE || phy_rx_lab_busy() ||
+        s_direct_gain_v3.state == DG3_SETTLE) return;
+    uint32_t reg = REG_READ(GAIN_FORCE_REG);
+    s_gain_readback_last = reg;
+    ++s_gain_readback_checks;
+    bool forced = (reg >> 23) & 1u;
+    uint8_t index = (uint8_t)(reg >> 24);
+    if (!forced || index != s_current_gain) {
+        if (++s_gain_readback_mismatch <= 5u)
+            printf("GAIN_READBACK mismatch reg=0x%08lx forced=%u hw_index=%u v5_index=%u\n",
+                   (unsigned long)reg, forced, index, s_current_gain);
+    }
+}
+static void gain_readback_print(void)
+{
+    uint32_t reg = REG_READ(GAIN_FORCE_REG);
+    arc_gain_tuple_t t = {0};
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    bool ok = table && arc_gain_tuple_decode(table, (uint8_t)(reg >> 24), &t);
+    printf("GAIN_READBACK reg=0x%08lx forced=%lu hw_index=%lu v5_index=%u tuple_rf=%u tuple_bb=%u "
+           "tuple_fine=%u packed=0x%05lx band5=%u checks=%lu mismatches=%lu\n",
+           (unsigned long)reg, (unsigned long)((reg >> 23) & 1u), (unsigned long)(reg >> 24),
+           s_current_gain, ok ? t.rf_code : 0u, ok ? t.bb_code : 0u, ok ? t.fine_code : 0u,
+           (unsigned long)(ok ? t.packed_state : 0u), table ? table->band5 : 0u,
+           (unsigned long)s_gain_readback_checks, (unsigned long)s_gain_readback_mismatch);
+}
+
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
  * map changed and V5 is holding (flash wear and no write mid-transition). */
 static void predemod_dg3_map_service(void)
@@ -6954,7 +7003,12 @@ static const char *sphase_state_name(void)
 
 static void predemod_sphase_autocheck(void)
 {
-    if (!c5vrx4_sphase_auto_enabled() || !predemod_quiet_owner()) return;
+    if (!c5vrx4_sphase_auto_enabled()) return;
+    /* Like predemod_quiet_owner(), but native AGC is a valid owner here. */
+    if (s_menu_active || s_rssi_probe_active || s_gain_sweep.active || s_pre_q4_probe_active ||
+        phy_rx_lab_busy()) return;
+    if (!rf_native_agc_active() &&
+        (s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE)) return;
     const uint16_t freq = rf_get_frequency_mhz();
     if (freq != s_sphase_freq) {           /* re-check after a retune (cheap unless bad) */
         s_sphase_freq = freq;
@@ -6964,10 +7018,17 @@ static void predemod_sphase_autocheck(void)
     if (s_sphase_state == SPHASE_SETTLED) return;
     const int64_t now = esp_timer_get_time();
     if (now < s_sphase_next_us) return;
-    /* A usable carrier: V5 holding with the envelope in band. Coherence is
-     * only required to be moderate - bad sampling itself lowers it. */
-    if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 60 ||
-        s_v3_p50 < 13 || s_v3_p50 > 46 || IDLE_RASTER_ACTIVE()) return;
+    /* A usable carrier. Direct V5: holding with the envelope in band, and
+     * only moderate coherence (bad sampling itself lowers it). Native AGC
+     * (no V5 observer; external research 2026-10-07 asked for this route):
+     * a sync fragment within the last second. */
+    if (IDLE_RASTER_ACTIVE()) return;
+    if (rf_native_agc_active()) {
+        if (now - s_last_idle_sync_us > 1000000LL) return;
+    } else if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 60 ||
+               s_v3_p50 < 13 || s_v3_p50 > 46) {
+        return;
+    }
     predemod_window_t w;
     if (!predemod_collect(48, &w)) return;
     s_sphase_auto_ppm = predemod_ppm(w.glitches, w.samples);
@@ -7066,6 +7127,7 @@ static void predemod_task(void *arg)
         predemod_dc_service();
         predemod_dco_service();
         predemod_dg3_map_service();
+        predemod_gain_readback_service();
         static unsigned hb_ticks;
         if (++hb_ticks >= 20u) {
             hb_ticks = 0;
