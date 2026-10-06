@@ -43,6 +43,27 @@ static void write_entry(unsigned index, uint16_t value)
     BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut = value;
     __asm__ volatile ("fence iorw, iorw" ::: "memory");
 }
+/* Live write with read-back. The TX engine reads the LUT while the host
+ * selects an index through the shared lut_idx register, so one read-back
+ * can disagree. Board 2026-10-06: a single mismatch had blocked DC
+ * recentring for good (blocked=1, updates=0, faults=1) while it measured
+ * -2.45/+4.4 cells. Retry the same word; block only if it keeps failing. */
+static uint32_t retries;
+static bool write_verified(unsigned index, uint16_t value)
+{
+    for (unsigned attempt = 0; attempt < 3u; ++attempt) {
+        write_entry(index, value);
+        uint16_t got = read_entry(index);
+        if (got == value) {
+            if (attempt) ++retries;
+            return true;
+        }
+        if (retries + faults + decoder_faults < 8u)
+            printf("C5V4_LUT readback_mismatch index=%u want=0x%04x got=0x%04x attempt=%u\n",
+                   index, value, got, attempt + 1u);
+    }
+    return false;
+}
 void c5v4_level_hw_stop(void)
 {
     c5v4_level_hw_lock(); ready = false; c5v4_level_hw_unlock();
@@ -102,8 +123,7 @@ bool c5v4_decoder_recenter(int di, int dq)
         for (unsigned bank = 1; ok && bank < 4; bank += 2) {
             unsigned index = bank * 256 + raw;
             if (read_entry(index) == word) continue;
-            write_entry(index, word);
-            if (read_entry(index) != word) { ok = false; decoder_blocked = true; ++decoder_faults; }
+            if (!write_verified(index, word)) { ok = false; decoder_blocked = true; ++decoder_faults; }
         }
     }
     if (ok) { decoder_dc[0] = di; decoder_dc[1] = dq; ++decoder_updates; }
@@ -129,9 +149,9 @@ void c5v4_decoder_print(void)
 {
     c5v4_level_hw_lock();
     printf("C5V4_DC_RECENTER enabled=%u lut_verified=%u blocked=%u applied_mcells=%d/%d "
-           "updates=%lu faults=%lu decode=%s pre_q4_correction=0\n",
+           "updates=%lu faults=%lu lut_retries=%lu decode=%s pre_q4_correction=0\n",
            c5vrx4_dc_recenter_enabled(), lut_verified, decoder_blocked, decoder_dc[0], decoder_dc[1],
-           (unsigned long)decoder_updates, (unsigned long)decoder_faults,
+           (unsigned long)decoder_updates, (unsigned long)decoder_faults, (unsigned long)retries,
            c5vrx4_history_enabled() ? "history_refused" : "static");
     c5v4_level_hw_unlock();
 }
@@ -153,6 +173,18 @@ void c5v4_level_hw_observe(const c5v4_cvbs_stats_t *stats, bool fresh,
         ready = false; ++faults; goto done;
     }
     if (!c5v4_level_observe(&servo, stats, fresh, context, now)) goto done;
+    /* Board 2026-10-06: while the TX engine runs, a LUT read-back returned
+     * random words, so a live write can land on another index. The servo
+     * keeps measuring; it no longer writes until a stopped-engine (or
+     * double-buffered) update path exists. */
+    {
+        static bool reported;
+        if (!reported) {
+            reported = true;
+            printf("C5V4_LEVEL live_lut_writes=refused reason=unreliable_live_lut_access\n");
+        }
+        goto done;
+    }
     /* Write the matching planes next to one another, shortening the time
      * each single entry disagrees; still not an atomic hardware bank swap. */
     for (unsigned i = 0; i < 256; ++i) {
@@ -160,8 +192,7 @@ void c5v4_level_hw_observe(const c5v4_cvbs_stats_t *stats, bool fresh,
             unsigned index = bank * 256 + i;
             uint16_t next = c5v4_level_word(original[index], servo.codes[i]);
             if (next != original[index]) {
-                write_entry(index, next);
-                if (read_entry(index) != next) {
+                if (!write_verified(index, next)) {
                     ready = false; blocked = true; ++faults; goto done;
                 }
                 original[index] = next; ++writes;

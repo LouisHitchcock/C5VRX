@@ -3078,9 +3078,29 @@ static void lab_run_dco_probe(void)
     if (!predemod_pause("DCO", &saved_mode)) return;
     esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_observe);
     /* A failed exact rollback must not resume control over an unknown PHY. */
-    if (result == ESP_FAIL) { printf("DCO rollback_failed rebooting\n"); esp_restart(); }
+    /* Board 2026-10-06: after work mode the forced DC pair stays until the
+     * next table replay, so an exact read-back fails without an unknown PHY. */
+    if (result == ESP_FAIL) printf("DCO restore_mismatch (see restore_diff)\n");
+    /* Work mode replays the current gain's row only on a gain write; without
+     * it the IQ stayed dead (P50 1, origin 1000) after the probe. */
+    rf_set_rx_gain(true, s_current_gain);
     predemod_resume(saved_mode);
     printf("DCO done status=%d\n", (int)result);
+}
+
+/* '6': DC correction from the last '#' search on/off, then the DC and
+ * coherence it leaves (the A/B for the range edge with a weak VTX). */
+static void lab_toggle_dco(void)
+{
+    static bool on;
+    analog_agc_mode_t saved_mode;
+    if (!predemod_pause("DCO_SET", &saved_mode)) return;
+    esp_err_t err = phy_rx_lab_dco_set(!on);
+    if (err == ESP_OK) on = !on;
+    /* Work mode replays the current gain's row only on a gain write. */
+    if (err == ESP_OK && !on) rf_set_rx_gain(true, s_current_gain);
+    lab_dco_observe(on ? "DCO_ON" : "DCO_OFF");
+    predemod_resume(saved_mode);
 }
 
 static void lab_filter_observe(const char *stage, int offset)
@@ -3780,6 +3800,141 @@ static void lab_run_agc_ab(void)
     s_rssi_probe_active = false;
     free(window);
     printf("AGC_AB done\n");
+}
+
+/* '4': level scan for native on the fine lanes (native, VTX on). Native
+ * settles for the full 10-bit ADC, so it runs on the coarse lanes, and their
+ * 2x coarser steps are the suspected remaining static. This routes the fine
+ * set {Q9,7,6,5 / I9,7,6,5} for the lab only, flips each bit of the BB AGC
+ * blocks and reports bits that cut fine-lane clipping to a third while the
+ * envelope stays in the healthy band (P50 >= 13) and coherent. Restores the
+ * word (vendor strobe if the AGC stopped) and the coarse routing. */
+/* '5': measured gain map (Direct V5, VTX off or a weak fixed VTX). The V5
+ * prior for untried indices comes from arc_phy.c's tuple model, which an
+ * external review says lacks the 5 GHz BB/fine start offsets; the old
+ * medium sweep (pre-q4-lab.md) was non-monotonic where the model predicts
+ * fine steps (G63 P=1 between G62 P=17 and G64 P=17). This forces every
+ * vendor index G30..max on the current lanes and prints the mean cell power
+ * (I^2+Q^2 in quarter steps^2, x100 per sample), P50, coherence, clipping
+ * and origin, so the real curve (and its valleys) is measured. Restores
+ * the controller afterwards; nothing is persisted. */
+static void lab_run_gain_map(void)
+{
+    if (rf_native_agc_active()) { printf("GAIN_MAP refused=direct_v5_only\n"); return; }
+    if (s_menu_active && !IDLE_RASTER_ACTIVE()) { printf("GAIN_MAP refused=menu\n"); return; }
+    if (s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("GAIN_MAP refused=other_lab\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("GAIN_MAP refused=no_memory\n"); return; }
+    const uint8_t saved_gain = s_current_gain;
+    const analog_agc_mode_t saved_mode = s_agc_mode;
+    s_rssi_probe_active = true;   /* V5 observer, level servo and labs stand aside */
+    s_agc_mode = ANALOG_AGC_MANUAL;
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    printf("GAIN_MAP begin max=%u lane=%u freq=%u\n", table->max_index, rf_get_iq_lanes(),
+           rf_get_frequency_mhz());
+    for (unsigned g = 30u; g <= table->max_index; ++g) {
+        lab_apply_vendor_gain((uint8_t)g);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        uint64_t power = 0;
+        unsigned samples = 0, clip = 0, coh = 0, p50 = 0, origin = 0, n = 0;
+        for (unsigned k = 0; k < 16u; ++k) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            if (!rx_probe_copy_completed(window)) continue;
+            const size_t bytes = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
+            for (size_t b = 0; b < bytes; ++b) {
+                int i = 2 * ((int8_t)(window[b] & 0xF0u) >> 4) + 1;
+                int q = 2 * ((int8_t)(uint8_t)(window[b] << 4) >> 4) + 1;
+                power += (uint64_t)(i * i + q * q);
+            }
+            samples += bytes;
+            dg3_observation_t o = direct_gain_v3_measure(window, bytes, c5vrx_phase8_gain_lut,
+                                                         (uint64_t)esp_timer_get_time());
+            clip += o.clip_pm; coh += o.coherence; p50 += o.p50; origin += o.origin_pm; ++n;
+        }
+        if (n) { clip /= n; coh /= n; p50 /= n; origin /= n; }
+        printf("GAIN_MAP g=%u power_x100=%lu p50=%u coh=%u clip_pm=%u origin_pm=%u\n", g,
+               samples ? (unsigned long)(power * 100u / samples) : 0ul, p50, coh, clip, origin);
+    }
+    lab_apply_vendor_gain(saved_gain);
+    s_agc_mode = saved_mode;
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("GAIN_MAP done restored_gain=%u\n", saved_gain);
+}
+
+static void lab_run_agc_level_scan(void)
+{
+    if (!rf_native_agc_active()) { printf("AGC_LSCAN refused=native_agc_only\n"); return; }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_LSCAN refused=other_lab_or_menu\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_LSCAN refused=no_memory\n"); return; }
+    s_rssi_probe_active = true;
+    c5vrx4_suspend();
+    static const uint8_t fine[8] = {5, 6, 7, 9, 15, 16, 17, 19};
+    rf_route_diag_capture(fine);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    unsigned base_clip = 0, base_coh = 0, base_p50 = 0, tried = 0, hits = 0;
+    for (unsigned k = 0; k < 3u; ++k) {
+        unsigned clip, coh, p50, p95;
+        agc_level_measure(window, &clip, &coh, &p50, &p95);
+        base_clip += clip; base_coh += coh; base_p50 += p50;
+        printf("AGC_LSCAN baseline fine clip_pm=%u coh=%u p50=%u p95=%u\n", clip, coh, p50, p95);
+    }
+    base_clip /= 3u; base_coh /= 3u; base_p50 /= 3u;
+    if (base_p50 < 5u) {
+        printf("AGC_LSCAN refused=no_carrier\n");
+    } else {
+        static const struct { uint32_t first, last; } blocks[] = {
+            {0x600A7000u, 0x600A71FCu}, {0x600A8000u, 0x600A807Cu},
+        };
+        for (unsigned b = 0; b < sizeof(blocks) / sizeof(blocks[0]); ++b) {
+            for (uint32_t addr = blocks[b].first; addr <= blocks[b].last; addr += 4u) {
+                if (addr == 0x600A70B8u) continue; /* diag source mux: the measurement */
+                volatile uint32_t *reg = (volatile uint32_t *)addr;
+                const uint32_t orig = *reg;
+                for (unsigned bit = 0; bit < 32u; ++bit) {
+                    *reg = orig ^ (1u << bit);
+                    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                    vTaskDelay(pdMS_TO_TICKS(3));
+                    unsigned clip, coh, p50, p95;
+                    agc_level_measure(window, &clip, &coh, &p50, &p95);
+                    bool better = clip * 3u <= base_clip && p50 >= 13u && coh * 10u >= base_coh * 8u;
+                    if (better) {
+                        agc_level_measure(window, &clip, &coh, &p50, &p95); /* confirm */
+                        if (clip * 3u <= base_clip && p50 >= 13u && coh * 10u >= base_coh * 8u) {
+                            ++hits;
+                            printf("AGC_LSCAN hit reg=0x%08lx bit=%u orig=0x%08lx clip_pm=%u coh=%u "
+                                   "p50=%u p95=%u base_clip=%u base_coh=%u\n",
+                                   (unsigned long)addr, bit, (unsigned long)orig, clip, coh, p50, p95,
+                                   base_clip, base_coh);
+                        }
+                    }
+                    *reg = orig;
+                    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                    if (p50 < 3u) phy_enable_agc(); /* a stopped BB AGC needs the strobe */
+                    ++tried;
+                    vTaskDelay(pdMS_TO_TICKS(2));
+                }
+            }
+            printf("AGC_LSCAN block=0x%08lx done tried=%u hits=%u\n",
+                   (unsigned long)blocks[b].first, tried, hits);
+        }
+    }
+    rf_apply_agc_patch();
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("AGC_LSCAN done tried=%u hits=%u base_clip=%u base_coh=%u base_p50=%u\n",
+           tried, hits, base_clip, base_coh, base_p50);
 }
 
 static void lab_run_agc_bitscan(void)
@@ -6500,8 +6655,59 @@ static bool predemod_quiet_owner(void)
            s_rx_profile == RX_PROFILE_DIRECT_GAIN && s_agc_mode == ANALOG_AGC_ACTIVE;
 }
 
+/* Range-edge hardware DC correction. Board 2026-10-06 (G81/82, VTX off):
+ * receiver DC 0.2-2.0 fine cells, as large as the noise (P50 ~4) and up to
+ * half a threshold-level carrier, so the phase is measured around a shifted
+ * origin exactly where FM collapses. The ESPARGOS esp-sdr DC-DAC search
+ * (ESPsoup C5 port; phy_rx_lab_run_dco_probe) runs at maximum gain without a
+ * carrier (idle raster), and its result is held in PBUS debug mode only
+ * while V5 stays at maximum gain; rf.c releases it before every gain write
+ * and PHY restore. Re-searched after 120 s or a retune (the DC drifted
+ * between 0.2 and 2 cells over the session). Direct V5 only. */
+#define DCO_RESEARCH_US 120000000LL
+static uint16_t s_dco_freq;
+static int64_t s_dco_found_us;
+static uint32_t s_dco_searches, s_dco_holds;
+static void lab_dco_quiet(const char *stage) { (void)stage; }
+static void predemod_dco_service(void)
+{
+    if (!c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
+        s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE ||
+        s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active ||
+        phy_rx_lab_busy() || (s_menu_active && !IDLE_RASTER_ACTIVE())) return;
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    if (!table) return;
+    const bool at_max = s_current_gain == table->max_index;
+    const uint16_t freq = rf_get_frequency_mhz();
+    if (freq != s_dco_freq) { phy_rx_lab_dco_invalidate(); s_dco_freq = freq; }
+    const int64_t now = esp_timer_get_time();
+    const bool stale = !phy_rx_lab_dco_valid() || now - s_dco_found_us > DCO_RESEARCH_US;
+    if (at_max && stale && IDLE_RASTER_ACTIVE()) {
+        analog_agc_mode_t saved;
+        if (!predemod_pause("DCO_AUTO", &saved)) return;
+        (void)phy_rx_lab_dco_release();
+        esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
+        rf_set_rx_gain(true, s_current_gain); /* work mode replays the row on a write */
+        predemod_resume(saved);
+        ++s_dco_searches;
+        if (result == ESP_OK || phy_rx_lab_dco_valid()) s_dco_found_us = now;
+        printf("DCO_AUTO search=%lu result=%d valid=%u freq=%u gain=%u\n",
+               (unsigned long)s_dco_searches, (int)result, phy_rx_lab_dco_valid(), freq,
+               s_current_gain);
+        return;
+    }
+    if (at_max && phy_rx_lab_dco_valid() && !phy_rx_lab_dco_held() &&
+        s_direct_gain_v3.state != DG3_SETTLE && phy_rx_lab_dco_set(true) == ESP_OK)
+        ++s_dco_holds;
+}
+
 static void predemod_dc_service(void)
 {
+    /* Disabled (board 2026-10-06): live LUT read-back returned random words
+     * (want 0x750b, got 0x215f/0x334d/0x003f) while the TX engine runs, so a
+     * live decoder rewrite can land on the wrong index. The hardware DC
+     * correction above replaces it at the range edge. */
+    if (true) return;
     if (!c5vrx4_dc_recenter_enabled() || c5vrx4_history_enabled() ||
         !predemod_quiet_owner() || !c5v4_level_hw_lut_verified()) return;
     portENTER_CRITICAL(&s_dc_mux);
@@ -6609,6 +6815,14 @@ static void predemod_task(void *arg)
             }
         }
         predemod_dc_service();
+        predemod_dco_service();
+        static unsigned hb_ticks;
+        if (++hb_ticks >= 20u) {
+            hb_ticks = 0;
+            printf("HB predemod t_s=%lld dco_held=%u dco_valid=%u searches=%lu\n",
+                   esp_timer_get_time() / 1000000, phy_rx_lab_dco_held(),
+                   phy_rx_lab_dco_valid(), (unsigned long)s_dco_searches);
+        }
         predemod_sphase_autocheck();
         predemod_bw_autocal();
         agc_witness_autocheck();
@@ -7850,6 +8064,12 @@ static void console_diag_task(void *arg)
                     lab_run_filter_sweep();
                 } else if (c == '=') {
                     (void)lab_run_bw_calibration(false);
+                } else if (c == '6') {
+                    lab_toggle_dco();
+                } else if (c == '5') {
+                    lab_run_gain_map();
+                } else if (c == '4') {
+                    lab_run_agc_level_scan();
                 } else if (c == '3') {
                     lab_run_agc_ab();
                 } else if (c == '2') {
@@ -8234,6 +8454,15 @@ static void console_diag_task(void *arg)
             }
         }
         lab_gain_sweep_tick();
+        /* Heartbeat (USB lockup diagnosis, 2026-10-06): if this stops while
+         * "HB predemod" goes on, the console task is starved or stuck. */
+        static int64_t hb_us;
+        int64_t hb_now = esp_timer_get_time();
+        if (hb_now - hb_us > 5000000) {
+            hb_us = hb_now;
+            printf("HB console t_s=%lld idle_raster=%u menu=%u\n", hb_now / 1000000,
+                   IDLE_RASTER_ACTIVE(), s_menu_active);
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

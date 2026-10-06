@@ -678,6 +678,9 @@ static void dco_apply(int i, int q)
     phy_pbus_force_test(2, 2, (uint32_t)i);
     phy_pbus_force_test(3, 2, (uint32_t)q);
 }
+/* Last search result, RAM only, for the on/off A/B ('6'). */
+static int s_dco_codes[2], s_dco_vendor[2];
+static bool s_dco_valid;
 #endif
 
 /* Fixed analog bandwidth state (see phy_rx_lab_filter_set_code). */
@@ -774,6 +777,9 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
         }
         if (ok) {
             dco_apply(best[0], best[1]);
+            s_dco_codes[0] = best[0]; s_dco_codes[1] = best[1];
+            s_dco_vendor[0] = base[0]; s_dco_vendor[1] = base[1];
+            s_dco_valid = true;
             printf("DCO corrected codes=%d/%d mcells=%d/%d before=%d/%d persistent=0\n",
                    best[0], best[1], best_dc[0], best_dc[1], before[0], before[1]);
             observe("CORRECTED");
@@ -788,11 +794,96 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
     }
     bool restored = true;
     for (unsigned b = 0; b < 4; ++b)
-        for (unsigned k = 0; k < 2; ++k) restored = restored && phy_pbus_rd(b, k + 1) == live[b][k];
+        for (unsigned k = 0; k < 2; ++k) {
+            uint16_t now = phy_pbus_rd(b, k + 1);
+            if (now != live[b][k]) {
+                /* Board 2026-10-06: work mode does not replay the table at
+                 * once; report which words differ instead of rebooting. */
+                printf("DCO restore_diff block=%u bank=%u saved=%u now=%u\n", b, k + 1, live[b][k], now);
+                restored = false;
+            }
+        }
     printf("DCO restore_verified=%u\n", restored);
     if (restored) observe("RESTORED");
     phy_rx_lab_end();
     return restored ? result : ESP_FAIL;
+#endif
+}
+
+/* Hold the last DCO search result (on) or release it (off). Board
+ * 2026-10-06: the forced pair exists only in PBUS debug mode; returning to
+ * work mode does not replay the current gain's row (block 0 bank 2 fell
+ * 383 -> 263 and the IQ went dead) until the next gain write. So "on" stays
+ * in debug mode with every live word re-asserted plus the corrected pair,
+ * and "off" returns to work mode; the caller then re-writes the gain. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static bool s_dco_held;
+#endif
+esp_err_t phy_rx_lab_dco_set(bool on)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)on;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (on && !s_dco_valid) { printf("DCO_SET refused=no_search_result ('#' first, VTX off)\n"); return ESP_ERR_INVALID_STATE; }
+    if (rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    transaction_take();
+    if (on && !s_dco_held) {
+        uint16_t live[4][2];
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
+        phy_pbus_debugmode();
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+        dco_apply(s_dco_codes[0], s_dco_codes[1]);
+        s_dco_held = true;
+    } else if (!on && s_dco_held) {
+        phy_pbus_workmode();
+        s_dco_held = false;
+    }
+    uint16_t i = phy_pbus_rd(2, 2), q = phy_pbus_rd(3, 2);
+    transaction_give();
+    printf("DCO_SET on=%u held=%u codes=%d/%d readback=%u/%u\n", on, s_dco_held,
+           s_dco_codes[0], s_dco_codes[1], i, q);
+    return ESP_OK;
+#endif
+}
+
+/* Range-edge DC correction (rf.c releases before every gain write and PHY
+ * restore; video.c searches and holds at maximum gain). */
+bool phy_rx_lab_dco_release(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    if (!s_dco_held) return false;
+    transaction_take();
+    phy_pbus_workmode();
+    s_dco_held = false;
+    transaction_give();
+    return true;
+#endif
+}
+bool phy_rx_lab_dco_held(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    return s_dco_held;
+#endif
+}
+bool phy_rx_lab_dco_valid(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    return s_dco_valid;
+#endif
+}
+void phy_rx_lab_dco_invalidate(void)
+{
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    s_dco_valid = false;
 #endif
 }
 

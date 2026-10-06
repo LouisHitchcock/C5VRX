@@ -67,6 +67,12 @@ void phy_rx_lab_predemod_status(void);
 /* RX DC DACs (PBUS blocks 2/3): baseline, 2x2 response, bounded closed-loop
  * correction, then exact restore and PBUS work mode. measure() returns the
  * I/Q centre in milli-cells of the current lane. */
+esp_err_t phy_rx_lab_dco_set(bool on);
+/* Range-edge hardware DC correction (PBUS debug mode, max gain only). */
+bool phy_rx_lab_dco_release(void);
+bool phy_rx_lab_dco_held(void);
+bool phy_rx_lab_dco_valid(void);
+void phy_rx_lab_dco_invalidate(void);
 esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
                                    void (*observe)(const char *stage));
 /* BBTOP 0x67 registers 6..13 (RX RC filter capacitors): calibrated baseline,

@@ -119,6 +119,13 @@ static bool nvs_flag(const char *key, bool fallback)
     return value != 0;
 }
 
+static int8_t s_hw_dco = -1;
+bool c5vrx4_hw_dco_enabled(void)
+{
+    if (s_hw_dco < 0) s_hw_dco = nvs_flag("dco_auto", true);
+    return s_hw_dco;
+}
+
 static int8_t s_native_patch = -1;
 bool c5vrx4_native_patch_enabled(void)
 {
@@ -385,6 +392,7 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
     [C5VRX4_OPT_NATIVE_PATCH] = {"NATIVE PATCH",  "native_patch", 1, 2, s_off_on},
+    [C5VRX4_OPT_HW_DCO]       = {"HW DC CORR",    "dco_auto",     1, 2, s_off_on},
 };
 static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
 static bool s_option_snapshot;

@@ -663,6 +663,7 @@ esp_err_t rf_start(void)
  * filter, IQ/DC, ADC or calibration state is replayed from another channel. */
 static void analog_phy_restore_lock(void)
 {
+    (void)phy_rx_lab_dco_release(); /* the restore must replay vendor rows */
     phy_rx_lab_capture_vendor();
     rf_enable_continuous_modem();
     ESP_ERROR_CHECK(lock_rx_only());
@@ -893,6 +894,9 @@ bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generati
         return false;
     }
     if (!phy_rx_lab_try_actuator(expected_generation)) return false;
+    /* A held edge DC correction keeps PBUS in debug mode, where a gain
+     * write would not replay its table row: release it first. */
+    (void)phy_rx_lab_dco_release();
     phy_force_rx_gain(force, gain_idx);
     if (force) s_current_gain_val = gain_idx;
     phy_rx_lab_end_actuator();
