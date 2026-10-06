@@ -3398,7 +3398,7 @@ static bool lab_run_bw_calibration(bool automatic)
                s_bw_mode_fit, s_bw_fit_err_khz, stored);
         s_bw_cal_result = stored ? "stored" : "store_failed";
         if (stored) {
-            bw_skirt_stage(codes[choice], target);
+            bw_skirt_stage(codes[choice], predemod_skirt_target_khz(target, widths[choice]));
             bw_edge_stage();
         }
     } else {
@@ -3548,6 +3548,43 @@ static void agc_scan_measure(uint8_t *window, unsigned windows, agc_witness_resu
         agc_witness_add(&w, window, CONTROL_SAMPLE_BYTES, 0);
     }
     (void)agc_witness_choose(&w, r);
+}
+
+/* 'z': next native AGC patch candidate set (none, 71C4[25], 702C[7], both),
+ * measured on 3 x 16 windows; it stays applied for a picture/range check. */
+static void lab_cycle_agc_patch(void)
+{
+    if (!rf_native_agc_active()) {
+        printf("AGC_PATCH refused=native_agc_only\n");
+        return;
+    }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_PATCH refused=other_lab_or_menu\n");
+        return;
+    }
+    static const char *const names[] = {"none", "71C4b25", "702Cb7", "both"};
+    uint8_t mask = (uint8_t)((rf_agc_patch() + 1u) & 3u);
+    rf_set_agc_patch(mask);
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_PATCH set=%s measured=0 (no memory)\n", names[mask]); return; }
+    s_rssi_probe_active = true;
+    c5vrx4_suspend();
+    const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, 28};
+    rf_route_diag_capture(diag);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    for (unsigned k = 0; k < 3u; ++k) {
+        agc_witness_result_t r;
+        agc_scan_measure(window, 16u, &r);
+        printf("AGC_PATCH set=%s acq_per_ms=%u.%u acq_us=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
+               names[mask], r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u,
+               r.acq_us_x10 / 10u, r.acq_us_x10 % 10u, r.acq_share_pm,
+               r.trapped_min, r.trapped_max, r.gain_min_acq);
+    }
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
 }
 
 static void lab_run_agc_bitscan(void)
@@ -7602,6 +7639,8 @@ static void console_diag_task(void *arg)
                     lab_run_filter_sweep();
                 } else if (c == '=') {
                     (void)lab_run_bw_calibration(false);
+                } else if (c == 'z') {
+                    lab_cycle_agc_patch();
                 } else if (c == 'i') {
                     lab_run_agc_bitscan();
                 } else if (c == '*') {
@@ -7955,6 +7994,7 @@ static void console_diag_task(void *arg)
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  'i':         PHY bit scan for the native AGC restart (VTX on, native; ~2 min garbage video)\n");
+                    printf("  'z':         Next native AGC patch candidate (none/71C4b25/702Cb7/both), measured, RAM only\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");

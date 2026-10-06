@@ -675,6 +675,7 @@ static void analog_phy_restore_lock(void)
     else phy_force_rx_gain(true, s_current_gain_val);
 #ifdef C5VRX4_EXPERIMENT
     rf_apply_fixed_bw();
+    rf_apply_agc_patch();
 #endif
 }
 
@@ -684,6 +685,42 @@ static void analog_phy_restore_lock(void)
  * in native-AGC mode too. Before the first measurement nothing is written. */
 static uint32_t s_fixed_bw_failures;
 static bool s_fixed_bw_edge;
+/* Native packet-AGC restart patch candidates from the PHY bit scan ('i',
+ * board 2026-10-06, A1, VTX near, base 15.8 restarts/ms). Lab state in RAM
+ * ('z' cycles it), re-applied in every PHY restore, native mode only.
+ * 71C4[25]=1: 3.0 restarts/ms, walks bottom out at G34 instead of G20,
+ *   trapped G36..47 (still tracking). Field undecoded.
+ * 702C[7]=0: 4.8/ms but gain parked at G36; flips the sign of the vendor
+ *   compensation byte (phy_set_rx_comp_new), i.e. an offset, kept for A/B. */
+static const struct { uint32_t addr; uint8_t bit, value; } s_agc_patches[] = {
+    {0x600A71C4u, 25u, 1u},
+    {0x600A702Cu, 7u, 0u},
+};
+static uint8_t s_agc_patch;
+static void agc_patch_write(unsigned k, bool patched)
+{
+    uint32_t m = 1u << s_agc_patches[k].bit;
+    bool one = patched ? s_agc_patches[k].value : !s_agc_patches[k].value;
+    REG32(s_agc_patches[k].addr) = one ? (REG32(s_agc_patches[k].addr) | m)
+                                       : (REG32(s_agc_patches[k].addr) & ~m);
+}
+void rf_apply_agc_patch(void)
+{
+    if (!s_native_agc) return;
+    for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
+        if (s_agc_patch & (1u << k)) agc_patch_write(k, true);
+}
+void rf_set_agc_patch(uint8_t mask)
+{
+    if (!s_native_agc) return;
+    /* Bits leaving the set go back to the vendor value seen by the scan. */
+    for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
+        if (s_agc_patch & ~mask & (1u << k)) agc_patch_write(k, false);
+    s_agc_patch = mask;
+    rf_apply_agc_patch();
+}
+uint8_t rf_agc_patch(void) { return s_agc_patch; }
+
 void rf_apply_fixed_bw(void)
 {
     if (!c5vrx4_fixed_bw_enabled()) return;

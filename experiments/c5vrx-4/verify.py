@@ -51,7 +51,7 @@ def main():
     assert "s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14}" in dg3
     assert '"radius_boost"' in pipeline and "direct_gain_v3_enable_boost(&s_direct_gain_v3" in video
     assert "phy_rx_lab_run_dfilt_probe(lab_observe_dfilt)" in video and "lab_run_dfilt();" in video
-    assert "bw_skirt_stage(codes[choice], target);\n            bw_edge_stage();" in video and '"bw_skirt"' in pipeline
+    assert "bw_skirt_stage(codes[choice], predemod_skirt_target_khz(target, widths[choice]));\n            bw_edge_stage();" in video and '"bw_skirt"' in pipeline
     # Edge profile: measured by calibration, used only by the AUTO gear, left
     # on any explicit bandwidth and before a calibration.
     assert "predemod_edge_choose(nbw, width, valid, BW_EDGE_CANDIDATES," in video and '"bw_ecode"' in pipeline

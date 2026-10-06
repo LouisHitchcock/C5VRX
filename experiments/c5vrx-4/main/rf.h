@@ -50,6 +50,10 @@ void rf_restore_iq_routes(void);
 /* C5VRX-4 fixed analog BW: re-apply the stored measured RX filter code
  * (inside a phy_rx_lab transaction). No-op when disabled or uncalibrated. */
 void rf_apply_fixed_bw(void);
+/* Native AGC restart patch candidates (lab, RAM only): bit k = candidate k. */
+void rf_apply_agc_patch(void);
+void rf_set_agc_patch(uint8_t mask);
+uint8_t rf_agc_patch(void);
 uint32_t rf_fixed_bw_failures(void);
 void rf_set_fixed_bw_edge(bool edge);
 bool rf_fixed_bw_edge_active(void);

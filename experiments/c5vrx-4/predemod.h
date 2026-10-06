@@ -262,6 +262,17 @@ static inline unsigned predemod_psd_nbw_khz(const float psd[PREDEMOD_FFT_N])
  * noise still incoherent) compete; another entry must lower the noise
  * bandwidth by >= 7 % (0.3 dB) or entry 0 is kept. Returns the index, or -1
  * when entry 0 itself is invalid. */
+/* Width the second stage must keep. When even the widest code is narrower
+ * than the target (first board, 2026-10-06: 19.4 MHz at every RX0 code; the
+ * tap sits ahead of the digital filter), the target cannot be met at all, so
+ * the stage may cost at most 7 % of the width the chip actually delivers
+ * (operator decision 2026-10-06: there skirt 8 keeps 18.75 MHz and lowers
+ * the noise bandwidth 22.2 -> 19.3 MHz, 0.6 dB). */
+static inline unsigned predemod_skirt_target_khz(unsigned target_khz, unsigned widest_khz)
+{
+    return widest_khz >= target_khz ? target_khz : widest_khz * 93u / 100u;
+}
+
 static inline int predemod_skirt_choose(const unsigned *nbw_khz, const unsigned *width_khz,
                                         const bool *quiet, unsigned count, unsigned target_khz)
 {
@@ -282,7 +293,9 @@ static inline int predemod_skirt_choose(const unsigned *nbw_khz, const unsigned 
  * dB nonlinear SDR. Candidates are measured settings (digital filter x analog
  * code, stored skirt kept); the lowest noise bandwidth whose width still
  * covers edge_target, whose noise stays incoherent for V5 NO_CARRIER and that
- * beats the normal setting by >= 11 % (0.5 dB) wins. -1: no edge gear. */
+ * beats the normal setting by >= 7 % (0.3 dB, the second-stage rule; it was
+ * 0.5 dB until the normal profile itself used the second stage, 2026-10-06)
+ * wins. -1: no edge gear. */
 #define PREDEMOD_EDGE_TARGET_KHZ 14000u
 static inline int predemod_edge_choose(const unsigned *nbw_khz, const unsigned *width_khz,
                                        const bool *valid, unsigned count,
@@ -295,7 +308,7 @@ static inline int predemod_edge_choose(const unsigned *nbw_khz, const unsigned *
             (best < 0 || nbw_khz[k] < nbw_khz[best]))
             best = (int)k;
     if (best < 0) return -1;
-    return (uint64_t)nbw_khz[best] * 100u <= (uint64_t)normal_nbw_khz * 89u ? best : -1;
+    return (uint64_t)nbw_khz[best] * 100u <= (uint64_t)normal_nbw_khz * 93u ? best : -1;
 }
 
 /* Noise-bandwidth excess over the -3 dB width, in 0.1 dB. */

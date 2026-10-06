@@ -152,16 +152,25 @@ int main(void)
         assert(predemod_skirt_choose(small, width, q0, 2, 24000) == -1);
         unsigned narrow0[] = {23000, 24400};
         assert(predemod_skirt_choose(nbw, narrow0, quiet, 2, 24000) == -1);
+        /* Unreachable target: at most 7 % of the delivered width (board). */
+        assert(predemod_skirt_target_khz(24000, 40000) == 24000);
+        assert(predemod_skirt_target_khz(24000, 19375) == 18018);
+        unsigned board_nbw[] = {22160, 19266, 17184, 15728, 14874};
+        unsigned board_w[] = {19375, 18750, 15625, 14375, 13125};
+        bool board_q[] = {true, true, true, true, true};
+        assert(predemod_skirt_choose(board_nbw, board_w, board_q, 5,
+                                     predemod_skirt_target_khz(24000, 19375)) == 1);
     }
     {
-        /* Edge: lowest nbw with width >= 14 MHz, valid, >= 0.5 dB better. */
+        /* Edge: lowest nbw with width >= 14 MHz, valid, >= 0.3 dB better. */
         unsigned nbw[] = {26000, 21000, 16500, 15000, 12000};
         unsigned width[] = {22000, 18000, 15000, 14200, 12500};
         bool valid[] = {true, true, true, true, true};
         assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 27000) == 3);
         valid[3] = false; /* noise too coherent for V5 NO_CARRIER */
         assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 27000) == 2);
-        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 18000) == -1); /* < 0.5 dB */
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 17500) == -1); /* < 0.3 dB */
+        assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 18000) == 2);  /* 0.38 dB */
         assert(predemod_edge_choose(nbw, width, valid, 5, 14000, 0) == -1);
         unsigned too_narrow[] = {13000, 12000};
         assert(predemod_edge_choose(nbw, too_narrow, valid, 2, 14000, 27000) == -1);
