@@ -6961,7 +6961,7 @@ static void predemod_dco_service(void)
     /* First, once per channel per boot: the vendor's full RX DC/IQ
      * calibration at the tuned frequency (rx_recal.c). The per-gain table
      * holds absolute DC-DAC codes and stays valid. */
-    if (no_carrier && rx_recal_supported() && s_rx_recal_freq != freq) {
+    if (no_carrier && rx_recal_supported() && c5vrx4_rx_recal_enabled() && s_rx_recal_freq != freq) {
         s_rx_recal_freq = freq;
         rx_recal_now("RX_RECAL_AUTO");
         return;
@@ -9046,6 +9046,7 @@ static void console_diag_task(void *arg)
 #endif
                     printf("  '`':         Reboot into USB download mode for flashing (tools/enter_download.py)\n");
                     printf("  '?':         Per-gain DC correction off/on (RAM A/B, no reboot)\n");
+                    printf("  Ctrl-R:      Automatic vendor RX DC/IQ recal at the tuned frequency off/on (NVS rx_recal), reboot\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

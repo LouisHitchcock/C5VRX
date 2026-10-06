@@ -352,6 +352,16 @@ bool c5vrx4_radius_boost_enabled(void)
     return s_radius_boost;
 }
 
+/* Automatic vendor RX DC/IQ recalibration at the tuned frequency (NVS
+ * rx_recal, default on). Ctrl-R (0x12) toggles it with a reboot, so a range
+ * A/B can compare boots with and without it. */
+static int8_t s_rx_recal = -1;
+bool c5vrx4_rx_recal_enabled(void)
+{
+    if (s_rx_recal < 0) s_rx_recal = nvs_flag("rx_recal", true);
+    return s_rx_recal;
+}
+
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
@@ -708,6 +718,7 @@ bool c5vrx4_console(int key)
     if (key == '|') return toggle_flag("agc_mask", c5vrx4_agc_mask_enabled(), "agc_mask");
     if (key == '_') return toggle_flag("idle_raster", c5vrx4_idle_raster_enabled(), "idle_raster");
     if (key == 'y') return toggle_flag("radius_boost", c5vrx4_radius_boost_enabled(), "radius_boost");
+    if (key == 0x12) return toggle_flag("rx_recal", c5vrx4_rx_recal_enabled(), "rx_recal");
     if (key == 'w') return toggle_flag("sync_fw", c5vrx4_sync_flywheel_enabled(), "sync_fw");
     if (key == 'Z') {
         /* Fixed fine -> fixed ultrafine -> protected V5 lanes -> fixed fine. */
