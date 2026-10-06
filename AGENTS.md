@@ -490,6 +490,13 @@ the project explicitly changes hosting architecture.
 - It publishes `web/` plus a generated same-origin `firmware/` mirror.
 - It runs for web changes on `main`, manually, and after successful C5VRX-4 or Production
   CI so new/updated/removed PR builds and new releases refresh the mirror.
+  After CI its `changes` job compares the fingerprint of the release set the
+  mirror would contain (`tools/prepare_pages_site.sh --fingerprint`: tag plus
+  asset id, update time and size) with the live `firmware/releases.json` and
+  skips the deploy when they are equal (operator request 2026-10-06: CI keeps
+  an unchanged firmware-input hash on the existing release, so most PR pushes
+  change nothing). Web pushes, manual runs and an unreadable live manifest
+  always deploy.
 - Browser release discovery should use the generated
   `firmware/releases.json` manifest first.
 

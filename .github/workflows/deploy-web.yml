@@ -24,12 +24,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy GitHub Pages Site
+  # A CI completion only matters when the mirrored release set changed (new,
+  # replaced or removed release assets). CI keeps an unchanged firmware input
+  # hash on the existing release, so most PR pushes change nothing here: skip
+  # those deploys. Web pushes and manual runs always deploy; an unreadable
+  # live manifest deploys too.
+  changes:
+    name: Mirror change check
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - name: Checkout trusted main web source
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Compare release set with the live mirror
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          want="$(bash tools/prepare_pages_site.sh --fingerprint)"
+          live="$(curl -fsSL "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/firmware/releases.json"                   | jq -c '[ .[] | {t: .tag_name, a: [ .assets[] | [.id, .updated_at, .size] ]} ] | sort_by(.t)'                   | sha256sum | cut -d' ' -f1)" || live=""
+          echo "selected=${want} live=${live}"
+          if [ -n "${live}" ] && [ "${want}" = "${live}" ]; then
+            echo "Release set unchanged: skipping the Pages deploy."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy GitHub Pages Site
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

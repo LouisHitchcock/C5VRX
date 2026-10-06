@@ -6,6 +6,48 @@ OUT_DIR="${1:-${ROOT_DIR}/pages-site}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 
+# Identity of a mirrored release set: tag plus every asset's id, update time
+# and size. Equal fingerprints mean the Pages mirror would be identical.
+FINGERPRINT_JQ='[ .[] | {t: .tag_name, a: [ .assets[] | [.id, .updated_at, .size] ]} ] | sort_by(.t)'
+
+select_releases() {
+  gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
+    | jq 'add // []' > "$1/all-releases.json"
+
+  # Keep a bounded history of normal firmware plus recent PR prereleases.
+  # Legacy archive releases are intentionally excluded.
+  jq '
+    [ .[] | select(.draft == false) ] as $all
+    | ($all
+        | map(select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")))
+        | sort_by(.published_at)
+        | reverse
+        | .[:20]) as $versions
+    | ($all
+        | map(select(.prerelease == true and (.tag_name | test("^pr-[0-9]+$"))))
+        | sort_by(.published_at)
+        | reverse
+        | .[:3]) as $prs
+    | ($all
+        | map(select(.prerelease == true and (.tag_name | test("^c5vrx4-(alpha|pr-[0-9]+)$"))))
+        | sort_by(.published_at) | reverse) as $alphas
+    | ($all
+        | map(select(.prerelease == true and (.tag_name | test("^c5vrx4-v4\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$"))))
+        | sort_by(.published_at) | reverse | .[:20]) as $alpha_versions
+    | ($versions + $prs + $alpha_versions + $alphas)
+  ' "$1/all-releases.json" > "$1/selected-releases.json"
+}
+
+# --fingerprint: print the fingerprint of the release set a deploy would
+# mirror, without building the site (deploy-web.yml skips unchanged sets).
+if [[ "${1:-}" == "--fingerprint" ]]; then
+  fp_dir="$(mktemp -d)"
+  select_releases "${fp_dir}"
+  jq -c "${FINGERPRINT_JQ}" "${fp_dir}/selected-releases.json" | sha256sum | cut -d' ' -f1
+  rm -rf "${fp_dir}"
+  exit 0
+fi
+
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}/firmware"
 cp -a "${ROOT_DIR}/web/." "${OUT_DIR}/"
@@ -42,31 +84,7 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 echo "Fetching GitHub releases for Pages firmware mirror..."
-gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
-  | jq 'add // []' > "${tmp_dir}/all-releases.json"
-
-# Keep a bounded history of normal firmware plus recent PR prereleases.
-# Legacy archive releases are intentionally excluded.
-jq '
-  [ .[] | select(.draft == false) ] as $all
-  | ($all
-      | map(select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")))
-      | sort_by(.published_at)
-      | reverse
-      | .[:20]) as $versions
-  | ($all
-      | map(select(.prerelease == true and (.tag_name | test("^pr-[0-9]+$"))))
-      | sort_by(.published_at)
-      | reverse
-      | .[:3]) as $prs
-  | ($all
-      | map(select(.prerelease == true and (.tag_name | test("^c5vrx4-(alpha|pr-[0-9]+)$"))))
-      | sort_by(.published_at) | reverse) as $alphas
-  | ($all
-      | map(select(.prerelease == true and (.tag_name | test("^c5vrx4-v4\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$"))))
-      | sort_by(.published_at) | reverse | .[:20]) as $alpha_versions
-  | ($versions + $prs + $alpha_versions + $alphas)
-' "${tmp_dir}/all-releases.json" > "${tmp_dir}/selected-releases.json"
+select_releases "${tmp_dir}"
 
 count="$(jq 'length' "${tmp_dir}/selected-releases.json")"
 echo "Mirroring ${count} firmware release(s) into GitHub Pages artifact..."
