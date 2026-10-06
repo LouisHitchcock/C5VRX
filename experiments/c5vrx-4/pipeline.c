@@ -328,6 +328,92 @@ void c5vrx4_last_standard_store(uint8_t standard)
     else printf("C5VRX4 last_std store err=%s\n", esp_err_to_name(err));
 }
 
+typedef struct {
+    const char *label, *key;
+    uint8_t fallback, count;
+    const char *const *names;
+} c5vrx4_option_t;
+static const char *const s_off_on[] = {"OFF", "ON"};
+static const char *const s_bw_names[] = {"VENDOR", "FIXED"};
+static const char *const s_lane_names[] = {"FINE", "ULTRAFINE", "ADAPTIVE"};
+static const char *const s_cvbs_names[] = {"STD150", "LEGACY", "CVBS150"};
+/* Keys and fallbacks are the getters' own (one source per key below). */
+static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
+    [C5VRX4_OPT_FIXED_BW]     = {"ANALOG BW",     "fixed_bw",     1, 2, s_bw_names},
+    [C5VRX4_OPT_LANES]        = {"IQ LANES",      "lane_mode",    C5VRX4_LANES_FINE, 3, s_lane_names},
+    [C5VRX4_OPT_AGC_MASK]     = {"AGC MASK",      "agc_mask",     1, 2, s_off_on},
+    [C5VRX4_OPT_DC_RECENTER]  = {"DC RECENTER",   "dc_recenter",  1, 2, s_off_on},
+    [C5VRX4_OPT_SPHASE]       = {"SAMPLE PHASE",  "sphase_auto",  1, 2, s_off_on},
+    [C5VRX4_OPT_IDLE_RASTER]  = {"IDLE RASTER",   "idle_raster",  1, 2, s_off_on},
+    [C5VRX4_OPT_RADIUS_BOOST] = {"RADIUS BOOST",  "radius_boost", 0, 2, s_off_on},
+    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      0, 2, s_off_on},
+    [C5VRX4_OPT_LEVEL]        = {"LEVEL SERVO",   "level_lab",    1, 2, s_off_on},
+    [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
+    [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
+};
+static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
+static bool s_option_snapshot;
+
+static uint8_t option_stored(unsigned option)
+{
+    const c5vrx4_option_t *o = &s_options[option];
+    uint8_t value = o->fallback;
+    nvs_handle_t handle;
+    if (nvs_open("c5vrx4", NVS_READONLY, &handle) == ESP_OK) {
+        (void)nvs_get_u8(handle, o->key, &value);
+        nvs_close(handle);
+    }
+    /* Out-of-range bytes read as the fallback, like the getters. */
+    return value < o->count ? value : o->fallback;
+}
+
+void c5vrx4_options_snapshot(void)
+{
+    for (unsigned k = 0; k < C5VRX4_OPT_COUNT; ++k) s_option_boot[k] = option_stored(k);
+    s_option_snapshot = true;
+}
+
+const char *c5vrx4_option_label(unsigned option)
+{
+    return option < C5VRX4_OPT_COUNT ? s_options[option].label : "";
+}
+
+const char *c5vrx4_option_value(unsigned option)
+{
+    if (option >= C5VRX4_OPT_COUNT) return "";
+    return s_options[option].names[option_stored(option)];
+}
+
+bool c5vrx4_option_pending(unsigned option)
+{
+    return option < C5VRX4_OPT_COUNT && s_option_snapshot &&
+           option_stored(option) != s_option_boot[option];
+}
+
+bool c5vrx4_options_pending(void)
+{
+    for (unsigned k = 0; k < C5VRX4_OPT_COUNT; ++k)
+        if (c5vrx4_option_pending(k)) return true;
+    return false;
+}
+
+bool c5vrx4_option_cycle(unsigned option)
+{
+    if (option >= C5VRX4_OPT_COUNT) return false;
+    const c5vrx4_option_t *o = &s_options[option];
+    uint8_t next = (uint8_t)((option_stored(option) + 1u) % o->count);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, o->key, next);
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    printf("C5VRX4 option %s_next=%s err=%s action=%s\n", o->key, o->names[next],
+           esp_err_to_name(err), err == ESP_OK ? "applies_after_reboot" : "unchanged");
+    return err == ESP_OK;
+}
+
 static bool toggle_flag(const char *key, bool current, const char *name)
 {
     nvs_handle_t handle;

@@ -443,7 +443,8 @@ requirements by themselves**.
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
     observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
-  It is on by default (`w` / NVS `sync_fw` opts out) and hardware-pending.
+  It is off by default since its first hardware run starved the CPU
+  (`w`, NVS `sync_fw` or the menu SETUP page opts in) and hardware-pending.
   The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical

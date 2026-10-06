@@ -497,6 +497,11 @@ esp_err_t rf_request_native_agc_boot(bool enable)
     return err;
 }
 
+bool rf_native_agc_requested(void)
+{
+    return native_agc_boot_requested();
+}
+
 bool rf_native_agc_active(void)
 {
     return s_native_agc;

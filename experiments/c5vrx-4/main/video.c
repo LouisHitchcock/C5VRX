@@ -309,6 +309,13 @@ static TaskHandle_t s_sfw_task_handle;
 #endif
 static volatile bool s_menu_boot_btn_enabled = true;
 static volatile int s_menu_cursor;
+/* RF and SETUP pages hold an item list: long press enters it, short press
+ * steps through the items (the last one is BACK), long press changes one. */
+static bool s_menu_edit;
+static unsigned s_menu_item;
+/* Calibrations chosen in the menu run after it closes (labs refuse while
+ * the standalone menu owns TX). */
+static volatile bool s_menu_bw_cal_request, s_menu_witness_request;
 static int s_menu_timeout_ticks;
 
 typedef enum {
@@ -4675,7 +4682,7 @@ static const uint8_t s_menu_icons[6][8] = {
     {0x7c,0x44,0x04,0x1f,0x04,0x44,0x7c,0x00}, /* exit */
 };
 static const char *const s_menu_nav[6] = {
-    "BAND", "CHANNEL", "RF", "AFC", "VIDEO", "EXIT"
+    "BAND", "CHANNEL", "RF", "SETUP", "VIDEO", "EXIT"
 };
 
 static inline void menu_ui_pixel(int x, int y, uint8_t code)
@@ -4994,6 +5001,7 @@ static void menu_draw_channel_page(void)
     menu_ui_text_right(buf, 376, 47, UI_WHITE);
 }
 
+#ifndef C5VRX4_EXPERIMENT /* C5VRX-4 draws RF and SETUP as item lists */
 static void menu_draw_rf_page(void)
 {
     char buf[32];
@@ -5026,6 +5034,8 @@ static void menu_draw_afc_page(void)
     menu_ui_text("DEFAULT OFF FOR FLIGHT", 100, 47, UI_MUTED);
 }
 
+#endif
+
 static void menu_draw_video_page(void)
 {
     char detected[24];
@@ -5043,8 +5053,170 @@ static void menu_draw_video_page(void)
         snprintf(detected, sizeof(detected), "SEARCHING");
     }
     menu_ui_value_box(238, 34, 138, "DETECTED", detected);
+#ifdef C5VRX4_EXPERIMENT
+    menu_ui_text(s_video_std_mode == VIDEO_STD_MODE_AUTO ? "LONG: STANDARD (NOW AUTO)" :
+                 "LONG: STANDARD (FIXED)", 100, 47, UI_MUTED);
+#else
     menu_ui_text("LONG:DAC - APPLIES ON EXIT", 100, 47, UI_MUTED);
+#endif
 }
+
+#ifdef C5VRX4_EXPERIMENT
+static void video_set_menu_mode(bool active);
+enum {
+    RF_ITEM_GAIN, RF_ITEM_DIGITAL_BW, RF_ITEM_ANALOG_BW, RF_ITEM_LANES,
+    RF_ITEM_CAL_BW, RF_ITEM_CAL_AGC, RF_ITEM_COUNT
+};
+enum { SETUP_ITEM_AFC, SETUP_ITEM_BOOT_MENU, SETUP_ITEM_OPTIONS };
+#define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + C5VRX4_OPT_COUNT - C5VRX4_OPT_AGC_MASK)
+
+static unsigned menu_item_count(void)
+{
+    return s_menu_cursor == 2 ? RF_ITEM_COUNT :
+           s_menu_cursor == 3 ? SETUP_ITEM_COUNT : 0u;
+}
+
+/* Boot-time choices written in this menu session but not yet running. */
+static bool menu_changes_pending(void)
+{
+    return c5vrx4_options_pending() || rf_native_agc_requested() != rf_native_agc_active();
+}
+
+static void menu_option_text(unsigned option, char *value, size_t n)
+{
+    snprintf(value, n, "%s%s", c5vrx4_option_value(option),
+             c5vrx4_option_pending(option) ? " *" : "");
+}
+
+static const char *menu_item_text(unsigned item, char *value, size_t n)
+{
+    if (s_menu_cursor == 2) {
+        switch (item) {
+        case RF_ITEM_GAIN: {
+            bool next = rf_native_agc_requested();
+            snprintf(value, n, "%s%s", next ? "NATIVE AGC" : "DIRECT V5",
+                     next != rf_native_agc_active() ? " *" : "");
+            return "GAIN";
+        }
+        case RF_ITEM_DIGITAL_BW:
+            snprintf(value, n, "%s %s", rf_bw_mode_name(), s_current_bw40 ? "40" : "20");
+            return "DIGITAL BW";
+        case RF_ITEM_ANALOG_BW:
+            if (c5vrx4_option_pending(C5VRX4_OPT_FIXED_BW) || !c5vrx4_fixed_bw_enabled())
+                menu_option_text(C5VRX4_OPT_FIXED_BW, value, n);
+            else if (c5vrx4_bw_code() == C5VRX4_BW_UNCALIBRATED)
+                snprintf(value, n, "FIXED UNCAL");
+            else
+                snprintf(value, n, "FIXED C%u %uM", c5vrx4_bw_code(),
+                         (c5vrx4_bw_width_khz() + 500u) / 1000u);
+            return "ANALOG BW";
+        case RF_ITEM_LANES:
+            menu_option_text(C5VRX4_OPT_LANES, value, n);
+            return "IQ LANES";
+        case RF_ITEM_CAL_BW:
+            snprintf(value, n, "VTX OFF");
+            return "CALIBRATE BW";
+        default:
+            snprintf(value, n, "%s", rf_native_agc_active() ? "VTX ON" : "NATIVE ONLY");
+            return "CALIBRATE AGC";
+        }
+    }
+    if (item == SETUP_ITEM_AFC) {
+        snprintf(value, n, "%s", afc_mode_name());
+        return "AFC";
+    }
+    if (item == SETUP_ITEM_BOOT_MENU) {
+        snprintf(value, n, "%s", s_menu_boot_btn_enabled ? "ON" : "OFF");
+        return "BOOT MENU";
+    }
+    unsigned option = C5VRX4_OPT_AGC_MASK + (item - SETUP_ITEM_OPTIONS);
+    menu_option_text(option, value, n);
+    return c5vrx4_option_label(option);
+}
+
+static void menu_draw_list(const char *title)
+{
+    const unsigned count = menu_item_count(), rows = count + 1u;
+    menu_draw_page_title(title, s_menu_edit ? "SHORT:NEXT LONG:SET" : "LONG: OPEN");
+    /* Four rows fit between the title and the bottom of the UI band. */
+    unsigned first = s_menu_edit && s_menu_item >= 4u ? s_menu_item - 3u : 0u;
+    for (unsigned r = 0; r < 4u && first + r < rows; ++r) {
+        unsigned item = first + r;
+        int y = 22 + (int)r * 8;
+        bool selected = s_menu_edit && item == s_menu_item;
+        if (selected) menu_ui_rect(100, y, 276, 8, UI_SELECTED);
+        uint8_t ink = selected ? UI_WHITE : UI_MUTED;
+        if (item == count) { menu_ui_text("BACK", 104, y, ink); continue; }
+        char value[24];
+        menu_ui_text(menu_item_text(item, value, sizeof(value)), 104, y, ink);
+        menu_ui_text_right(value, 372, y, UI_WHITE);
+    }
+}
+
+/* Returns false when the item closed the menu (nothing left to render). */
+static bool menu_item_apply(unsigned item)
+{
+    if (s_menu_cursor == 2) {
+        switch (item) {
+        case RF_ITEM_GAIN: {
+            bool next = !rf_native_agc_requested();
+            esp_err_t err = rf_request_native_agc_boot(next);
+            printf("[MENU: GAIN] next=%s err=%s (applies on SAVE AND EXIT)\n",
+                   next ? "native" : "direct_v5", esp_err_to_name(err));
+            return true;
+        }
+        case RF_ITEM_DIGITAL_BW:
+            cycle_rf_bandwidth_mode();
+            settings_save();
+            printf("[MENU: RF BW] Mode -> %s (active %s)\n",
+                   rf_bw_mode_name(), s_current_bw40 ? "BW40" : "BW20");
+            return true;
+        case RF_ITEM_ANALOG_BW:
+            (void)c5vrx4_option_cycle(C5VRX4_OPT_FIXED_BW);
+            return true;
+        case RF_ITEM_LANES:
+            (void)c5vrx4_option_cycle(C5VRX4_OPT_LANES);
+            return true;
+        case RF_ITEM_CAL_BW:
+        case RF_ITEM_CAL_AGC:
+            if (item == RF_ITEM_CAL_AGC && !rf_native_agc_active()) {
+                printf("[MENU: CAL AGC] refused: native AGC only (GAIN -> NATIVE AGC, save and exit)\n");
+                return true;
+            }
+            if (item == RF_ITEM_CAL_BW) s_menu_bw_cal_request = true;
+            else s_menu_witness_request = true;
+            settings_save();
+            video_set_menu_mode(false);
+            printf("[MENU: CAL %s] runs now on live RX\n", item == RF_ITEM_CAL_BW ? "BW" : "AGC");
+            return false;
+        default:
+            return true;
+        }
+    }
+    if (item == SETUP_ITEM_AFC) {
+        if (s_afc_mode == AFC_MODE_AUTO) {
+            s_afc_mode = AFC_MODE_HOLD;
+        } else if (s_afc_mode == AFC_MODE_HOLD) {
+            s_afc_mode = AFC_MODE_OFF;
+            apply_frequency_offset_khz_tracked(0);
+        } else {
+            s_afc_mode = AFC_MODE_AUTO;
+        }
+        printf("[MENU: AFC] Mode -> %s\n", afc_mode_name());
+        settings_save();
+        return true;
+    }
+    if (item == SETUP_ITEM_BOOT_MENU) {
+        s_menu_boot_btn_enabled = !s_menu_boot_btn_enabled;
+        settings_save();
+        printf("[MENU: BOOT MENU] %s (3 s BOOT hold always opens recovery)\n",
+               s_menu_boot_btn_enabled ? "on" : "off");
+        return true;
+    }
+    (void)c5vrx4_option_cycle(C5VRX4_OPT_AGC_MASK + (item - SETUP_ITEM_OPTIONS));
+    return true;
+}
+#endif
 
 static void menu_draw_exit_page(void)
 {
@@ -5053,6 +5225,12 @@ static void menu_draw_exit_page(void)
     menu_ui_vline(100, 23, 20, UI_WHITE);
     menu_ui_text("RETURN TO LIVE VIDEO", 116, 25, UI_WHITE);
     menu_ui_text("LONG PRESS TO EXIT", 116, 34, UI_MUTED);
+#ifdef C5VRX4_EXPERIMENT
+    if (menu_changes_pending()) {
+        menu_ui_text("REBOOTS TO APPLY (*) CHANGES", 100, 47, UI_WHITE);
+        return;
+    }
+#endif
     menu_ui_text("12S AUTO EXIT ENABLED", 100, 47, UI_MUTED);
 }
 
@@ -5084,8 +5262,13 @@ static void menu_render_menu(void)
     switch (s_menu_cursor) {
     case 0: menu_draw_band_page(); break;
     case 1: menu_draw_channel_page(); break;
+#ifdef C5VRX4_EXPERIMENT
+    case 2: menu_draw_list("RF FRONTEND"); break;
+    case 3: menu_draw_list("SETUP"); break;
+#else
     case 2: menu_draw_rf_page(); break;
     case 3: menu_draw_afc_page(); break;
+#endif
     case 4: menu_draw_video_page(); break;
     default: menu_draw_exit_page(); break;
     }
@@ -5328,6 +5511,8 @@ static void video_set_menu_mode(bool active)
         /* Allocate/render before touching the live pipeline. If memory is
          * unavailable, keep flight video running instead of rebooting. */
         s_video_std = resolved_menu_standard();
+        s_menu_edit = false;
+        s_menu_item = 0;
         esp_err_t menu_err = menu_init_buffers();
         if (menu_err != ESP_OK) {
             ESP_LOGE(TAG, "menu unavailable: %s (dma_desc free=%u largest=%u, need %u x %u B chunks)",
@@ -5639,6 +5824,15 @@ static void channel_auto_search(void)
 static void handle_button_short_click(void)
 {
     if (s_menu_active && !IDLE_RASTER_ACTIVE()) {
+#ifdef C5VRX4_EXPERIMENT
+        if (s_menu_edit) {
+            s_menu_item = (s_menu_item + 1u) % (menu_item_count() + 1u);
+            menu_render_menu();
+            s_menu_timeout_ticks = 0;
+            printf("[BTN: SHORT] Menu item -> %u\n", s_menu_item);
+            return;
+        }
+#endif
         s_menu_cursor = (s_menu_cursor + 1) % 6;
         menu_render_menu();
         s_menu_timeout_ticks = 0;
@@ -5698,6 +5892,41 @@ static void handle_button_long_click(void)
         video_open_menu();
         printf("[BTN: LONG] Menu Opened!\n");
     } else {
+#ifdef C5VRX4_EXPERIMENT
+        if (s_menu_edit) {
+            if (s_menu_item >= menu_item_count()) {
+                s_menu_edit = false;
+                s_menu_item = 0;
+            } else if (!menu_item_apply(s_menu_item)) {
+                return;
+            }
+            menu_render_menu();
+            s_menu_timeout_ticks = 0;
+            return;
+        }
+        if (s_menu_cursor == 2 || s_menu_cursor == 3) {
+            s_menu_edit = true;
+            s_menu_item = 0;
+            menu_render_menu();
+            s_menu_timeout_ticks = 0;
+            return;
+        }
+        if (s_menu_cursor == 4) {
+            menu_cycle_standard_mode(); /* re-renders and saves */
+            s_menu_timeout_ticks = 0;
+            printf("[MENU: STANDARD] -> %s\n",
+                   s_video_std_mode == VIDEO_STD_MODE_AUTO ? "AUTO" :
+                   s_video_std_mode == VIDEO_STD_MODE_PAL ? "PAL" : "NTSC");
+            return;
+        }
+        if (s_menu_cursor == 5 && menu_changes_pending()) {
+            settings_save();
+            printf("[BTN: LONG] Save and exit -> reboot to apply boot options\n");
+            fflush(stdout);
+            vTaskDelay(pdMS_TO_TICKS(150));
+            esp_restart();
+        }
+#endif
         switch (s_menu_cursor) {
         case 0: /* BAND */
             rf_cycle_band();
@@ -5973,6 +6202,19 @@ static void predemod_task(void *arg)
     (void)arg;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
+        if (s_menu_bw_cal_request && !s_menu_active) {
+            s_menu_bw_cal_request = false;
+            (void)lab_run_bw_calibration(false);
+        }
+        if (s_menu_witness_request && !s_menu_active) {
+            s_menu_witness_request = false;
+            if (lab_run_agc_witness(false) && c5vrx4_agc_mask_enabled()) {
+                printf("AGC_WITNESS rebooting to apply the acquisition mask\n");
+                fflush(stdout);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                esp_restart();
+            }
+        }
         predemod_dc_service();
         predemod_sphase_autocheck();
         predemod_bw_autocal();
@@ -7613,6 +7855,9 @@ esp_err_t video_start(void)
     if (!s_menu_commands) return ESP_ERR_NO_MEM;
 
     settings_load();
+#ifdef C5VRX4_EXPERIMENT
+    c5vrx4_options_snapshot();
+#endif
 #if defined(C5VRX4_EXPERIMENT) || CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     s_output_mode = VIDEO_OUTPUT_6BIT_40;
 #endif

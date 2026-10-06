@@ -107,6 +107,8 @@ typedef struct {
 } rf_native_agc_state_t;
 
 esp_err_t rf_request_native_agc_boot(bool enable);
+/* Gain owner stored for the next boot (the menu shows it as pending). */
+bool rf_native_agc_requested(void);
 void rf_dump_agc_regs(void);
 bool rf_native_agc_active(void);
 
