@@ -58,6 +58,8 @@ typedef struct {
 } sfw_ring_t;
 
 #define SFW_CONCEAL_RUN 6u      /* consecutive repaired lines at most */
+#define SFW_SAMPLE      8u      /* outside a fade: measure 1 line in 8 */
+#define SFW_STABLE      64u     /* clean lines after a (re)lock before any write */
 
 typedef enum { SFW_ACQUIRE = 0, SFW_TRACK = 1 } sfw_state_t;
 
@@ -104,10 +106,13 @@ typedef struct {
     uint32_t prev_line;
     bool prev_line_valid;
     uint8_t conceal_run;
+    /* Fade-gated repair (2026-10-06): writes only from a stable lock. */
+    bool stable;
     /* counters */
     uint32_t lines, clean, repaired, missed, slots_repaired, vsyncs, v_coasted, v_parity,
              acquisitions, relocks, skipped_lines, fast_lines, skipped_floor, rebuilt,
-             concealed, conceal_no_source, conceal_late;
+             concealed, conceal_no_source, conceal_late,
+             jumps, sampled;
     uint32_t evals;             /* lowm evaluations in the last call */
 } sync_flywheel_t;
 
@@ -116,7 +121,14 @@ void sfw_init(sync_flywheel_t *f);
  * absolute sample index, exclusive). Writes only samples >= write_floor
  * (ahead of the TX read). At most budget_evals detection evaluations per call;
  * a flywheel that falls behind coasts lines unanalysed (nothing written).
- * Returns the number of lines handled. */
+ *
+ * Fade-gated (board 2026-10-06: the always-writing flywheel put black streaks
+ * into a clean picture): allow_repair is the caller's fade window (the V5
+ * observer saw the carrier collapse). Outside it nothing is written and only
+ * every SFW_SAMPLE-th line is measured; inside it, and only once the lock is
+ * stable, missing syncs and dropout lines are repaired. A stable tracker that
+ * falls behind (a CPU stall) jumps whole lines, keeping its phase, instead
+ * of re-acquiring at a new one. Returns the number of lines handled. */
 unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
                  uint64_t write_floor, bool allow_repair, uint32_t budget_evals);
 bool sfw_locked(const sync_flywheel_t *f);

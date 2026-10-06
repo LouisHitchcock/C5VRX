@@ -19,7 +19,7 @@
 #define FS 40.0
 
 typedef struct { uint64_t a, b; double amp, noise; bool sync_only; } fade_t;
-typedef struct {
+typedef struct scene_s {
     bool pal;
     double cfo_mhz, amp, noise;
     /* fades: half-open sample ranges with the given amplitude and noise */
@@ -31,6 +31,12 @@ typedef struct {
 
 static unsigned s_seed = 1;
 static bool s_conceal;      /* line repair on in run_ring */
+/* Fade window given to sfw_run: NULL = always open (the old behaviour);
+ * otherwise open only around the scene's fades, as the V5 observer would
+ * (carrier collapse seen within ~0.2 ms, held 30 ms). s_no_window: never. */
+static const struct scene_s *s_window_scene;
+static bool s_no_window;
+static unsigned s_stall_every, s_stall_len;   /* skip sfw_run calls: CPU stalls */
 static double urand(void) { s_seed = s_seed * 1103515245u + 12345u; return ((s_seed >> 8) & 0xFFFFFF) / 16777216.0; }
 static double grand(void)
 {
@@ -138,7 +144,16 @@ static uint8_t *run_ring(const uint8_t *in, uint64_t n, sync_flywheel_t *f, cons
             uint64_t ceiling = rx - DSCR;
             uint64_t floor = (rx > LAG ? rx - LAG : 0) + DSCR + 512u;
             uint32_t before = f->lines;
-            sfw_run(f, &r, ceiling, floor, true, budget);
+            bool window = !s_no_window;
+            if (s_window_scene) {
+                window = false;
+                for (unsigned j = 0; j < s_window_scene->nfade; ++j)
+                    if (ceiling + 2000u >= s_window_scene->fade[j].a &&
+                        ceiling < s_window_scene->fade[j].b + 1200000u) window = true;
+            }
+            uint64_t call = rx / DSCR;
+            bool stalled = s_stall_every && (call % s_stall_every) < s_stall_len;
+            if (!stalled) sfw_run(f, &r, ceiling, floor, window, budget);
             evals += f->evals;
             lines0 += f->lines - before;
             for (uint64_t k = ceiling; k < rx; ++k) assert(ring[k & (RING - 1u)] == in[k]);
@@ -241,6 +256,25 @@ static void scenario(bool pal)
            name, f.lines, f.clean, f.fast_lines, f.vsyncs, epl);
     assert(epl < 40.0);
     free(out);
+    /* Fade-gated: no window on a clean signal - nothing written, one line in
+     * eight measured, still locked with the field phase. */
+    s_no_window = true;
+    out = run_ring(in, n, &f, c5v4_phase_static, false, 0, &epl, 4000);
+    printf("%s clean, no fade window: evals/line=%.1f sampled=%u locked=%d vsyncs=%u\n",
+           name, epl, f.sampled, sfw_locked(&f), f.vsyncs);
+    assert(memcmp(in, out, n) == 0 && sfw_locked(&f) && f.stable && f.vsyncs >= 8u);
+    assert(epl < 12.0 && f.sampled > f.lines / 2u);
+    free(out);
+    /* CPU stalls of ~7 ms every ~30 ms (board 2026-10-06: max_us 7133):
+     * the stable lock jumps whole lines, never re-acquires, writes nothing. */
+    s_stall_every = 300u; s_stall_len = 70u;
+    out = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    printf("%s clean, 7 ms stalls: acquisitions=%u jumps=%u locked=%d\n",
+           name, f.acquisitions, f.jumps, sfw_locked(&f));
+    assert(f.acquisitions == 1u && f.jumps > 0u && sfw_locked(&f) && memcmp(in, out, n) == 0);
+    s_stall_every = s_stall_len = 0;
+    s_no_window = false;
+    free(out);
     /* Line repair on a clean signal: not one byte changes. */
     s_conceal = true;
     out = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
@@ -275,6 +309,18 @@ static void scenario(bool pal)
     }
     printf("%s fades: repaired=%u slots=%u v_coasted=%u vsyncs=%u bytes_changed=%u evals/line=%.1f\n",
            name, f.repaired, f.slots_repaired, f.v_coasted, f.vsyncs, changed, epl);
+    /* The same fades with the window open only around them (V5 observer). */
+    s_window_scene = &fade;
+    uint8_t *gated = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_window_scene = NULL;
+    for (unsigned a = 0; a < 3u; ++a) {
+        verdict_t v = verify(&truth, gated, n, 4 * F, 9 * F, a);
+        printf("%s fades, gated window align=%u: output ok %u/%u (missing %u, bad width %u, max edge %u)\n",
+               name, a, v.ok, v.checked, v.missing, v.bad_width, v.max_edge);
+        assert(v.missing == 0 && v.bad_width == 0 && v.max_edge <= 15u);
+    }
+    for (uint64_t k = 0; k < (uint64_t)(4.2 * F); ++k) assert(gated[k] == in[k]);  /* before the fades */
+    free(gated);
     assert(f.repaired > 200u && f.slots_repaired > 10u && f.v_coasted >= 1u);
     /* Repairs stay inside sync and vertical-interval samples. */
     assert(changed < 20u * 1000u * 1000u);

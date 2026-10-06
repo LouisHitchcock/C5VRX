@@ -355,11 +355,11 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
-    /* Default off (board 2026-10-06, strong clean NTSC): it re-acquired
-     * ~60 times a second and wrote ~200 synthetic syncs a second at a
-     * shifted phase - black streaks in a clean picture. 'w' or the menu
-     * opts in for tests only (SYNC_FLYWHEEL.md). */
-    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", false);
+    /* Default on, fade-gated (2026-10-06): it writes only inside the V5
+     * observer's fade window and only from a stable lock, so a clean
+     * picture is never touched (the always-writing version put black
+     * streaks into one). 'w' or the menu opts out (SYNC_FLYWHEEL.md). */
+    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", true);
     return s_sync_fw;
 }
 
@@ -420,7 +420,7 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_SPHASE]       = {"SAMPLE PHASE",  "sphase_auto",  1, 2, s_off_on},
     [C5VRX4_OPT_IDLE_RASTER]  = {"IDLE RASTER",   "idle_raster",  1, 2, s_off_on},
     [C5VRX4_OPT_RADIUS_BOOST] = {"RADIUS BOOST",  "radius_boost", 0, 2, s_off_on},
-    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      0, 2, s_off_on},
+    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      1, 2, s_off_on},
     [C5VRX4_OPT_LEVEL]        = {"LEVEL SERVO",   "level_lab",    1, 2, s_off_on},
     [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},

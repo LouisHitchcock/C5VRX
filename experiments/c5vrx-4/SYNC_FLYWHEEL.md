@@ -157,8 +157,35 @@ found), but on a strong clean carrier (P50 37, Q 99 %) it re-acquired 862
 times and rebuilt 2916 pulses in 14 s while handling only ~60 % of the
 lines: it fell behind, re-acquired at a new phase and wrote synthetic syncs
 off the real ones - black streaks in a clean picture (operator). Default
-off; `w` / the menu opt in for tests. A redesign that cannot write into a
-clean picture is required before it returns (see below).
+off until the redesign below.
+
+## Fade-gated repair (2026-10-06, default on)
+
+The flywheel no longer decides on its own when to write:
+
+- **Fade window.** The V5 observer (every 200 us, newest descriptor) opens
+  it when the carrier coherence drops below 75 (clean ~99, noise ~10) and
+  holds it 30 ms. Only inside it are syncs rebuilt and dropout lines
+  repaired. Outside it nothing is written: a clean picture is untouched by
+  construction, not by a detector being right.
+- **Stable lock first.** No write until 64 clean lines after a (re)lock, so
+  a fresh lock at a wrong phase can never write.
+- **Maintenance tracking.** Outside a window a stable lock measures one line
+  in eight (the VTX crystal keeps the period) and always follows the
+  vertical interval: ~10 instead of ~31 evaluations per line.
+- **Stalls keep the phase.** A stable tracker that falls behind (board:
+  7 ms CPU stalls) jumps whole lines on its period instead of re-acquiring
+  at a new phase - the cause of the black streaks.
+
+Host evidence (`tools/test_sync_flywheel.c`): clean signal without a window
+0 bytes changed, locked with the field phase, 9.8 (PAL) / 10.4 (NTSC)
+evaluations per line; 7 ms stalls every 30 ms: one acquisition, 5-6 phase-
+keeping jumps, 0 bytes changed; the PAL/NTSC fade scenes with the window
+open only around the fades: every H/V pulse on the output for every span
+alignment, no byte changed before the first fade. The line repair runs in
+the same window (its first dropout line may lack a scored source when the
+window opens on it). `!` status: `stable`, `fade_window`, `fade_opens`,
+`jumps`, `sampled`.
 
 ## Line repair (2026-10-06)
 

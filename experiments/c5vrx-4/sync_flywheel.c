@@ -295,6 +295,7 @@ static void start_track(sync_flywheel_t *f, uint64_t start, uint32_t nominal)
     f->rebuild_lines = 0;
     f->pristine_run = 0;
     f->acq_phase = 0;
+    f->stable = false;
     ++f->acquisitions;
 }
 
@@ -530,7 +531,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     unsigned processed = 0;
     while (f->state == SFW_TRACK && s_evals < budget_evals) {
         bool locked = sfw_locked(f);
-        bool repair = allow_repair && locked && f->levels;
+        bool repair = allow_repair && locked && f->levels && f->stable;
         uint64_t h2q = half_q8(f);
         /* Arm the coming vertical interval 4 lines ahead, on the line grid. */
         if (f->v_valid && !f->v_armed) {
@@ -561,6 +562,18 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         uint64_t pred = rnd(f->next_q8);
         if (pred + (f->v_valid ? NEED_LINE : NEED_V_ACQ) > avail_end) break;
         if (pred + r->ring_bytes / 2u < avail_end) {
+            if (f->stable && f->period_q8 > 0) {
+                /* A stall, not a new transmitter: the crystal-stable period
+                 * carries the phase across whole lines. */
+                uint64_t target = (uint64_t)(avail_end - 4096u) << 8;
+                uint64_t k = (target - f->next_q8) / (uint64_t)f->period_q8;
+                f->next_q8 += k * (uint64_t)f->period_q8;
+                f->grid_line += (uint32_t)k;
+                f->v_armed = false;
+                f->prev_line_valid = false;
+                ++f->jumps;
+                continue;
+            }
             f->state = SFW_ACQUIRE;          /* data gone: start over */
             f->scan_pos = 0;
             break;
@@ -576,6 +589,18 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
                 ++processed;
                 continue;
             }
+        }
+        /* Outside a fade window a stable lock is only maintained: one line
+         * in SFW_SAMPLE is measured (the period is crystal-stable). The
+         * vertical interval is always followed. */
+        if (!allow_repair && f->stable && f->v_valid && !f->v_armed &&
+            (f->grid_line % SFW_SAMPLE) != 0u) {
+            unscored(f, f->grid_line);
+            advance(f, base + (uint64_t)(int64_t)f->period_q8);
+            ++f->lines;
+            ++f->sampled;
+            ++processed;
+            continue;
         }
         if (avail_end - pred > MAX_LAG) {
             unscored(f, f->grid_line);
@@ -660,6 +685,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         if (clean) {
             ++f->clean;
             if (f->clean_since_acq < 0xFFFFu) ++f->clean_since_acq;
+            if (f->clean_since_acq >= SFW_STABLE && f->levels) f->stable = true;
             f->lines_since_clean = 0;
             f->relock_have = false;
             if ((f->clean & 15u) == 1u) learn_levels(f, r, start);
@@ -722,6 +748,8 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
                             f->v_end_q8 = 0;
                             f->lines_since_clean = 0;
                             f->relock_have = false;
+                            f->stable = false;
+                            f->clean_since_acq = 0;
                             ++f->relocks;
                         } else {
                             f->relock_off = off;

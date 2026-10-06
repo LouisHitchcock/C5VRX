@@ -451,9 +451,12 @@ requirements by themselves**.
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
     observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
-  It is on by default again since 2026-10-06 (25 % CPU, below the V5
-  observer; `w`, NVS `sync_fw` or the menu SETUP page opts out); goggle
-  behaviour remains hardware-pending.
+  Since 2026-10-06 it is fade-gated and on by default: it writes only inside
+  the V5 observer's fade window (coherence < 75, held 30 ms) and only from a
+  stable lock, measures one line in eight otherwise, and keeps its phase
+  across CPU stalls (the always-writing version re-acquired at new phases
+  and put black streaks into a clean picture). `w`, NVS `sync_fw` or the
+  menu SETUP page opts out; goggle behaviour remains hardware-pending.
   The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical
