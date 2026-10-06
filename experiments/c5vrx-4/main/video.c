@@ -8011,6 +8011,7 @@ static void console_diag_task(void *arg)
                     continue;
                 }
                 if (c5vrx4_console(c)) continue;
+                if (c == '`') rf_reboot_to_download(); /* flashing, never returns */
 #endif
                 if (s_gain_sweep.active &&
                     c != 'g' && c != 'l' && c != 'L' && c != '\r' && c != '\n') {
@@ -8501,6 +8502,7 @@ static void console_diag_task(void *arg)
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");
+                    printf("  '`':         Reboot into USB download mode for flashing (tools/enter_download.py)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

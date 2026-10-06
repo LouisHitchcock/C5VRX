@@ -32,6 +32,13 @@ esp_err_t rf_start(void);
 esp_err_t rf_prepare_fresh_phy_calibration(void);
 
 /**
+ * Stop the dump writer and Wi-Fi, request a USB/UART download boot and
+ * restart (modem reset included), so esptool can flash with --before
+ * no-reset. Console key '`'; tools/enter_download.py sends it. Never returns.
+ */
+void rf_reboot_to_download(void);
+
+/**
  * Dump all vendor timers intercepted during Wi-Fi operation.
  */
 void rf_dump_tracked_timers(void);

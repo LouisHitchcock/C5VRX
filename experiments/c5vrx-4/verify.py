@@ -109,7 +109,7 @@ def main():
         run([cc, "-O3", "-std=c11", "unwrap_oracle.c", "-o", target])
         run([target])
     for name in ("test_unwrap.py", "test_cvbs.py", "test_agc_mask.py", "tools/test_phase8_hr_live.py",
-                 "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
+                 "tools/test_fm_hc.py", "tools/check_golden_two_slot.py", "tools/test_flash_tools.py"):
         run([sys.executable, name])
     print(f"PASS: isolated C5VRX-4 integration, {len(cases) + (3 if posix else 1)} C regressions, exhaustive unwrap and source-driven DSP tests")
 
