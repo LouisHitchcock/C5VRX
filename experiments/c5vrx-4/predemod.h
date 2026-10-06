@@ -44,6 +44,39 @@ static inline void predemod_dc_mcells(const uint8_t *s, size_t n, int *i, int *q
     *q = n ? (int)(sq * 500 / (int32_t)n) : 0;
 }
 
+/* Carrier test independent of sync and of receiver DC (review 2026-10-07):
+ * subtract the DC of the whole (time-spread) capture - a carrier rotates
+ * over milliseconds, the receiver DC does not - then compare the envelope
+ * power's mean^2 with its variance. Complex Gaussian noise gives r^2
+ * exponential, ratio 1.00 (x100 = 100); a constant-envelope FM carrier
+ * raises it (Rician: (A^2 + 2s^2)^2 / (4 s^2 (A^2 + s^2)), 1.33 at 0 dB
+ * SNR). Uses cell centres (2v + 1) of the signed Q4 lanes. Returns x100. */
+static inline unsigned predemod_envelope_ratio_x100(const uint8_t *s, size_t n)
+{
+    if (n < 64u) return 0u;
+    int64_t si = 0, sq = 0;
+    for (size_t k = 0; k < n; ++k) {
+        si += 2 * predemod_i(s[k]) + 1;
+        sq += 2 * predemod_q(s[k]) + 1;
+    }
+    /* Means in 1/64 half-cells to keep the second pass integer. */
+    int64_t mi = si * 64 / (int64_t)n, mq = sq * 64 / (int64_t)n;
+    double m1 = 0.0, m2 = 0.0;
+    for (size_t k = 0; k < n; ++k) {
+        double di = (double)((2 * predemod_i(s[k]) + 1) * 64 - mi) / 64.0;
+        double dq = (double)((2 * predemod_q(s[k]) + 1) * 64 - mq) / 64.0;
+        double r2 = di * di + dq * dq;
+        m1 += r2;
+        m2 += r2 * r2;
+    }
+    m1 /= (double)n;
+    m2 /= (double)n;
+    double var = m2 - m1 * m1;
+    if (var <= 0.0) return 9999u;
+    double ratio = m1 * m1 / var * 100.0;
+    return ratio > 9999.0 ? 9999u : (unsigned)(ratio + 0.5);
+}
+
 /* RX DC calibration point used by the pinned libphy for a 5 GHz channel.
  * phy_set_rx_gain_cal_dc() calibrates these seven frequencies when
  * phy_param[0x2a] != 0, otherwise only 2432 MHz (disassembly, IDF 6.0.2

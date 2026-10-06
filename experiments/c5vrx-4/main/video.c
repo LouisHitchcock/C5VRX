@@ -6757,14 +6757,26 @@ static bool predemod_quiet_owner(void)
  * uncorrected DC (~1.1 fine cell) made receiver noise read q 57-65, so the
  * raster never entered and the search that removes that DC never ran. */
 #define DCO_NO_SYNC_US  3000000LL
+/* Envelope test (predemod_envelope_ratio_x100): noise ~100 with or without
+ * receiver DC, a carrier at 0 dB SNR ~146 in the host model. */
+#define DCO_NOISE_RATIO_X100 115u
 static volatile int64_t s_last_idle_sync_us;
-typedef struct { int16_t code[2]; uint8_t valid; } dco_entry_t;
+typedef struct {
+    int16_t code[2];
+    int16_t residual_mcells[2];    /* provenance: DC left at those codes */
+    uint8_t valid;
+} dco_entry_t;
+/* Context identity (review 2026-10-07): codes are reused only under the same
+ * frequency, gain table, IQ lane policy, analog filter and IQ-scale context.
+ * No boot epoch: a valid measurement survives a reboot. */
 typedef struct {
     uint16_t freq;
     uint8_t version, lo, hi;
+    uint8_t band5, lane_mode, iq_scale_sel;
+    int8_t filter_code, filter_skirt;
     dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
 } dco_table_blob_t;
-#define DCO_TABLE_VERSION 1u
+#define DCO_TABLE_VERSION 2u
 static dco_table_blob_t s_dco_tab;
 static int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
@@ -6772,21 +6784,54 @@ static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
 
 static bool s_dco_skip_nvs;   /* stored codes belong to a replaced vendor DC */
+extern unsigned char phy_param[];
+static void dco_context(dco_table_blob_t *t, uint16_t freq, uint8_t lo, uint8_t hi)
+{
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    t->version = DCO_TABLE_VERSION;
+    t->freq = freq;
+    t->lo = lo;
+    t->hi = hi;
+    t->band5 = table && table->band5;
+    t->lane_mode = c5vrx4_fixed_lane();
+    t->iq_scale_sel = phy_param[650];   /* phy_rxiq_scale_set() selector */
+    t->filter_code = (int8_t)phy_rx_lab_filter_code();
+    t->filter_skirt = (int8_t)phy_rx_lab_filter_skirt();
+}
+static bool dco_same_context(const dco_table_blob_t *a, const dco_table_blob_t *b)
+{
+    return a->version == b->version && a->freq == b->freq && a->lo == b->lo && a->hi == b->hi &&
+           a->band5 == b->band5 && a->lane_mode == b->lane_mode && a->iq_scale_sel == b->iq_scale_sel &&
+           a->filter_code == b->filter_code && a->filter_skirt == b->filter_skirt;
+}
 static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
 {
     memset(&s_dco_tab, 0, sizeof(s_dco_tab));
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
+    dco_context(&s_dco_tab, freq, lo, hi);
     dco_table_blob_t saved;
     if (!s_dco_skip_nvs &&
-        c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && saved.version == DCO_TABLE_VERSION &&
-        saved.freq == freq) {
+        c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && dco_same_context(&saved, &s_dco_tab)) {
         s_dco_tab = saved;          /* last measured codes; re-searched when idle */
         ++s_dco_loads;
     }
-    s_dco_tab.version = DCO_TABLE_VERSION;
-    s_dco_tab.freq = freq;
-    s_dco_tab.lo = lo;
-    s_dco_tab.hi = hi;
+    dco_context(&s_dco_tab, freq, lo, hi);
+}
+
+/* Time-spread capture for the carrier test (24 windows, ~6 KB). */
+static uint8_t s_dco_env_buf[24u * RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+static unsigned s_dco_env_ratio;
+static bool dco_capture_noise_like(void)
+{
+    const size_t w = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
+    unsigned got = 0;
+    for (unsigned tries = 0; tries < 72u && got < 24u; ++tries) {
+        vTaskDelay(1);
+        if (rx_probe_copy_completed(s_dco_env_buf + got * w)) ++got;
+    }
+    if (got < 16u) return false;
+    s_dco_env_ratio = predemod_envelope_ratio_x100(s_dco_env_buf, got * w);
+    return s_dco_env_ratio <= DCO_NOISE_RATIO_X100;
 }
 
 static void predemod_dco_service(void)
@@ -6819,7 +6864,7 @@ static void predemod_dco_service(void)
                 int di = a.dc_i - b.dc_i, dq = a.dc_q - b.dc_q;
                 int mag = (abs(a.dc_i) + abs(a.dc_q) + abs(b.dc_i) + abs(b.dc_q)) / 2;
                 int spread = abs(di) + abs(dq);
-                no_carrier = spread <= 200 || spread * 4 <= mag;
+                no_carrier = (spread <= 200 || spread * 4 <= mag) && dco_capture_noise_like();
                 if (!no_carrier) ++s_dco_carrier_refusals;
             }
         }
@@ -6839,11 +6884,17 @@ static void predemod_dco_service(void)
             phy_rx_lab_dco_invalidate();
             rf_set_rx_gain(true, (uint8_t)target);
             vTaskDelay(pdMS_TO_TICKS(20));
-            esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
-            int codes[2];
-            bool found = (result == ESP_OK || result == ESP_FAIL) && phy_rx_lab_dco_codes(codes);
+            phy_rx_lab_dco_result_t res;
+            esp_err_t result = phy_rx_lab_dco_search(lab_dco_measure, lab_dco_quiet, &res);
+            /* Only this search's own measured codes enter the cache; the
+             * rollback status is separate (a correction can measure fine while
+             * work mode does not read back at once). */
+            bool found = res.measured;
+            int codes[2] = {res.codes[0], res.codes[1]};
             if (found) {
-                s_dco_tab.e[target] = (dco_entry_t){{(int16_t)codes[0], (int16_t)codes[1]}, 1u};
+                s_dco_tab.e[target] = (dco_entry_t){
+                    {(int16_t)codes[0], (int16_t)codes[1]},
+                    {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, 1u};
                 s_dco_dirty = true;
             }
             s_dco_found_us[target] = now;   /* also a failed search waits 120 s */
@@ -6915,7 +6966,7 @@ static void lab_run_rx_recal(void)
  * bit 23 - phy_force_rx_gain's fields) with V5's own index, outside a
  * settle. The tuple printed with it is the exact vendor 5 GHz decode. */
 #define GAIN_FORCE_REG 0x600A702Cu
-static uint32_t s_gain_readback_checks, s_gain_readback_mismatch;
+static uint32_t s_gain_readback_checks, s_gain_readback_mismatch, s_gain_rf_word_mismatch;
 static uint32_t s_gain_readback_last;
 static void predemod_gain_readback_service(void)
 {
@@ -6932,6 +6983,16 @@ static void predemod_gain_readback_service(void)
             printf("GAIN_READBACK mismatch reg=0x%08lx forced=%u hw_index=%u v5_index=%u\n",
                    (unsigned long)reg, forced, index, s_current_gain);
     }
+    /* The PBUS RF control word must carry the vendor tuple's RF code (not
+     * held: in debug mode it is our re-asserted copy). */
+    uint16_t w[3];
+    arc_gain_tuple_t t;
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    if (!phy_rx_lab_dco_held() && table && table->band5 && phy_rx_lab_gain_words(w) &&
+        arc_gain_tuple_decode(table, s_current_gain, &t) && w[0] != t.rf_code) {
+        if (++s_gain_rf_word_mismatch <= 5u)
+            printf("GAIN_READBACK rf_word=%u expected_rf=%u gain=%u\n", w[0], t.rf_code, s_current_gain);
+    }
 }
 static void gain_readback_print(void)
 {
@@ -6945,6 +7006,22 @@ static void gain_readback_print(void)
            s_current_gain, ok ? t.rf_code : 0u, ok ? t.bb_code : 0u, ok ? t.fine_code : 0u,
            (unsigned long)(ok ? t.packed_state : 0u), table ? table->band5 : 0u,
            (unsigned long)s_gain_readback_checks, (unsigned long)s_gain_readback_mismatch);
+    uint16_t w[3] = {0, 0, 0}, tr[3][3];
+    uint32_t events = 0;
+    bool words = phy_rx_lab_gain_words(w);
+    phy_rx_lab_gain_trace(tr, &events);
+    printf("GAIN_PBUS words=%u rf=%u bb=%u fine=%u rf_mismatches=%lu hold_trace_events=%lu "
+           "enter=%u/%u/%u debug=%u/%u/%u release=%u/%u/%u dco_held=%u\n",
+           words, w[0], w[1], w[2], (unsigned long)s_gain_rf_word_mismatch, (unsigned long)events,
+           tr[0][0], tr[0][1], tr[0][2], tr[1][0], tr[1][1], tr[1][2], tr[2][0], tr[2][1], tr[2][2],
+           phy_rx_lab_dco_held());
+    /* IQ path state, read-only (review 2026-10-07): phy_param[44] selects the
+     * phy_rxiq_opt() averaging branch, phy_param[650] the phy_rxiq_scale_set()
+     * selector (0x0000 / 0xFA00 / 0x00FA in 0x600A043C[15:0]); 0x600A0438
+     * holds the IQ coefficients. Image rejection itself is a bench item. */
+    printf("IQ_STATE rxiq_opt_flag=%u scale_sel=%u scale_reg=0x%08lx coef_reg=0x%08lx\n",
+           phy_param[44], phy_param[650], (unsigned long)REG_READ(0x600A043Cu),
+           (unsigned long)REG_READ(0x600A0438u));
 }
 
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
@@ -7167,12 +7244,12 @@ static void predemod_correction_print(void)
      * the request, not a correction (external audit, PR #174). */
     printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
            "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
-           "hw_dco_carrier_refusals=%lu "
+           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u "
            "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
            "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
            c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
            (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, (unsigned long)s_dco_carrier_refusals,
-           s_dc_measured[0], s_dc_measured[1],
+           s_dco_env_ratio, s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
            s_sphase_auto_done ? s_sphase_auto_ppm : 0u, sphase_state_name(), s_sphase_scans);

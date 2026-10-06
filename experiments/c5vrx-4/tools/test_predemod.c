@@ -205,6 +205,33 @@ int main(void)
         unsigned none[2] = {0, 0};
         assert(predemod_bw_mode_fit(codes, none, 2, &err) == -1);
     }
+    /* Envelope carrier test: noise ~100 with or without receiver DC (the
+     * DC-deadlock case), a carrier clearly above, also with DC. */
+    {
+        static uint8_t buf[8192];
+        unsigned seed = 7u;
+        double ph = 0.0;
+        for (int mode = 0; mode < 4; ++mode) {
+            for (unsigned k = 0; k < sizeof(buf); ++k) {
+                double u1, u2, g1, g2;
+                seed = seed * 1103515245u + 12345u; u1 = ((seed >> 8) & 0xFFFFFF) / 16777216.0 + 1e-9;
+                seed = seed * 1103515245u + 12345u; u2 = ((seed >> 8) & 0xFFFFFF) / 16777216.0;
+                g1 = sqrt(-2 * log(u1)) * cos(2 * M_PI * u2);
+                g2 = sqrt(-2 * log(u1)) * sin(2 * M_PI * u2);
+                double sigma = 1.6, dc = (mode & 1) ? 1.1 : 0.0, amp = (mode & 2) ? 2.6 : 0.0;
+                ph += 2 * M_PI * (1.5 + 2.0 * sin(k / 300.0)) / 40.0;
+                double I = amp * cos(ph) + sigma * g1 + dc, Q = amp * sin(ph) + sigma * g2 + dc * 0.3;
+                int i = (int)floor(I), q = (int)floor(Q);
+                i = i < -8 ? -8 : i > 7 ? 7 : i;
+                q = q < -8 ? -8 : q > 7 ? 7 : q;
+                buf[k] = (uint8_t)(((i & 15) << 4) | (q & 15));
+            }
+            unsigned r = predemod_envelope_ratio_x100(buf, sizeof(buf));
+            printf("envelope ratio: %s%s -> %u\n", (mode & 2) ? "carrier (0 dB SNR)" : "noise",
+                   (mode & 1) ? " + DC 1.1 cell" : "", r);
+            if (mode & 2) assert(r >= 120u); else assert(r <= 112u);
+        }
+    }
     puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring, DC decision, FFT, noise-width estimate, BW choice and esp-sdr curve/mode fit");
     return 0;
 }

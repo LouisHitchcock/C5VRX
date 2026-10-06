@@ -8,6 +8,7 @@
 #include "freertos/semphr.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 #define PHYBIT(n) (UINT32_C(1) << (n))
@@ -702,6 +703,8 @@ static void dco_apply(int i, int q)
 /* Last search result, RAM only, for the on/off A/B ('6'). */
 static int s_dco_codes[2], s_dco_vendor[2];
 static bool s_dco_valid;
+static bool s_dco_held;   /* tentative: defined with the hold below */
+static void gain_trace(unsigned stage);
 #endif
 
 /* Fixed analog bandwidth state (see phy_rx_lab_filter_set_code). */
@@ -743,12 +746,27 @@ void phy_rx_lab_predemod_status(void)
 esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
                                    void (*observe)(const char *stage))
 {
+    phy_rx_lab_dco_result_t res;
+    return phy_rx_lab_dco_search(measure, observe, &res);
+}
+
+esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(const char *stage),
+                                phy_rx_lab_dco_result_t *res)
+{
+    static uint32_t s_search_id;
+    phy_rx_lab_dco_result_t local;
+    if (!res) res = &local;
+    memset(res, 0, sizeof(*res));
+    res->id = ++s_search_id;
 #ifndef C5VRX_PHY_RX_LAB_PINNED
     (void)measure; (void)observe;
     printf("DCO refused=unverified_PHY_binary\n");
     return ESP_ERR_NOT_SUPPORTED;
 #else
     if (!measure || !observe || rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    /* A new search never reports an earlier search's or a loaded hold's
+     * codes (review 2026-10-07). */
+    if (!s_dco_held) s_dco_valid = false;
     phy_rx_lab_begin("DCO_AB");
     uint16_t live[PBUS_BLOCKS][2];
     for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
@@ -757,6 +775,8 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
     int before[2] = {0, 0};
     bool debug = false;
     if (measure(before)) {
+        res->before_mcells[0] = before[0];
+        res->before_mcells[1] = before[1];
         observe("BASELINE");
         debug = true;
         /* Debug mode stops the work-mode table replay; re-assert every live
@@ -768,17 +788,26 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
         int best[2] = {base[0], base[1]}, best_dc[2] = {before[0], before[1]};
         int di = base[0] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
         int dq = base[1] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
-        int mi[2] = {0, 0}, mq[2] = {0, 0};   /* never used unmeasured */
+        /* Both probes must measure before any Jacobian exists; a missing
+         * measurement goes straight to rollback (review 2026-10-07). */
+        int mi[2] = {0, 0}, mq[2] = {0, 0};
         dco_apply(base[0] + di, base[1]);
         bool ok = measure(mi);
-        dco_apply(base[0], base[1] + dq);
-        ok = ok && measure(mq);
+        if (ok) {
+            dco_apply(base[0], base[1] + dq);
+            ok = measure(mq);
+        }
         dco_apply(base[0], base[1]);
-        float j[4] = {(float)(mi[0] - before[0]) / di, (float)(mq[0] - before[0]) / dq,
-                      (float)(mi[1] - before[1]) / di, (float)(mq[1] - before[1]) / dq};
-        printf("DCO baseline_mcells=%d/%d base=%d/%d jacobian_mcells_per_code=%.1f,%.1f,%.1f,%.1f\n",
-               before[0], before[1], base[0], base[1], (double)j[0], (double)j[1],
-               (double)j[2], (double)j[3]);
+        float j[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        if (ok) {
+            j[0] = (float)(mi[0] - before[0]) / di; j[1] = (float)(mq[0] - before[0]) / dq;
+            j[2] = (float)(mi[1] - before[1]) / di; j[3] = (float)(mq[1] - before[1]) / dq;
+            printf("DCO baseline_mcells=%d/%d base=%d/%d jacobian_mcells_per_code=%.1f,%.1f,%.1f,%.1f\n",
+                   before[0], before[1], base[0], base[1], (double)j[0], (double)j[1],
+                   (double)j[2], (double)j[3]);
+        } else {
+            printf("DCO probe_measurement=missing action=rollback\n");
+        }
         int err[2] = {before[0], before[1]};
         for (unsigned it = 0; ok && it < 4 && dco_cost(best_dc) > DCO_DONE_MCELLS * DCO_DONE_MCELLS; ++it) {
             int sa, sb;
@@ -801,6 +830,9 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
             s_dco_codes[0] = best[0]; s_dco_codes[1] = best[1];
             s_dco_vendor[0] = base[0]; s_dco_vendor[1] = base[1];
             s_dco_valid = true;
+            res->measured = true;
+            res->codes[0] = best[0]; res->codes[1] = best[1];
+            res->residual_mcells[0] = best_dc[0]; res->residual_mcells[1] = best_dc[1];
             printf("DCO corrected codes=%d/%d mcells=%d/%d before=%d/%d persistent=0\n",
                    best[0], best[1], best_dc[0], best_dc[1], before[0], before[1]);
             observe("CORRECTED");
@@ -824,7 +856,9 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
                 restored = false;
             }
         }
-    printf("DCO restore_verified=%u\n", restored);
+    printf("DCO restore_verified=%u search=%lu measured=%u\n", restored,
+           (unsigned long)res->id, res->measured);
+    res->rolled_back = restored;
     if (restored) observe("RESTORED");
     phy_rx_lab_end();
     return restored ? result : ESP_FAIL;
@@ -850,6 +884,7 @@ esp_err_t phy_rx_lab_dco_set(bool on)
     if (rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
     transaction_take();
     if (on && !s_dco_held) {
+        gain_trace(0u);
         uint16_t live[PBUS_BLOCKS][2];
         for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
             for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
@@ -858,6 +893,7 @@ esp_err_t phy_rx_lab_dco_set(bool on)
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         dco_apply(s_dco_codes[0], s_dco_codes[1]);
         s_dco_held = true;
+        gain_trace(1u);
     } else if (!on && s_dco_held) {
         pbus_workmode_keep_gain();
         s_dco_held = false;
@@ -881,6 +917,7 @@ bool phy_rx_lab_dco_release(void)
     transaction_take();
     pbus_workmode_keep_gain();
     s_dco_held = false;
+    gain_trace(2u);
     transaction_give();
     return true;
 #endif
@@ -905,6 +942,38 @@ void phy_rx_lab_dco_invalidate(void)
 {
 #ifdef C5VRX_PHY_RX_LAB_PINNED
     s_dco_valid = false;
+#endif
+}
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static uint16_t s_gain_trace[3][3];
+static uint32_t s_gain_trace_events;
+static void gain_trace(unsigned stage)
+{
+    if (stage < 3u) (void)phy_rx_lab_gain_words(s_gain_trace[stage]);
+    if (stage == 2u) ++s_gain_trace_events;
+}
+#endif
+bool phy_rx_lab_gain_words(uint16_t w[3])
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)w;
+    return false;
+#else
+    if (!w) return false;
+    w[0] = phy_pbus_rd(8, 1);
+    w[1] = phy_pbus_rd(0, 2);
+    w[2] = phy_pbus_rd(1, 2);
+    return true;
+#endif
+}
+void phy_rx_lab_gain_trace(uint16_t out[3][3], uint32_t *events)
+{
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    if (out) memcpy(out, s_gain_trace, sizeof(s_gain_trace));
+    if (events) *events = s_gain_trace_events;
+#else
+    if (out) memset(out, 0, sizeof(uint16_t) * 9u);
+    if (events) *events = 0;
 #endif
 }
 bool phy_rx_lab_dco_codes(int codes[2])

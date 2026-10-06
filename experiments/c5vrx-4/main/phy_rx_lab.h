@@ -76,7 +76,26 @@ void phy_rx_lab_dco_invalidate(void);
 /* Codes of the last search (false when none), and loading codes found
  * earlier for another gain row before phy_rx_lab_dco_set(true). */
 bool phy_rx_lab_dco_codes(int codes[2]);
+/* Read-only PBUS gain control words (review 2026-10-07; the vendor's
+ * phy_pbus_set_rxgain() at 5 GHz): [0] RF code, block 8 bank 1; [1] BB,
+ * block 0 bank 2; [2] fine, block 1 bank 2. False on an unverified PHY. */
+bool phy_rx_lab_gain_words(uint16_t w[3]);
+/* Snapshots of those words around the DC hold: 0 before debug mode, 1 in
+ * debug mode after re-assert, 2 after release + gain replay. */
+void phy_rx_lab_gain_trace(uint16_t out[3][3], uint32_t *events);
 void phy_rx_lab_dco_load(int code_i, int code_q);
+/* Outcome of one DC-DAC search, independent of any earlier result
+ * (review 2026-10-07): measurement validity and rollback are separate. */
+typedef struct {
+    uint32_t id;            /* search number */
+    bool measured;          /* baseline, both probes and the iterations measured */
+    int codes[2];           /* best codes of THIS search (valid when measured) */
+    int residual_mcells[2]; /* DC at those codes */
+    int before_mcells[2];
+    bool rolled_back;       /* every saved PBUS word read back after rollback */
+} phy_rx_lab_dco_result_t;
+esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(const char *stage),
+                                phy_rx_lab_dco_result_t *res);
 esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
                                    void (*observe)(const char *stage));
 /* BBTOP 0x67 registers 6..13 (RX RC filter capacitors): calibrated baseline,
