@@ -89,7 +89,7 @@ void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
 /* Measured gain map, kept across tracking resets on the same table and
  * persisted in NVS so V5 does not explore blindly after every reset/boot.
  * Powers are relative to each other (Q10); only confident states count. */
-#define DG3_MAP_VERSION 1u
+#define DG3_MAP_VERSION 2u  /* 2: exact vendor 5 GHz tuples (2026-10-06); v1 maps used the 2.4 GHz model */
 typedef struct {
     uint8_t version, max_index;
     uint8_t confidence[DG3_STATES];

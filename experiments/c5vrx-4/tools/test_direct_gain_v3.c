@@ -27,7 +27,7 @@ static int boost_p50(const direct_gain_v3_t *v3, double base)
 static void boost_plant(direct_gain_v3_t *v3)
 {
     for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
-        double db = ((double)g - 40.0) * 0.5;
+        double db = ((double)g - 60.0) * 0.5;
         double r = 1.0;
         for (int k = 0; k < (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); ++k) r *= 1.0023052;
         for (int k = 0; k > (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); --k) r /= 1.0023052;
@@ -63,10 +63,13 @@ static unsigned boost_run(direct_gain_v3_t *v3, double base, int spread, int cli
 
 int main(void)
 {
+    /* The exact vendor 5 GHz table. Scenarios sit in the top RF stage
+     * (G54..G83), where weak signals live: G56 has Fine room up to G59, a
+     * BB boundary lies between G59 and G60. */
     arc_gain_table_t table;
-    arc_gain_table_from_bytes(&table, NULL, 81u);
+    arc_gain_table_from_bytes(&table, NULL, 83u);
     direct_gain_v3_t v3;
-    direct_gain_v3_reset(&v3, &table, 35u, 62u);
+    direct_gain_v3_reset(&v3, &table, 56u, 62u);
 
     uint8_t phase[256] = {0};
     uint8_t raw[256];
@@ -80,7 +83,7 @@ int main(void)
     /* A broad healthy envelope is a strict zero-write zone. */
     for (uint64_t us = 1000u; us < 100000u; us += 1000u) {
         dg3_observation_t good = obs(22, 40, 0, 0, 99, us);
-        assert(direct_gain_v3_tick(&v3, &good) == 35u);
+        assert(direct_gain_v3_tick(&v3, &good) == 56u);
     }
     assert(v3.writes == 0u && v3.state == DG3_HOLD);
 
@@ -88,26 +91,26 @@ int main(void)
      * before a write: single multipath dips no longer move the gain. */
     dg3_observation_t weak = obs(10, 17, 200, 0, 90, 199000u);
     uint8_t next = direct_gain_v3_tick(&v3, &weak);
-    assert(next == 35u && v3.writes == 0u);
+    assert(next == 56u && v3.writes == 0u);
     weak.observed_us += 200u;
     next = direct_gain_v3_tick(&v3, &weak);
-    assert(next != 35u && v3.writes == 1u);
+    assert(next != 56u && v3.writes == 1u);
     /* Learning needs a stable pre-write pair; run the move once more from a
      * stable weak history to exercise it. */
-    direct_gain_v3_reset(&v3, &table, 35u, 62u);
+    direct_gain_v3_reset(&v3, &table, 56u, 62u);
     dg3_observation_t pre = obs(22, 40, 0, 0, 99, 198000u);
-    assert(direct_gain_v3_tick(&v3, &pre) == 35u);          /* in band */
+    assert(direct_gain_v3_tick(&v3, &pre) == 56u);          /* in band */
     weak.observed_us = 199000u;
     weak.p50 = 22; weak.p95 = 40; weak.origin_pm = 0;       /* same as pre */
-    assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* still in band */
+    assert(direct_gain_v3_tick(&v3, &weak) == 56u);          /* still in band */
     weak = obs(10, 17, 200, 0, 90, 199800u);
     v3.last_tracking = obs(10, 17, 200, 0, 90, 199500u);     /* stable weak prior */
-    assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* first window holds */
+    assert(direct_gain_v3_tick(&v3, &weak) == 56u);          /* first window holds */
     weak.observed_us = 200000u;
     next = direct_gain_v3_tick(&v3, &weak);
-    assert(next != 35u && v3.writes == 1u &&
-           v3.tuple[next].rf_stage == v3.tuple[35].rf_stage &&
-           v3.tuple[next].bb_code == v3.tuple[35].bb_code);
+    assert(next != 56u && v3.writes == 1u &&
+           v3.tuple[next].rf_stage == v3.tuple[56].rf_stage &&
+           v3.tuple[next].bb_code == v3.tuple[56].bb_code);
     direct_gain_v3_sync_applied(&v3, next, 200000u);
     /* One stable window after the physical settle guard verifies. */
     dg3_observation_t settled = obs(17, 28, 30, 0, 91, 200600u);
@@ -151,29 +154,29 @@ int main(void)
     dg3_observation_t strong = obs(60, 110, 0, 300, 90, lost.observed_us + 5000u);
     assert(direct_gain_v3_tick(&v3, &strong) < table.max_index);
 
-    /* Measured tuple response wins over numeric index order. G34 is marked
-     * stronger than G35; G33 is the useful measured gain-down destination. */
-    direct_gain_v3_reset(&v3, &table, 35u, 62u);
-    v3.relative_power_q10[34] = 1200u;
-    v3.relative_power_q10[33] = 620u;
-    v3.confidence[34] = v3.confidence[33] = 3u;
+    /* Measured tuple response wins over numeric index order. G55 is marked
+     * stronger than G56; G54 is the useful measured gain-down destination. */
+    direct_gain_v3_reset(&v3, &table, 56u, 62u);
+    v3.relative_power_q10[55] = 1200u;
+    v3.relative_power_q10[54] = 620u;
+    v3.confidence[55] = v3.confidence[54] = 3u;
     dg3_observation_t high = obs(41, 55, 0, 0, 95, 600000u) /* severe: acts on one window */;
-    assert(direct_gain_v3_tick(&v3, &high) == 33u);          /* direct */
+    assert(direct_gain_v3_tick(&v3, &high) == 54u);          /* direct */
 
     /* At a Fine boundary, a known BB+Fine tuple is selected directly. */
-    direct_gain_v3_reset(&v3, &table, 21u, 62u);
-    assert(v3.tuple[21].rf_stage == v3.tuple[20].rf_stage);
-    assert(v3.tuple[21].bb_code != v3.tuple[20].bb_code);
-    v3.relative_power_q10[20] = 700u;
-    v3.confidence[20] = 3u;
+    direct_gain_v3_reset(&v3, &table, 60u, 62u);
+    assert(v3.tuple[60].rf_stage == v3.tuple[59].rf_stage);
+    assert(v3.tuple[60].bb_code != v3.tuple[59].bb_code);
+    v3.relative_power_q10[59] = 700u;
+    v3.confidence[59] = 3u;
     high.observed_us += 100000u;
-    assert(direct_gain_v3_tick(&v3, &high) == 20u);          /* direct */
+    assert(direct_gain_v3_tick(&v3, &high) == 59u);          /* direct */
     assert(v3.transition == DG3_BB);
 
-    direct_gain_v3_reset(&v3, &table, 35u, 62u);
-    v3.bad_state[34] = 3u;
+    direct_gain_v3_reset(&v3, &table, 56u, 62u);
+    v3.bad_state[55] = 3u;
     high.observed_us += 100000u;
-    assert(direct_gain_v3_tick(&v3, &high) == 34u);          /* old fade ban ignored */
+    assert(direct_gain_v3_tick(&v3, &high) == 55u);          /* old fade ban ignored */
 
     /* A rapidly changing input around the write must not teach a false
      * receiver gain ratio, even if the post-write envelope stabilizes. */
@@ -366,12 +369,12 @@ int main(void)
     {
         uint64_t t = 90000000u;
         /* Disabled: a strong tight ring at P50 ~22 is never boosted. */
-        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
         boost_plant(&v3);
         assert(boost_run(&v3, 22.0, 4, 0, 90, 2000u, &t) == 0u && !v3.boost);
 
         /* Enabled: 20 ms of strong, tight HOLD, then one move into 30..46. */
-        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
         boost_plant(&v3);
         direct_gain_v3_enable_boost(&v3, true);
         assert(boost_run(&v3, 22.0, 4, 0, 90, 99u, &t) == 0u && !v3.boost);
@@ -404,13 +407,13 @@ int main(void)
 
         /* Saturation inside the boost takes the emergency path. */
         t += 20000000u;
-        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
         boost_plant(&v3);
         direct_gain_v3_enable_boost(&v3, true);
         boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);
         assert(v3.boost);
         dg3_observation_t sat = obs(80, 110, 0, 300, 90, t += 200u);
-        assert(direct_gain_v3_tick(&v3, &sat) < 40u && !v3.boost && v3.overloads == 1u);
+        assert(direct_gain_v3_tick(&v3, &sat) < 60u && !v3.boost && v3.overloads == 1u);
 
         /* Never entered: a wide ring (noisy), low coherence, rail codes or a
          * P95 that would not fit the boost band. */
@@ -418,7 +421,7 @@ int main(void)
         static const int coh[] = {90, 70, 90, 90};
         static const int clip[] = {0, 0, 5, 0};
         for (unsigned k = 0; k < 4u; ++k) {
-            direct_gain_v3_reset(&v3, &table, 40u, 62u);
+            direct_gain_v3_reset(&v3, &table, 60u, 62u);
             boost_plant(&v3);
             direct_gain_v3_enable_boost(&v3, true);
             double base = k == 3u ? 14.0 : 22.0; /* P95/P50 = 23/14 > 1.35 */
@@ -426,7 +429,7 @@ int main(void)
             assert(!v3.boost && v3.boost_entries == 0u);
         }
         /* Disabling drops an active boost. */
-        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
         boost_plant(&v3);
         direct_gain_v3_enable_boost(&v3, true);
         boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);

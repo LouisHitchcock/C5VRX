@@ -15,8 +15,11 @@ static direct_gain_v2_observation_t obs(int p, int q, int origin, int clip,
 
 int main(void)
 {
+    /* V2 is legacy (inactive in the V3 build); its algorithm is checked on
+     * an explicit 2.4 GHz-shaped table so its stage boundaries stay put. */
     arc_gain_table_t table;
-    arc_gain_table_from_bytes(&table, NULL, 81u);
+    const uint8_t spans[ARC_RX_STAGE_COUNT] = {15, 13, 5, 8, 6, 4, 4, 6, 0};
+    arc_gain_table_from_bytes(&table, spans, 81u);
     direct_gain_v2_t v2;
     direct_gain_v2_reset(&v2, &table, 40u, 62u);
     assert(v2.tuple[40].rf_stage != v2.tuple[42].rf_stage);
