@@ -44,6 +44,7 @@
 #include "predemod.h"
 #include "agc_witness.h"
 #include "idle_raster.h"
+#include "rx_recal.h"
 #include "sync_flywheel.h"
 #endif
 #include "rf.h"
@@ -6758,12 +6759,14 @@ static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves;
 static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
 
+static bool s_dco_skip_nvs;   /* stored codes belong to a replaced vendor DC */
 static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
 {
     memset(&s_dco_tab, 0, sizeof(s_dco_tab));
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     dco_table_blob_t saved;
-    if (c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && saved.version == DCO_TABLE_VERSION &&
+    if (!s_dco_skip_nvs &&
+        c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && saved.version == DCO_TABLE_VERSION &&
         saved.freq == freq) {
         s_dco_tab = saved;          /* last measured codes; re-searched when idle */
         ++s_dco_loads;
@@ -6834,6 +6837,46 @@ static void predemod_dco_service(void)
         phy_rx_lab_dco_load(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]);
         if (phy_rx_lab_dco_set(true) == ESP_OK) ++s_dco_holds;
     }
+}
+
+/* Lab '~': vendor RX DC/IQ calibration at the actual receive frequency
+ * (rx_recal.c, ESPARGOS esp-sdr route verified on C5VRX's PHY pin). The
+ * vendor calibrates 5 GHz DC only up to 5855 MHz and IQ at 5520 MHz; this
+ * measures at the tuned channel instead. Lab only (external research,
+ * 2026-10-07: candidate, no RF dB measured). DC is logged before/after; the
+ * per-gain DC-DAC table is rebuilt because its codes corrected the old
+ * vendor DC. */
+static void lab_run_rx_recal(void)
+{
+    if (!rx_recal_supported()) { printf("RX_RECAL refused=unverified_PHY_binary\n"); return; }
+    if (rf_native_agc_active()) { printf("RX_RECAL refused=native_agc\n"); return; }
+    analog_agc_mode_t saved;
+    if (!predemod_pause("RX_RECAL", &saved)) return;
+    const uint16_t mhz = rf_get_frequency_mhz();
+    const uint8_t gain = s_current_gain;
+    (void)phy_rx_lab_dco_release();
+    vTaskDelay(pdMS_TO_TICKS(30));
+    predemod_window_t w;
+    bool ok0 = predemod_collect(64, &w);
+    int before[2] = {w.dc_i, w.dc_q};
+    phy_rx_lab_begin("rx_recal");
+    int64_t t0 = esp_timer_get_time();
+    rx_recal_run(mhz);
+    int64_t took = esp_timer_get_time() - t0;
+    phy_rx_lab_end();
+    /* Full restore: retune (restore lock, filters, AGC patch, vendor table
+     * capture -> new arc generation) and the gain that was active. */
+    esp_err_t err = rf_set_channel(rf_get_channel_index());
+    rf_set_rx_gain(true, gain);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    bool ok1 = predemod_collect(64, &w);
+    phy_rx_lab_dco_invalidate();
+    s_dco_skip_nvs = true;
+    s_dco_tab.freq = 0;            /* reselect -> re-search every gain */
+    predemod_resume(saved);
+    printf("RX_RECAL mhz=%u gain=%u took_us=%lld restore=%s dc_before_mcells=%d/%d dc_after_mcells=%d/%d "
+           "valid=%u/%u hardware_acceptance=pending\n",
+           mhz, gain, took, esp_err_to_name(err), before[0], before[1], w.dc_i, w.dc_q, ok0, ok1);
 }
 
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
@@ -8298,6 +8341,8 @@ static void console_diag_task(void *arg)
                     lab_run_phy_track();
                 } else if (c == '/') {
                     lab_run_dfilt();
+                } else if (c == '~') {
+                    lab_run_rx_recal();
                 } else if (c == ';') {
                     lab_run_bw20_wide();
                 } else if (c == '!') {
@@ -8669,6 +8714,7 @@ static void console_diag_task(void *arg)
                     printf("  '\"':         phy_param_track_tot(1,0) A/B: temperature-tracked RX recalibration\n");
                     printf("  '/':         Digital RX filter mode 0..15 + other ADC rate A/B: noise width, clicks, exact restore\n");
                     printf("  ';':         BW20 channel setup + analog filter wide (codes 0/8/16) vs BW40: width, noise BW, clicks\n");
+                    printf("  '~':         Vendor RX DC/IQ calibration at the tuned frequency (ESPARGOS route, lab; DC before/after)\n");
                     printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");
