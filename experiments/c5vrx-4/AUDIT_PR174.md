@@ -42,3 +42,15 @@ trees, against `d3af38e`).
 | P2 Blocker sweep, P2 safe CVBS level update, emphasis | **Open (measurement / proven LUT path first)** | — |
 | P3 Offline PLL/FMFB reference | **Open (offline)**: not executable on C5 at 40 MS/s | — |
 | P0 Conducted attenuator baseline | **Open (bench)**: the only way to a measured dB total | — |
+
+## Vendor PBUS / DC-search review (2026-10-07)
+
+| Item | Status |
+|---|---|
+| `phy_pbus_workmode()` (= `phy_pbus_force_mode(0)`) forces gain index 50 for ~2 us and then clears the force bit when `0x600A9C18` bit 1 is set (verified by disassembly) | **Fixed**: every DC release re-forces the gain that was forced (`pbus_workmode_keep_gain`), so no path leaves the receiver unforced. The ~2 us G50 transient remains inside the gain change that triggers a release |
+| DC hold / search re-asserted only PBUS blocks 0..3 in debug mode; the vendor drives 0..10 (5 GHz RF gain in block 8) | **Fixed**: all 11 blocks are saved, re-asserted and verified on rollback |
+| Failed DC search could return codes loaded earlier for another gain | **Fixed**: the result is invalidated before each search; only this search's codes count |
+| DC probe used unmeasured values after a failed measurement | **Fixed**: initialised; they only fed a log line |
+| No-sync DC search could run on a weak carrier below sync detection | **Fixed**: two DC estimates 100 ms apart must agree (a carrier rotates the mean); refusals counted (`hw_dco_carrier_refusals`) |
+| Measured RF gain routine | Not used: 2.4 GHz only in this binary |
+| IQ image leakage under a strong neighbour | **Open (measurement)**: lab `~` recalibrates IQ at the tuned frequency; image rejection still to be measured with a blocker |
