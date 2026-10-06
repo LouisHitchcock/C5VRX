@@ -1,5 +1,12 @@
 /**
- * video.c - Realtime MODEM_DIAG -> PARLIO RX -> 32K ring -> Phase5 TX -> DAC.
+ * video.c - Realtime MODEM_DIAG -> PARLIO RX -> 32K ring -> TX BitScrambler -> DAC.
+ *
+ * C5VRX-4 (this build): the TX program is the three-bundle Phase8 span75
+ * unwrap (STATIC or HISTORY decode), one unique CVBS code per 75 ns emitted
+ * as [D,D,D] at 40 MHz (13.333 MS/s unique); see UNWRAP75.md and
+ * CVBS_OUTPUT.md. The description below is the inherited C5VRX-3 datapath
+ * ([D,D], Phase5 50 ns) this file grew from; the C5VRX-4 constants above
+ * take precedence.
  *
  * Implements the complete production datapath for C5VRX-3:
  *
@@ -3041,10 +3048,14 @@ static void rx_clock_slip(uint32_t us)
 
 #define SPHASE_POSITIONS 9u
 #define SPHASE_SETTLE_TRIES 12u
-static void lab_run_sample_phase_scan(void)
+/* Result of a sampling-phase scan: refused (could not pause), unsettled, or
+ * settled with *final_ppm the glitch rate at the chosen position. */
+typedef enum { SPHASE_SCAN_REFUSED, SPHASE_SCAN_UNSETTLED, SPHASE_SCAN_SETTLED } sphase_scan_t;
+static sphase_scan_t lab_run_sample_phase_scan_result(unsigned *final_ppm)
 {
     analog_agc_mode_t saved_mode;
-    if (!predemod_pause("SPHASE", &saved_mode)) return;
+    if (final_ppm) *final_ppm = UINT32_MAX;
+    if (!predemod_pause("SPHASE", &saved_mode)) return SPHASE_SCAN_REFUSED;
     printf("SPHASE begin rx_div=%lu lane=%u slip_us=1 positions=%u "
            "metric=mid_transition_reads hardware_acceptance=pending\n",
            (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul,
@@ -3060,9 +3071,11 @@ static void lab_run_sample_phase_scan(void)
     }
     /* Positions repeat every three ticks: stop on one near the cleanest seen. */
     bool settled = false;
+    unsigned last_ppm = UINT32_MAX;
     for (unsigned n = 0; best != UINT32_MAX && n < SPHASE_SETTLE_TRIES; ++n) {
         if (!predemod_collect(48, &w)) break;
         unsigned ppm = predemod_ppm(w.glitches, w.samples);
+        last_ppm = ppm;
         unsigned margin = best / 4u > 300u ? best / 4u : 300u;
         if (ppm <= best + margin) { settled = true; break; }
         rx_clock_slip(1);
@@ -3071,7 +3084,10 @@ static void lab_run_sample_phase_scan(void)
     if (w.windows) predemod_print("SPHASE", settled ? "FINAL" : "UNSETTLED", (int)best, &w);
     predemod_resume(saved_mode);
     printf("SPHASE done best_ppm=%u settled=%u persistent=0\n", best, settled);
+    if (final_ppm) *final_ppm = settled ? last_ppm : UINT32_MAX;
+    return settled ? SPHASE_SCAN_SETTLED : SPHASE_SCAN_UNSETTLED;
 }
+static void lab_run_sample_phase_scan(void) { (void)lab_run_sample_phase_scan_result(NULL); }
 
 static bool lab_dco_measure(int dc[2])
 {
@@ -6682,8 +6698,20 @@ static predemod_dc_filter_t s_dc_filter;
 static uint32_t s_dc_filter_epoch, s_dc_evaluations, s_dc_refusals;
 static int s_dc_measured[2];
 static int64_t s_dc_last_write_us;
-static bool s_sphase_auto_done;
+/* Sampling-phase autocheck state (external audit, PR #174: the old check
+ * latched "done" before its scan, even when the scan was refused or never
+ * settled, and never ran when bad sampling itself lowered coherence). It
+ * now latches only on a measured-good phase, retries later, and re-checks
+ * after a retune. */
+typedef enum { SPHASE_UNVERIFIED, SPHASE_CHECKING, SPHASE_SETTLED, SPHASE_FAILED } sphase_state_t;
+#define SPHASE_RETRY_US    10000000LL
+#define SPHASE_MAX_SCANS   5u
+static sphase_state_t s_sphase_state = SPHASE_UNVERIFIED;
+static bool s_sphase_auto_done;     /* = SETTLED, kept for the status line */
 static unsigned s_sphase_auto_ppm = UINT32_MAX;
+static unsigned s_sphase_scans;
+static int64_t s_sphase_next_us;
+static uint16_t s_sphase_freq;
 
 static bool predemod_quiet_owner(void)
 {
@@ -6692,20 +6720,51 @@ static bool predemod_quiet_owner(void)
            s_rx_profile == RX_PROFILE_DIRECT_GAIN && s_agc_mode == ANALOG_AGC_ACTIVE;
 }
 
-/* Range-edge hardware DC correction. Board 2026-10-06 (G81/82, VTX off):
- * receiver DC 0.2-2.0 fine cells, as large as the noise (P50 ~4) and up to
- * half a threshold-level carrier, so the phase is measured around a shifted
- * origin exactly where FM collapses. The ESPARGOS esp-sdr DC-DAC search
- * (ESPsoup C5 port; phy_rx_lab_run_dco_probe) runs at maximum gain without a
- * carrier (idle raster), and its result is held in PBUS debug mode only
- * while V5 stays at maximum gain; rf.c releases it before every gain write
- * and PHY restore. Re-searched after 120 s or a retune (the DC drifted
- * between 0.2 and 2 cells over the session). Direct V5 only. */
+/* Hardware DC correction per gain row (2026-10-06). Board, G81/82 VTX off:
+ * receiver DC 0.2-2.0 fine cells, as large as the noise at maximum gain; the
+ * external audit's model puts 1 cell at ~1.4 dB and 2 cells at ~4.3 dB of
+ * extra C/N for a low picture target. Every vendor gain row carries its own
+ * DC calibration, and the vendor calibrates 5 GHz only up to 5855 MHz.
+ *
+ * The ESPARGOS esp-sdr DC-DAC search (ESPsoup C5 port; phy_rx_lab_run_dco_
+ * probe) runs without a carrier (idle raster) for every gain of the top RF
+ * stage (where weak signals live; maximum first, ~0.6 s each, one per
+ * service tick), re-searches each after 120 s, and is stored per channel
+ * in NVS (c5vrx4/dco_tab) so a boot with the VTX already on starts from the
+ * last measured codes. The codes of the current gain are held in PBUS debug
+ * mode; rf.c releases them before every gain write and PHY restore and this
+ * service re-holds the new gain's codes. Direct V5 only. A carrier cannot
+ * be searched on; thermal drift while the VTX stays on is not tracked. */
 #define DCO_RESEARCH_US 120000000LL
-static uint16_t s_dco_freq;
-static int64_t s_dco_found_us;
-static uint32_t s_dco_searches, s_dco_holds;
+typedef struct { int16_t code[2]; uint8_t valid; } dco_entry_t;
+typedef struct {
+    uint16_t freq;
+    uint8_t version, lo, hi;
+    dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
+} dco_table_blob_t;
+#define DCO_TABLE_VERSION 1u
+static dco_table_blob_t s_dco_tab;
+static int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
+static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves;
+static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
+
+static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
+{
+    memset(&s_dco_tab, 0, sizeof(s_dco_tab));
+    memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
+    dco_table_blob_t saved;
+    if (c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && saved.version == DCO_TABLE_VERSION &&
+        saved.freq == freq) {
+        s_dco_tab = saved;          /* last measured codes; re-searched when idle */
+        ++s_dco_loads;
+    }
+    s_dco_tab.version = DCO_TABLE_VERSION;
+    s_dco_tab.freq = freq;
+    s_dco_tab.lo = lo;
+    s_dco_tab.hi = hi;
+}
+
 static void predemod_dco_service(void)
 {
     if (!c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
@@ -6714,28 +6773,55 @@ static void predemod_dco_service(void)
         phy_rx_lab_busy() || (s_menu_active && !IDLE_RASTER_ACTIVE())) return;
     const arc_gain_table_t *table = rf_get_arc_gain_table();
     if (!table) return;
-    const bool at_max = s_current_gain == table->max_index;
     const uint16_t freq = rf_get_frequency_mhz();
-    if (freq != s_dco_freq) { phy_rx_lab_dco_invalidate(); s_dco_freq = freq; }
-    const int64_t now = esp_timer_get_time();
-    const bool stale = !phy_rx_lab_dco_valid() || now - s_dco_found_us > DCO_RESEARCH_US;
-    if (at_max && stale && IDLE_RASTER_ACTIVE()) {
-        analog_agc_mode_t saved;
-        if (!predemod_pause("DCO_AUTO", &saved)) return;
+    const uint8_t lo = rf_get_arc_survival_gain(), hi = table->max_index;
+    if (freq != s_dco_tab.freq || lo != s_dco_tab.lo || hi != s_dco_tab.hi) {
         (void)phy_rx_lab_dco_release();
-        esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
-        rf_set_rx_gain(true, s_current_gain); /* work mode replays the row on a write */
-        predemod_resume(saved);
-        ++s_dco_searches;
-        if (result == ESP_OK || phy_rx_lab_dco_valid()) s_dco_found_us = now;
-        printf("DCO_AUTO search=%lu result=%d valid=%u freq=%u gain=%u\n",
-               (unsigned long)s_dco_searches, (int)result, phy_rx_lab_dco_valid(), freq,
-               s_current_gain);
-        return;
+        phy_rx_lab_dco_invalidate();
+        dco_table_select(freq, lo, hi);
     }
-    if (at_max && phy_rx_lab_dco_valid() && !phy_rx_lab_dco_held() &&
-        s_direct_gain_v3.state != DG3_SETTLE && phy_rx_lab_dco_set(true) == ESP_OK)
-        ++s_dco_holds;
+    const int64_t now = esp_timer_get_time();
+    if (IDLE_RASTER_ACTIVE()) {
+        /* Next stale gain, maximum first. */
+        int target = -1;
+        for (int g = hi; g >= (int)lo; --g)
+            if (!s_dco_found_us[g] || now - s_dco_found_us[g] > DCO_RESEARCH_US) { target = g; break; }
+        if (target >= 0) {
+            analog_agc_mode_t saved;
+            if (!predemod_pause("DCO_AUTO", &saved)) return;
+            const uint8_t restore = s_current_gain;
+            (void)phy_rx_lab_dco_release();
+            rf_set_rx_gain(true, (uint8_t)target);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
+            int codes[2];
+            bool found = (result == ESP_OK || result == ESP_FAIL) && phy_rx_lab_dco_codes(codes);
+            if (found) {
+                s_dco_tab.e[target] = (dco_entry_t){{(int16_t)codes[0], (int16_t)codes[1]}, 1u};
+                s_dco_dirty = true;
+            }
+            s_dco_found_us[target] = now;   /* also a failed search waits 120 s */
+            phy_rx_lab_dco_invalidate();
+            rf_set_rx_gain(true, restore);  /* work mode replays the row on a write */
+            predemod_resume(saved);
+            ++s_dco_searches;
+            printf("DCO_AUTO search=%lu gain=%d result=%d found=%u codes=%d/%d freq=%u\n",
+                   (unsigned long)s_dco_searches, target, (int)result, found,
+                   found ? codes[0] : -1, found ? codes[1] : -1, freq);
+            return;
+        }
+        /* The whole stage is fresh: persist once (flash wear: on change only). */
+        if (s_dco_dirty && c5vrx4_blob_store("dco_tab", &s_dco_tab, sizeof(s_dco_tab))) {
+            s_dco_dirty = false;
+            ++s_dco_saves;
+        }
+    }
+    const uint8_t g = s_current_gain;
+    if (g >= lo && g <= hi && s_dco_tab.e[g].valid && !phy_rx_lab_dco_held() &&
+        s_direct_gain_v3.state != DG3_SETTLE) {
+        phy_rx_lab_dco_load(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]);
+        if (phy_rx_lab_dco_set(true) == ESP_OK) ++s_dco_holds;
+    }
 }
 
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
@@ -6801,18 +6887,59 @@ static void predemod_dc_service(void)
            next[0], next[1], rf_get_iq_lanes(), s_current_gain, measured[0], measured[1]);
 }
 
+static const char *sphase_state_name(void)
+{
+    return s_sphase_state == SPHASE_SETTLED ? "settled" : s_sphase_state == SPHASE_CHECKING ? "checking" :
+           s_sphase_state == SPHASE_FAILED ? "failed" : "unverified";
+}
+
 static void predemod_sphase_autocheck(void)
 {
-    if (s_sphase_auto_done || !c5vrx4_sphase_auto_enabled() || !predemod_quiet_owner()) return;
-    if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 80) return;
+    if (!c5vrx4_sphase_auto_enabled() || !predemod_quiet_owner()) return;
+    const uint16_t freq = rf_get_frequency_mhz();
+    if (freq != s_sphase_freq) {           /* re-check after a retune (cheap unless bad) */
+        s_sphase_freq = freq;
+        if (s_sphase_state == SPHASE_SETTLED) s_sphase_state = SPHASE_UNVERIFIED;
+        s_sphase_auto_done = false;
+    }
+    if (s_sphase_state == SPHASE_SETTLED) return;
+    const int64_t now = esp_timer_get_time();
+    if (now < s_sphase_next_us) return;
+    /* A usable carrier: V5 holding with the envelope in band. Coherence is
+     * only required to be moderate - bad sampling itself lowers it. */
+    if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 60 ||
+        s_v3_p50 < 13 || s_v3_p50 > 46 || IDLE_RASTER_ACTIVE()) return;
     predemod_window_t w;
     if (!predemod_collect(48, &w)) return;
-    s_sphase_auto_done = true;
     s_sphase_auto_ppm = predemod_ppm(w.glitches, w.samples);
-    printf("SPHASE auto_check ppm=%u threshold=%u coherence=%d action=%s\n",
-           s_sphase_auto_ppm, SPHASE_AUTO_PPM, s_v3_coherence,
-           s_sphase_auto_ppm >= SPHASE_AUTO_PPM ? "scan" : "none");
-    if (s_sphase_auto_ppm >= SPHASE_AUTO_PPM) lab_run_sample_phase_scan();
+    bool good = s_sphase_auto_ppm < SPHASE_AUTO_PPM;
+    printf("SPHASE auto_check ppm=%u threshold=%u coherence=%d state=%s action=%s scans=%u\n",
+           s_sphase_auto_ppm, SPHASE_AUTO_PPM, s_v3_coherence, sphase_state_name(),
+           good ? "none" : s_sphase_scans < SPHASE_MAX_SCANS ? "scan" : "give_up", s_sphase_scans);
+    if (good) {
+        s_sphase_state = SPHASE_SETTLED;
+        s_sphase_auto_done = true;
+        return;
+    }
+    if (s_sphase_scans >= SPHASE_MAX_SCANS) {
+        /* No endless slips during flight video. */
+        s_sphase_state = SPHASE_FAILED;
+        s_sphase_next_us = now + 6 * SPHASE_RETRY_US;   /* only re-measure now and then */
+        return;
+    }
+    s_sphase_state = SPHASE_CHECKING;
+    ++s_sphase_scans;
+    unsigned final_ppm;
+    sphase_scan_t r = lab_run_sample_phase_scan_result(&final_ppm);
+    if (r == SPHASE_SCAN_SETTLED && final_ppm < SPHASE_AUTO_PPM) {
+        s_sphase_state = SPHASE_SETTLED;
+        s_sphase_auto_done = true;
+        s_sphase_auto_ppm = final_ppm;
+    } else {
+        s_sphase_state = s_sphase_scans >= SPHASE_MAX_SCANS ? SPHASE_FAILED : SPHASE_UNVERIFIED;
+        s_sphase_next_us = esp_timer_get_time() + SPHASE_RETRY_US;
+    }
+    printf("SPHASE auto_result scan=%d final_ppm=%u state=%s\n", (int)r, final_ppm, sphase_state_name());
 }
 
 /* First-boot fixed-BW calibration: only while uncalibrated, after 3 s of
@@ -6896,12 +7023,17 @@ static void predemod_task(void *arg)
 
 static void predemod_correction_print(void)
 {
-    printf("PREDEMOD_AUTO dc_recenter=%u measured_mcells=%d/%d evaluations=%lu refusals=%lu "
-           "sphase_auto=%u sphase_checked=%u sphase_ppm=%u\n",
-           c5vrx4_dc_recenter_enabled(), s_dc_measured[0], s_dc_measured[1],
+    /* The digital recentring is disabled in code (live LUT refused): report
+     * the request, not a correction (external audit, PR #174). */
+    printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
+           "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
+           "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
+           "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
+           c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
+           (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
-           s_sphase_auto_done ? s_sphase_auto_ppm : 0u);
+           s_sphase_auto_done ? s_sphase_auto_ppm : 0u, sphase_state_name(), s_sphase_scans);
     c5v4_decoder_print();
 }
 #endif
@@ -6980,8 +7112,10 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
  * Absolute byte positions use the timer as wrap disambiguator (40 bytes/us).
  * Internal SRAM is not cached on the C5, so no cache maintenance. The work
  * per wake is budgeted from the learned cost per evaluation. */
-/* Tracking a noisy line costs ~64 evaluations, 3.2 lines arrive per run. */
-#define SFW_MIN_BUDGET 256u
+/* Maintenance (no fade) needs ~32 evaluations per run, a fade window ~200;
+ * 128 at ~360 ns stays inside the 50 us target (external audit: a 256 floor
+ * could take ~87 us). Short of budget it coasts lines without writing. */
+#define SFW_MIN_BUDGET 128u
 #define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 static sync_flywheel_t s_sfw;
 static volatile bool s_sfw_running;
@@ -8783,8 +8917,8 @@ esp_err_t video_start(void)
         " Telemetry: Live GDMA ring pointer tracking (rx_ch=%d, tx_ch=%d)\n"
         " Buffer:  32,768 bytes cyclic ring (Zero-EOF patched: RX=%d TX=%d)\n"
         " RX:      40 MS/s POS edge, 32,768 bytes pure HW cyclic GDMA\n"
-        " Demod:   Phase5 50ns / P%u / G%u / current-minus-previous\n"
-        " TX:      40 MHz [D,D] / eof=downstream / tail=0\n"
+        " Demod:   C5VRX-4 Phase8 span75 unwrap (inherited fields P%u / G%u)\n"
+        " TX:      40 MHz [D,D,D] = 13.333 MS/s unique / eof=downstream / tail=0\n"
         " Lock:    GDMA ISRs disabled, RX EOF disabled, suc_eof=0 cleared\n"
         " CPU:     done (hardware runs in unbroken infinite loop)\n"
         "=======================================================\n",

@@ -73,6 +73,10 @@ bool phy_rx_lab_dco_release(void);
 bool phy_rx_lab_dco_held(void);
 bool phy_rx_lab_dco_valid(void);
 void phy_rx_lab_dco_invalidate(void);
+/* Codes of the last search (false when none), and loading codes found
+ * earlier for another gain row before phy_rx_lab_dco_set(true). */
+bool phy_rx_lab_dco_codes(int codes[2]);
+void phy_rx_lab_dco_load(int code_i, int code_q);
 esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
                                    void (*observe)(const char *stage));
 /* BBTOP 0x67 registers 6..13 (RX RC filter capacitors): calibrated baseline,

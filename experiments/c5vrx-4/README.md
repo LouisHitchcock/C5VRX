@@ -30,7 +30,8 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   Native AGC remains a separate opt-in gain owner.
 - Fixed fine IQ lanes by default: ADC bits {9,7,6,5} on I and Q (step 32
   codes, signed window +-256), selected before PARLIO RX starts and never
-  switched at runtime, for every gain owner. Analog gain does all amplitude
+  switched at runtime, for Direct V5 (native AGC uses the coarse set
+  {9,8,7,6} for its whole session). Analog gain does all amplitude
   tracking; its 13..32 P50 band is ~3.6-5.7 fine cells (~115-180 codes). With
   the measured ~35-code receiver noise at maximum gain, one fine step is close
   to one noise sigma: finer lanes add no phase information there but fold

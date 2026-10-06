@@ -148,7 +148,7 @@ void c5v4_decoder_dc(int dc[2])
 void c5v4_decoder_print(void)
 {
     c5v4_level_hw_lock();
-    printf("C5V4_DC_RECENTER enabled=%u lut_verified=%u blocked=%u applied_mcells=%d/%d "
+    printf("C5V4_DC_RECENTER requested=%u state=blocked_live_lut lut_verified=%u blocked=%u applied_mcells=%d/%d "
            "updates=%lu faults=%lu lut_retries=%lu decode=%s pre_q4_correction=0\n",
            c5vrx4_dc_recenter_enabled(), lut_verified, decoder_blocked, decoder_dc[0], decoder_dc[1],
            (unsigned long)decoder_updates, (unsigned long)decoder_faults, (unsigned long)retries,
@@ -215,10 +215,13 @@ void c5v4_level_hw_transport_fault(void)
 void c5v4_level_hw_print(void)
 {
     c5v4_level_hw_lock();
-    printf("C5V4_LEVEL requested=%u ready=%u experimental=1 updates=%lu writes=%lu faults=%lu "
+    /* Observes only: live LUT writes are refused (random read-back while the
+     * engine runs), so the output is not regulated - say so. */
+    printf("C5V4_LEVEL requested=%u ready=%u state=%s applied=0 reason=live_lut_refused "
+           "experimental=1 updates=%lu writes=%lu faults=%lu "
            "good=%u refused=%u span_bins=%d blank_bins=%d target_sync_mv=10 target_depth_mv=%u "
            "period_us=20000 recovery_period_us=5000 recovery_us=100000 slew_uv=32000 blocked=%u loss=hold sync_regeneration=0 atomic_update=0\n",
-           c5vrx4_level_enabled(), ready, (unsigned long)servo.updates,
+           c5vrx4_level_enabled(), ready, servo.updates ? "observing" : "idle", (unsigned long)servo.updates,
            (unsigned long)writes, (unsigned long)faults, servo.good, servo.refusals,
            servo.span, servo.blank, servo.target_depth_mv, blocked);
     c5v4_level_hw_unlock();

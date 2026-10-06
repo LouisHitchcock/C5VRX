@@ -886,6 +886,30 @@ void phy_rx_lab_dco_invalidate(void)
     s_dco_valid = false;
 #endif
 }
+bool phy_rx_lab_dco_codes(int codes[2])
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)codes;
+    return false;
+#else
+    if (!s_dco_valid || !codes) return false;
+    codes[0] = s_dco_codes[0];
+    codes[1] = s_dco_codes[1];
+    return true;
+#endif
+}
+void phy_rx_lab_dco_load(int code_i, int code_q)
+{
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    /* Only while not held: a held pair is in the hardware already. */
+    if (s_dco_held) return;
+    s_dco_codes[0] = code_i < 0 ? 0 : code_i > 511 ? 511 : code_i;
+    s_dco_codes[1] = code_q < 0 ? 0 : code_q > 511 ? 511 : code_q;
+    s_dco_valid = true;
+#else
+    (void)code_i; (void)code_q;
+#endif
+}
 
 esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int offset))
 {
