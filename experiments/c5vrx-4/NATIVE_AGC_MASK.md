@@ -34,13 +34,16 @@ samples are hidden.
    - For each state bit DIAG[28+n], the eight PARLIO lanes capture DIAG[20..26]
      (gain index) plus that bit, six 4092-sample windows each (~50 ms garbage
      video).
-   - Gain changes closer than 4 us form one acquisition. The bit that separates
-     acquisition samples from trapped samples (guard and settle zones excluded)
-     is chosen if:
-     - separation is at least 700 per mille;
-     - it is active on at least 80 % of acquisition samples;
-     - it is active on at most 5 % of trapped samples;
+   - Gain changes closer than 4 us form one acquisition. Among the bits and
+     polarities active on at most 5 % of trapped samples (guard and settle
+     zones excluded), the one covering most acquisition samples is chosen if:
+     - it is active on more than 50 % of acquisition samples;
      - at least 8 acquisitions were seen.
+   - Board, 2026-10-06 (A1, VTX near): 13.2 % of samples in 3.1 us walks, walk
+     minimum G19, trapped G32..44. DIAG[31] inverted separates widest (95 % of
+     walks) but is set on 20 % of trapped samples; DIAG[30] covers 57.5 % of
+     walks and is never set while trapped. The first rule (largest separation,
+     then >= 80 % coverage) therefore picked DIAG[31] and stored nothing.
    - The result goes to NVS `c5vrx4/agc_flag`, and the board reboots to apply
      it.
    - The report also gives the acquisition rate and duration, the lowest gain

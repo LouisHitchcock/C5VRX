@@ -62,6 +62,24 @@ int main(void)
             agc_witness_add(&w, s, sizeof(s), bit);
         }
     assert(!agc_witness_choose(&w, &r) && r.active_trapped_pm > 50);
+    /* Board 2026-10-06: the widest-separating bit is also set on 20 % of
+     * trapped samples; a narrower one covers ~60 % of each walk and is never
+     * set while trapped. Safety wins over separation. */
+    agc_witness_init(&w);
+    for (unsigned bit = 0; bit < 4; ++bit)
+        for (unsigned window = 0; window < 4; ++window) {
+            capture(s, bit, bit == 3 ? 3 : 2, 0, 4, window * 333u);
+            for (unsigned k = 0; k < sizeof(s); ++k) {
+                unsigned phase = (k + window * 333u) % 1200u;
+                int walking = phase >= 600u && phase < 600u + 4u * 24u;
+                if (bit == 3 && !walking && k % 5u == 0u) s[k] |= 0x80u;      /* 20 % trapped */
+                if (bit == 2 && walking && phase >= 600u + 58u) s[k] &= 0x7fu; /* ~60 % cover */
+            }
+            agc_witness_add(&w, s, sizeof(s), bit);
+        }
+    assert(agc_witness_choose(&w, &r));
+    assert(r.bit == 2 && !r.invert && r.active_trapped_pm == 0 &&
+           r.active_acq_pm >= 500 && r.active_acq_pm < 800);
     /* Forced gain (the PR #122 probe): no changes, no decision. */
     agc_witness_init(&w);
     memset(s, 52 | 0x80, sizeof(s));

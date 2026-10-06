@@ -102,22 +102,39 @@ static inline void agc_witness_add(agc_witness_t *w, const uint8_t *s, size_t n,
     }
 }
 
-/* Best-separating bit: >= 700 per mille, >= 8 acquisitions, flag active on
- * >= 80 % of acquisition samples and <= 5 % of trapped samples. */
+/* Safety first: a flag active on trapped samples would freeze good picture,
+ * so only a bit/polarity active on <= 5 % of them qualifies; among those the
+ * one covering most acquisition samples wins. Without a qualifying flag the
+ * best-separating one is reported (refused). On the C5 the widest-separating
+ * flag (DIAG[31] inverted: 95 % of walks, 20 % of trapped) is unusable while
+ * DIAG[30] (58 % of walks, 0 % trapped) is the clean one (board, 2026-10-06),
+ * so separation alone picked the wrong bit. Every concealed walk sample is a
+ * gain; > 50 % coverage is required so a sparse coincidental bit is not used. */
+#define AGC_WITNESS_MAX_TRAPPED_PM 50u
+#define AGC_WITNESS_MIN_COVER_PM 500u
 static inline int agc_witness_choose(const agc_witness_t *w, agc_witness_result_t *r)
 {
     *r = (agc_witness_result_t){.bit = -1};
-    unsigned best = 0;
+    unsigned best = 0, best_cover = 0;
+    int safe = 0;
     for (unsigned bit = 0; bit < 4u; ++bit) {
         if (!w->acq[bit] || !w->trapped[bit]) continue;
         unsigned pa = (unsigned)((uint64_t)w->ones_acq[bit] * 1000u / w->acq[bit]);
         unsigned pt = (unsigned)((uint64_t)w->ones_trapped[bit] * 1000u / w->trapped[bit]);
-        unsigned sep = pa > pt ? pa - pt : pt - pa;
-        if (sep > best) {
-            best = sep;
-            r->bit = (int)bit;
-            r->invert = pa < pt;
-            r->separation_pm = sep;
+        for (int invert = 0; invert < 2; ++invert) {
+            unsigned cover = invert ? 1000u - pa : pa;
+            unsigned leak = invert ? 1000u - pt : pt;
+            if (cover <= leak) continue;
+            unsigned sep = cover - leak;
+            int is_safe = leak <= AGC_WITNESS_MAX_TRAPPED_PM;
+            if (is_safe ? (!safe || cover > best_cover) : (!safe && sep > best)) {
+                safe |= is_safe;
+                best = sep;
+                best_cover = cover;
+                r->bit = (int)bit;
+                r->invert = invert;
+                r->separation_pm = sep;
+            }
         }
     }
     if (w->samples[0]) {
@@ -143,8 +160,7 @@ static inline int agc_witness_choose(const agc_witness_t *w, agc_witness_result_
             r->lag_samples = (unsigned)(w->lag_sum[r->bit][pol] / (int32_t)c);
         }
     }
-    /* A flag active on trapped samples would freeze good picture: require
-     * it almost never set there and almost always set while walking. */
-    return r->bit >= 0 && best >= 700u && w->acquisitions >= 8u &&
-           r->active_trapped_pm <= 50u && r->active_acq_pm >= 800u;
+    return r->bit >= 0 && safe && w->acquisitions >= 8u &&
+           r->active_trapped_pm <= AGC_WITNESS_MAX_TRAPPED_PM &&
+           r->active_acq_pm >= AGC_WITNESS_MIN_COVER_PM;
 }
