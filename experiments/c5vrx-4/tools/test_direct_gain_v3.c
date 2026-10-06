@@ -424,6 +424,27 @@ int main(void)
         assert(!v3.boost);
     }
 
+    /* Gray zone (neither carrier() nor no_carrier): a weak, not yet
+     * recognised carrier must climb, not hold (it used to stay at G52). */
+    {
+        uint64_t t = 30000000u;
+        direct_gain_v3_reset(&v3, &table, 52u, 62u);
+        uint8_t start = v3.current_gain;
+        for (unsigned k = 0; k < 2000u; ++k) {
+            dg3_observation_t gray = obs(7, 13, 300, 0, 30, t += 5000u);
+            uint8_t g = direct_gain_v3_tick(&v3, &gray);
+            if (v3.state == DG3_SETTLE && v3.write_us == t) direct_gain_v3_sync_applied(&v3, g, t);
+        }
+        assert(v3.current_gain > start && v3.writes > 0u);
+        direct_gain_v3_reset(&v3, &table, 52u, 62u);
+        for (unsigned k = 0; k < 2000u; ++k) {
+            dg3_observation_t edge = obs(3, 6, 400, 0, 20, t += 5000u);
+            uint8_t g = direct_gain_v3_tick(&v3, &edge);
+            if (v3.state == DG3_SETTLE && v3.write_us == t) direct_gain_v3_sync_applied(&v3, g, t);
+        }
+        assert(v3.current_gain > 52u);
+    }
+
     puts("direct gain v3 core: OK");
     return 0;
 }

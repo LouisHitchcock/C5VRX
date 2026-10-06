@@ -783,13 +783,18 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
      * it reaches the grainy/collapsing region, not after noise appeared. */
     bool high = o->p50 > band->hi || o->p90 >= band->high_p90 || o->p95 > band->high_p95 ||
                 o->clip_pm >= band->clip_pm;
-    bool weak = o->p50 < band->lo && carrier(o);
+    /* A starved envelope climbs whether or not the carrier is recognised
+     * yet: recognition (coherence >= 55) needs the gain this climb gives.
+     * Between carrier() and no_carrier the gain used to hold (P50 7 /
+     * coherence 30 stayed at G52 with zero writes), a range-edge trap. A
+     * healthy envelope with poor phase (multipath) still does not pump. */
+    bool weak = o->p50 < band->lo;
     /* Schmitt bands retain the previous direction through small envelope
      * fluctuations; they release only after crossing the inner boundary. */
     if (v3->last_direction == 2 &&
         (o->p50 > band->schmitt_hi || o->p90 > band->schmitt_p90 ||
          o->p95 > band->schmitt_p95)) high = true;
-    if (v3->last_direction == 1 && o->p50 < band->schmitt_lo && carrier(o)) weak = true;
+    if (v3->last_direction == 1 && o->p50 < band->schmitt_lo) weak = true;
     if (high) {
         v3->weak_windows = 0;
         v3->last_direction = 2;
