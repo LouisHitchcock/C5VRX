@@ -165,6 +165,28 @@ analyzer; startup refuses allocation failure. The separate adaptive 5/20-ms leve
 snapshot; J capture also has a 16-KiB stack. Heap/stack margin under menu and
 concurrent capture still needs hardware observation; T reports level-worker margins.
 
+### Flashing a running board (no BOOT button)
+
+esptool's USB reset cannot reach the ROM loader while C5VRX-4 runs: the
+RTS/DTR reset leaves the forced modem clocks and the always-on dump writer
+running into the loader, whose USB download loop then stops answering
+("Connecting...." then "Write timeout"). Console key `` ` `` makes the
+firmware stop the writer and Wi-Fi, request a download boot and restart
+cleanly, after which esptool connects without a reset:
+
+```sh
+python tools/enter_download.py COM33
+esptool --port COM33 --before no-reset --after watchdog-reset write-flash ...
+```
+
+`--after watchdog-reset` starts the new image (an RTS hard reset returns a
+download-booted C5 to the loader). PlatformIO users can add
+`extra_scripts = pre:tools/pio_enter_download.py` and
+`upload_flags = --before=no-reset` to do both around every upload. Images
+without the key, or a wedged board, still need manual download mode (hold
+BOOT, tap RESET). `tools/console_soak.py` measures USB console health (write
+timeouts, reply latency, heartbeat gaps).
+
 [INTEGRATION.md](INTEGRATION.md) records PR/issue disposition and acceptance.
 [INTEGRATION_SOURCES.json](INTEGRATION_SOURCES.json) pins donor revisions.
 [CVBS_OUTPUT.md](CVBS_OUTPUT.md) explains the loaded transfer and scope model.

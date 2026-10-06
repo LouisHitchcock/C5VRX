@@ -38,6 +38,9 @@
 #include "esp_memory_utils.h"
 #include "heap_memory_layout.h"
 #include "esp_rom_sys.h"
+#include "esp_system.h"
+#include "freertos/task.h"
+#include "soc/lp_aon_reg.h"
 #include "esp_private/wifi_os_adapter.h"
 
 /* Fixed receiver configuration -- not configurable at runtime. */
@@ -473,6 +476,26 @@ esp_err_t rf_prepare_fresh_phy_calibration(void)
                  esp_err_to_name(err));
     }
     return err;
+}
+
+/* Flashing without the BOOT button. esptool's USB reset (RTS/DTR) resets the
+ * chip but not the modem domain, so the forced modem clocks, the always-on
+ * dump writer and the forced RF front end survive into the ROM loader and its
+ * USB download loop stops answering (writes time out). Instead the running
+ * image stops the writer, hands HP SRAM back, stops Wi-Fi, requests a USB/UART
+ * download boot and restarts through esp_restart(), which also resets the
+ * modem; esptool then connects with --before no-reset
+ * (tools/enter_download.py). */
+void rf_reboot_to_download(void)
+{
+    printf("C5VRX4 download_boot=requested action=restart\n");
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    REG32(DUMP_CTRL) &= ~CTRL_ENABLE;
+    REG32(HP_SRAM_USAGE) &= ~0x00010f00u;
+    (void)esp_wifi_stop();
+    REG_SET_FIELD(LP_AON_SYS_CFG_REG, LP_AON_FORCE_DOWNLOAD_BOOT, 1u);
+    esp_restart();
 }
 
 static bool native_agc_boot_requested(void)

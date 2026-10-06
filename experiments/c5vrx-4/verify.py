@@ -89,13 +89,20 @@ def main():
         ("idle_raster", ["-I."]),
         ("sync_flywheel", ["-I.", "-O2", "sync_flywheel.c", "-lm"]),
     ]
+    # Windows hosts (MinGW): M_PI needs _USE_MATH_DEFINES under -std=c11, and
+    # the gate and PHY-lab regressions map memory with POSIX mmap, so they run
+    # on Linux CI only.
+    posix = os.name != "nt"
+    if not posix:
+        cases = [c for c in cases if c[0] != "c5vrx4_gate"]
+        print("NOTE: c5vrx4_gate and phy_rx_lab regressions skipped on Windows (POSIX sys/mman.h)")
     with tempfile.TemporaryDirectory(prefix="c5vrx4-verify-") as td:
         for name, extra in cases:
             target = str(Path(td) / name)
-            run([cc, "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra", "-Werror", "-Imain",
+            run([cc, "-std=c11", "-D_DEFAULT_SOURCE", "-D_USE_MATH_DEFINES", "-Wall", "-Wextra", "-Werror", "-Imain",
                  f"tools/test_{name}.c", *extra, "-o", target])
             run([target])
-        for pinned in (False, True):
+        for pinned in ((False, True) if posix else ()):
             target = str(Path(td) / f"phy_{pinned}")
             run([cc, "-pthread", "-std=c11", "-Wall", "-Wextra", "-Werror",
                  "-Itools/phy_lab_stubs", "-Imain", "-I.",
@@ -106,9 +113,9 @@ def main():
         run([cc, "-O3", "-std=c11", "unwrap_oracle.c", "-o", target])
         run([target])
     for name in ("test_unwrap.py", "test_cvbs.py", "test_agc_mask.py", "tools/test_phase8_hr_live.py",
-                 "tools/test_fm_hc.py", "tools/check_golden_two_slot.py"):
+                 "tools/test_fm_hc.py", "tools/check_golden_two_slot.py", "tools/test_flash_tools.py"):
         run([sys.executable, name])
-    print("PASS: isolated C5VRX-4 integration, 25 C regressions, exhaustive unwrap and source-driven DSP tests")
+    print(f"PASS: isolated C5VRX-4 integration, {len(cases) + (3 if posix else 1)} C regressions, exhaustive unwrap and source-driven DSP tests")
 
 if __name__ == "__main__":
     main()
