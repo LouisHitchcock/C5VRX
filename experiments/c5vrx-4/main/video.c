@@ -6925,10 +6925,17 @@ static void predemod_dco_service(void)
     bool no_carrier = false;
     if (IDLE_RASTER_ACTIVE()) {
         no_carrier = true;
-    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+    /* Any gain, not only the maximum: board 2026-10-07 (XIAO C5, R8, VTX
+     * off), the uncorrected DC held V5 at G77 as a "carrier", so a test gated
+     * on the maximum never ran and nothing was ever searched. Nor only in
+     * DG3_HOLD: with no carrier V5 sits at the maximum in DG3_ACQUIRE
+     * (no_carrier -> start_write(max)), so a HOLD gate never passed there
+     * either (quiet_s=0, searches=0). Any settled state; the DC stability
+     * and noise-like checks below are the no-carrier test. */
+    } else if (s_direct_gain_v3.state != DG3_SETTLE &&
                now - s_last_idle_sync_us > DCO_NO_SYNC_US && now - s_quiet_eval_us < 1000000LL) {
         no_carrier = s_quiet_last;      /* rate-limited carrier test result */
-    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+    } else if (s_direct_gain_v3.state != DG3_SETTLE &&
                now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
         s_quiet_eval_us = now;
         /* No sync is not proof of no carrier: a weak FM carrier below sync
