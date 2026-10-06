@@ -1766,13 +1766,21 @@ static void direct_gain_v5_dc_observe(const uint8_t *sample, size_t bytes,
  * no setting >= 0.5 dB better. Before calibration it is the original digital
  * BW20/BW40 gear. */
 #define V5_BW_DWELL_US 1000000u
+/* Anti-hunt (review 2026-10-06): the narrow filter lowers the noise, so V5
+ * steps one index below maximum and the old "clear" (any gain below max)
+ * fired after 1 s; wide again, V5 back at max, narrow again - a full PHY
+ * restore (a glitch) every 1-2 s exactly at the range edge, worst with a
+ * fixed lane (lane >= cap always true). Leave only with real headroom, and
+ * hold off re-entry after an exit. */
+#define V5_BW_CLEAR_HEADROOM 8u
+#define V5_BW_REENTRY_US 5000000u
 static bool bw_in_narrow_gear(void)
 {
     return bw_fixed_calibrated() ? rf_fixed_bw_edge_active() : !s_current_bw40;
 }
 static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
 {
-    static uint64_t weak_since, strong_since;
+    static uint64_t weak_since, strong_since, exit_us;
     const direct_gain_v3_t *v3 = &s_direct_gain_v3;
     const bool fixed = bw_fixed_calibrated();
     if (s_rf_bw_mode != RF_BW_MODE_AUTO ||
@@ -1786,11 +1794,12 @@ static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
     bool present = o->origin_pm < 650u && o->coherence >= 30u;
     bool edge = at_max && v3->lane >= v3->lane_cap && present &&
                 (o->p50 < 13u || o->coherence < 70u);
-    bool clear = (!at_max || v3->lane == 0u) && o->p50 >= 13u &&
-                 o->coherence >= 85u;
+    bool headroom = (unsigned)v3->current_gain + V5_BW_CLEAR_HEADROOM <=
+                    (unsigned)v3->table.max_index;
+    bool clear = headroom && o->p50 >= 13u && o->coherence >= 85u;
     if (!bw_in_narrow_gear()) {
         strong_since = 0;
-        if (!edge) { weak_since = 0; return; }
+        if (!edge || (exit_us && now - exit_us < V5_BW_REENTRY_US)) { weak_since = 0; return; }
         if (!weak_since) weak_since = now;
         if (now - weak_since < V5_BW_DWELL_US) return;
         if (fixed) bw_set_edge(true);
@@ -1802,6 +1811,7 @@ static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
         if (now - strong_since < V5_BW_DWELL_US) return;
         if (fixed) bw_set_edge(false);
         else apply_rf_bandwidth(true);
+        exit_us = now ? now : 1u;
     }
     weak_since = strong_since = 0;
     ++s_v3_bw_switches;
