@@ -1664,13 +1664,11 @@ static void direct_gain_v3_sentinel_timer_cb(void *arg)
 {
     (void)arg;
 #ifdef C5VRX4_EXPERIMENT
-    /* With the sync flywheel the timer runs at 100 us: it wakes the
-     * flywheel every tick and everything else every second tick. */
-    static unsigned tick;
-    if (s_sfw_task_handle) {
-        xTaskNotifyGive(s_sfw_task_handle);
-        if (++tick & 1u) return;
-    }
+    /* The flywheel shares the 200 us tick (board 2026-10-06: at 100 us and
+     * observer priority it starved IDLE and the console, task WDT every
+     * 5 s, and delayed V5). It runs below the observer and does twice the
+     * work per wake. */
+    if (s_sfw_task_handle) xTaskNotifyGive(s_sfw_task_handle);
 #endif
     if (s_v3_sentinel_task_handle)
         xTaskNotifyGive(s_v3_sentinel_task_handle);
@@ -6944,7 +6942,7 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
  * Absolute byte positions use the timer as wrap disambiguator (40 bytes/us).
  * Internal SRAM is not cached on the C5, so no cache maintenance. The work
  * per wake is budgeted from the learned cost per evaluation. */
-#define SFW_TARGET_US 30u
+#define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 static sync_flywheel_t s_sfw;
 static volatile bool s_sfw_running;
 static volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
@@ -8644,10 +8642,10 @@ esp_err_t video_start(void)
                                 &s_v3_sentinel_task_handle) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
 #ifdef C5VRX4_EXPERIMENT
-    /* Created before the timer so it starts at 100 us; same priority as the
-     * observer. */
+    /* Priority 2: below the V5 observer (gain reaction first), above the
+     * console. */
     if (c5vrx4_sync_flywheel_enabled())
-        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 3,
+        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 2,
                                     &s_sfw_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 #endif
     const esp_timer_create_args_t v3_timer_args = {
@@ -8659,7 +8657,7 @@ esp_err_t video_start(void)
     ESP_ERROR_CHECK(esp_timer_create(&v3_timer_args,
                                      &s_v3_sentinel_timer));
 #ifdef C5VRX4_EXPERIMENT
-    ESP_ERROR_CHECK(esp_timer_start_periodic(s_v3_sentinel_timer, s_sfw_task_handle ? 100 : 200));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_v3_sentinel_timer, 200));
 #else
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_v3_sentinel_timer, 200));
 #endif
