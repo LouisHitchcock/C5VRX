@@ -6767,7 +6767,7 @@ typedef struct {
 #define DCO_TABLE_VERSION 1u
 static dco_table_blob_t s_dco_tab;
 static int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
-static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves;
+static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
 static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
 
@@ -6805,9 +6805,25 @@ static void predemod_dco_service(void)
         dco_table_select(freq, lo, hi);
     }
     const int64_t now = esp_timer_get_time();
-    const bool no_carrier = IDLE_RASTER_ACTIVE() ||
-        (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
-         now - s_last_idle_sync_us > DCO_NO_SYNC_US);
+    bool no_carrier = IDLE_RASTER_ACTIVE();
+    if (!no_carrier && s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+        now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
+        /* No sync is not proof of no carrier: a weak FM carrier below sync
+         * detection would bias the DC estimate (review 2026-10-07). Real
+         * receiver DC is constant; a carrier rotates and moves the mean, so
+         * two estimates 100 ms apart must agree. */
+        predemod_window_t a, b;
+        if (predemod_collect(32, &a)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (predemod_collect(32, &b)) {
+                int di = a.dc_i - b.dc_i, dq = a.dc_q - b.dc_q;
+                int mag = (abs(a.dc_i) + abs(a.dc_q) + abs(b.dc_i) + abs(b.dc_q)) / 2;
+                int spread = abs(di) + abs(dq);
+                no_carrier = spread <= 200 || spread * 4 <= mag;
+                if (!no_carrier) ++s_dco_carrier_refusals;
+            }
+        }
+    }
     if (no_carrier) {
         /* Next stale gain, maximum first. */
         int target = -1;
@@ -6818,6 +6834,9 @@ static void predemod_dco_service(void)
             if (!predemod_pause("DCO_AUTO", &saved)) return;
             const uint8_t restore = s_current_gain;
             (void)phy_rx_lab_dco_release();
+            /* Only this search's result may count (review 2026-10-07: a failed
+             * search returned the codes loaded for another gain's hold). */
+            phy_rx_lab_dco_invalidate();
             rf_set_rx_gain(true, (uint8_t)target);
             vTaskDelay(pdMS_TO_TICKS(20));
             esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
@@ -7148,10 +7167,12 @@ static void predemod_correction_print(void)
      * the request, not a correction (external audit, PR #174). */
     printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
            "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
+           "hw_dco_carrier_refusals=%lu "
            "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
            "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
            c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
-           (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, s_dc_measured[0], s_dc_measured[1],
+           (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, (unsigned long)s_dco_carrier_refusals,
+           s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
            s_sphase_auto_done ? s_sphase_auto_ppm : 0u, sphase_state_name(), s_sphase_scans);

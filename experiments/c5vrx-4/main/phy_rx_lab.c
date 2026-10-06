@@ -673,6 +673,27 @@ static int dco_clamp(int value, int base)
     if (value > base + DCO_RANGE) value = base + DCO_RANGE;
     return value < 0 ? 0 : value > 511 ? 511 : value;
 }
+/* PBUS blocks the vendor drives (phy_pbus.o forces blocks 0..10; the 5 GHz
+ * RF gain is in block 8). Debug mode stops the table replay for all of them,
+ * so every block's live word must be re-asserted, not only the DC blocks
+ * 0..3 (review 2026-10-07: blocks 4..10 sat on stale test values while the
+ * DC hold was active). */
+#define PBUS_BLOCKS 11u
+
+extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
+/* phy_pbus_workmode() == phy_pbus_force_mode(0) in this binary: it clears
+ * debug mode and - when 0x600A9C18 bit 1 is set - forces gain index 50 for
+ * ~2 us and then CLEARS the force bit (review 2026-10-07, verified by
+ * disassembly). That left the receiver unforced after a DC release on any
+ * path that did not write a gain right after. The gain that was forced is
+ * forced again at once, which also replays its table row. */
+static void pbus_workmode_keep_gain(void)
+{
+    uint32_t gain = REG(0x600A702Cu);
+    phy_pbus_workmode();
+    if (gain & (1u << 23)) phy_force_rx_gain(true, (uint8_t)(gain >> 24));
+}
+
 static void dco_apply(int i, int q)
 {
     phy_pbus_force_test(2, 2, (uint32_t)i);
@@ -729,8 +750,8 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
 #else
     if (!measure || !observe || rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
     phy_rx_lab_begin("DCO_AB");
-    uint16_t live[4][2];
-    for (unsigned b = 0; b < 4; ++b)
+    uint16_t live[PBUS_BLOCKS][2];
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
         for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
     esp_err_t result = ESP_ERR_INVALID_RESPONSE;
     int before[2] = {0, 0};
@@ -741,13 +762,13 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
         /* Debug mode stops the work-mode table replay; re-assert every live
          * word first so RF/BB gain and the other DC pair stay as they were. */
         phy_pbus_debugmode();
-        for (unsigned b = 0; b < 4; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         int base[2] = {live[2][1], live[3][1]}, cur[2] = {base[0], base[1]};
         int best[2] = {base[0], base[1]}, best_dc[2] = {before[0], before[1]};
         int di = base[0] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
         int dq = base[1] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
-        int mi[2], mq[2];
+        int mi[2] = {0, 0}, mq[2] = {0, 0};   /* never used unmeasured */
         dco_apply(base[0] + di, base[1]);
         bool ok = measure(mi);
         dco_apply(base[0], base[1] + dq);
@@ -788,12 +809,12 @@ esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
     }
     /* Exact rollback: every saved word, then hand PBUS back to work mode. */
     if (debug) {
-        for (unsigned b = 0; b < 4; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
-        phy_pbus_workmode();
+        pbus_workmode_keep_gain();
     }
     bool restored = true;
-    for (unsigned b = 0; b < 4; ++b)
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
         for (unsigned k = 0; k < 2; ++k) {
             uint16_t now = phy_pbus_rd(b, k + 1);
             if (now != live[b][k]) {
@@ -829,16 +850,16 @@ esp_err_t phy_rx_lab_dco_set(bool on)
     if (rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
     transaction_take();
     if (on && !s_dco_held) {
-        uint16_t live[4][2];
-        for (unsigned b = 0; b < 4; ++b)
+        uint16_t live[PBUS_BLOCKS][2];
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
             for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
         phy_pbus_debugmode();
-        for (unsigned b = 0; b < 4; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         dco_apply(s_dco_codes[0], s_dco_codes[1]);
         s_dco_held = true;
     } else if (!on && s_dco_held) {
-        phy_pbus_workmode();
+        pbus_workmode_keep_gain();
         s_dco_held = false;
     }
     uint16_t i = phy_pbus_rd(2, 2), q = phy_pbus_rd(3, 2);
@@ -858,7 +879,7 @@ bool phy_rx_lab_dco_release(void)
 #else
     if (!s_dco_held) return false;
     transaction_take();
-    phy_pbus_workmode();
+    pbus_workmode_keep_gain();
     s_dco_held = false;
     transaction_give();
     return true;

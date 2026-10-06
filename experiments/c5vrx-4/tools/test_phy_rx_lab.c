@@ -120,15 +120,22 @@ static void native_observe(const char *stage,unsigned cycle)
     } else assert(!(REG(0x600A7030)&PHYBIT(29)));
     clock_us+=40000;
 }
-static unsigned pbus[4][3];
+static unsigned pbus[11][3];
 static bool pbus_debug, corrupt_workmode, fail_measure;
 uint16_t phy_pbus_rd(uint32_t block, uint32_t bank) { return (uint16_t)pbus[block][bank]; }
 void phy_pbus_force_test(uint32_t block, uint32_t bank, uint32_t value)
 {
-    assert(pbus_debug && block < 4 && bank >= 1 && bank <= 2 && value <= 511);
+    assert(pbus_debug && block < 11 && bank >= 1 && bank <= 2 && value <= 511);
     pbus[block][bank] = value;
 }
 void phy_pbus_debugmode(void) { pbus_debug = true; }
+/* Vendor work mode may leave the gain unforced; the lab re-forces it. */
+static unsigned forced_gain_writes;
+void phy_force_rx_gain(bool enable, uint8_t gain_idx)
+{
+    ++forced_gain_writes;
+    REG(0x600A702C) = (REG(0x600A702C) & 0x007FFFFFu) | ((uint32_t)gain_idx << 24) | (enable ? PHYBIT(23) : 0u);
+}
 void phy_pbus_workmode(void) { pbus_debug = false; if (corrupt_workmode) pbus[2][2] ^= 1u; }
 /* Linear DC model with cross-coupling: block 2 bank 2 mainly I, block 3 bank 2 mainly Q. */
 static bool dco_measure(int dc[2])
