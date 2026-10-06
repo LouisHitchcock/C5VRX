@@ -1915,25 +1915,10 @@ static void direct_gain_v3_observer_task(void *arg)
             s_direct_gain_v3.lane, sample, sizeof(sample), observation.observed_us);
         direct_gain_v3_apply_target(target, profile, phy);
         direct_gain_v5_dc_observe(sample, sizeof(sample), &observation);
-        /* Regions are separate 64-byte spans: never pair across them. */
-        for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r)
-            s_predemod_glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
-                                                     RX_PROBE_REGION_BYTES, 6);
-        s_predemod_samples += RX_PROBE_REGIONS * (RX_PROBE_REGION_BYTES - 2u);
-        /* Raw I/Q centre for digital recentring: settled, unclipped windows.
-         * The raw ring is never modified, so this stays the absolute DC. */
-        if (observation.clip_pm < 20 && s_direct_gain_v3.state != DG3_SETTLE) {
-            int dc_i, dc_q;
-            predemod_dc_mcells(sample, sizeof(sample), &dc_i, &dc_q);
-            uint32_t dc_epoch = s_gain_transition_count ^ profile ^
-                ((uint32_t)rf_get_iq_lanes() << 28);
-            portENTER_CRITICAL(&s_dc_mux);
-            if (dc_epoch != s_dc_epoch) {
-                s_dc_sum_i = s_dc_sum_q = 0; s_dc_windows = 0; s_dc_epoch = dc_epoch;
-            }
-            s_dc_sum_i += dc_i; s_dc_sum_q += dc_q; ++s_dc_windows;
-            portEXIT_CRITICAL(&s_dc_mux);
-        }
+        /* The per-window glitch count and the DC sums for the (disabled)
+         * digital recentring ran here every 200 us. Board 2026-10-06: the
+         * task watchdog fired with gain_v3_obs on the CPU and the console
+         * (USB input) starved; this work fed nothing anymore. */
         direct_gain_v5_bw_gear(&observation);
     }
 }
@@ -6587,6 +6572,7 @@ static bool copy_level_snapshot(uint8_t *raw)
     return c5v4_snapshot_current(before, after,
         (uint64_t)(esp_timer_get_time()-start), plan.safe_bytes, IQ_RATE_HZ);
 }
+#define C5V4_LEVEL_TASK_ENABLED 0
 static void cvbs_level_task(void *arg)
 {
     uint8_t *raw = arg;
@@ -8683,7 +8669,11 @@ esp_err_t video_start(void)
     /* The mask decision is latched per boot; every CPU snapshot observer
      * (sync/standard, AFC, level servo, J) decodes the same Q3 as the program. */
     c5v4_cvbs_set_mask_decode(c5vrx4_agc_mask_active());
-    if (c5vrx4_level_enabled()) {
+    /* The level servo's live LUT writes are refused (unreliable live LUT
+     * access, board 2026-10-06), so its 8 KiB analysis every 5-20 ms was
+     * pure CPU load - part of the starvation that froze the USB console.
+     * The task is not started until a safe update path exists. */
+    if (C5V4_LEVEL_TASK_ENABLED && c5vrx4_level_enabled()) {
         /* CPU-only copy: LP RAM first, so DMA-capable RAM stays free for the
          * menu descriptors (allocated when the menu opens). */
         uint8_t *level_raw = heap_caps_malloc(C5V4_LEVEL_SAMPLE_BYTES, MALLOC_CAP_RTCRAM);
