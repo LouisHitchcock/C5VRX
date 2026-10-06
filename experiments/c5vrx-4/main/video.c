@@ -1447,7 +1447,10 @@ typedef struct {
     uint8_t menu_boot_btn_enabled;
     uint8_t rx_profile;
     uint8_t demod_mode;
-    uint8_t reserved[1];
+    /* 1 = rf_bw_mode/afc_mode were saved by firmware that honours them (menu
+     * audit 2026-10-06). Older records hold whatever runtime mode happened to
+     * be saved while boot forced AUTO/OFF, so they are not applied. */
+    uint8_t bw_afc_persist;
 } persisted_settings_t;
 
 /* v4 deliberately consumes one of v3's two reserved bytes for demod_mode.
@@ -1976,6 +1979,7 @@ static void settings_save(void)
         .menu_boot_btn_enabled = s_menu_boot_btn_enabled ? 1u : 0u,
         .rx_profile = (uint8_t)s_rx_profile,
         .demod_mode = (uint8_t)s_demod_mode,
+        .bw_afc_persist = 1u,
     };
     nvs_handle_t handle;
     esp_err_t err = nvs_open(SETTINGS_NAMESPACE, NVS_READWRITE, &handle);
@@ -2013,9 +2017,13 @@ static void settings_load(void)
     }
 
     if (settings.channel_index < rf_get_channel_count()) (void)rf_set_channel(settings.channel_index);
-    if (settings.rf_bw_mode <= RF_BW_MODE_AUTO) s_rf_bw_mode = (rf_bw_mode_t)settings.rf_bw_mode;
+    /* Board 2026-10-06: an old record's BW40 switched V5's edge gear off
+     * (gear=manual) once the menu choice started to persist. */
+    if (settings.bw_afc_persist == 1u && settings.rf_bw_mode <= RF_BW_MODE_AUTO)
+        s_rf_bw_mode = (rf_bw_mode_t)settings.rf_bw_mode;
     apply_rf_bandwidth(s_rf_bw_mode != RF_BW_MODE_BW20);
-    if (settings.afc_mode <= AFC_MODE_OFF) s_afc_mode = (afc_mode_t)settings.afc_mode;
+    if (settings.bw_afc_persist == 1u && settings.afc_mode <= AFC_MODE_OFF)
+        s_afc_mode = (afc_mode_t)settings.afc_mode;
     if (settings.output_mode <= VIDEO_OUTPUT_4BIT_80) s_output_mode = (video_output_mode_t)settings.output_mode;
     /* v3 used this exact byte as zero-initialized reserved storage, so old
      * Range-v2 settings migrate losslessly with the proven GOLDEN demod. */
