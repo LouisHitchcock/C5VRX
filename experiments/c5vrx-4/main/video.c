@@ -6969,6 +6969,8 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
  * Absolute byte positions use the timer as wrap disambiguator (40 bytes/us).
  * Internal SRAM is not cached on the C5, so no cache maintenance. The work
  * per wake is budgeted from the learned cost per evaluation. */
+/* Tracking a noisy line costs ~64 evaluations, 3.2 lines arrive per run. */
+#define SFW_MIN_BUDGET 256u
 #define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 static sync_flywheel_t s_sfw;
 static volatile bool s_sfw_running;
@@ -7039,17 +7041,17 @@ static void sync_flywheel_task(void *arg)
         uint32_t spent = (uint32_t)(esp_timer_get_time() - t0);
         s_sfw_last_us = spent;
         if (spent > s_sfw_max_us) s_sfw_max_us = spent;
-        if (s_sfw.evals >= 64u) {
+        /* Wall time includes preemption (priority 2, below V5): a run that
+         * took more than twice its target was preempted and says nothing
+         * about the cost (board 2026-10-06: such runs drove the estimate to
+         * 357 ns/eval, the budget to ~140 and acquisition never locked). */
+        if (s_sfw.evals >= 64u && spent <= 2u * SFW_TARGET_US) {
             uint32_t ns = spent * 1000u / s_sfw.evals;
-            /* Wall time includes preemption (priority 2, below V5): board
-             * 2026-10-06 one 101 ms run pinned the estimate at 202 us/eval
-             * and the budget at its floor. A sample may at most double it. */
-            if (ns > 2u * s_sfw_ns_per_eval) ns = 2u * s_sfw_ns_per_eval;
             s_sfw_ns_per_eval = (7u * s_sfw_ns_per_eval + ns) / 8u;
             if (!s_sfw_ns_per_eval) s_sfw_ns_per_eval = 1u;
         }
         uint32_t budget = SFW_TARGET_US * 1000u / s_sfw_ns_per_eval;
-        s_sfw_budget = budget < 64u ? 64u : budget > 20000u ? 20000u : budget;
+        s_sfw_budget = budget < SFW_MIN_BUDGET ? SFW_MIN_BUDGET : budget > 20000u ? 20000u : budget;
     }
 }
 

@@ -294,8 +294,22 @@ static void start_track(sync_flywheel_t *f, uint64_t start, uint32_t nominal)
     ++f->acquisitions;
 }
 
+static uint32_t pulse_width(const sync_flywheel_t *f, const sfw_ring_t *r, uint64_t k,
+                            uint32_t max, uint32_t *inside);
+typedef enum { P_NONE, P_NORMAL, P_EQ, P_BROAD } pulse_t;
+static pulse_t classify(uint32_t w, uint32_t inside);
+
+/* Coarse sync search step: shorter than an equalizing pulse (70+ samples),
+ * so no pulse is stepped over. */
+#define ACQ_COARSE 45u
+
 /* Streaming acquisition, resumable under the budget: a step histogram over
- * ~2 lines for the threshold, then sync-width low runs one line apart. */
+ * ~2 lines for the threshold, then sync-width pulses one line apart. The
+ * pulse search probes every ACQ_COARSE samples and measures only around a
+ * low probe (~140 evaluations per line instead of ~850): board 2026-10-06,
+ * with the flywheel at 25 % CPU (~140 evaluations per 200 us run) a stride-3
+ * scan never covered two lines before RX overwrote them, so it never
+ * locked. */
 static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end, uint32_t budget)
 {
     if (avail_end < 8192u) return;
@@ -307,8 +321,8 @@ static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     }
     while (f->scan_pos < end && s_evals < budget) {
         uint64_t k = f->scan_pos;
-        f->scan_pos += 3u;
         if (f->acq_phase == 0) {
+            f->scan_pos += 3u;
             ++s_evals;
             ++f->acq_hist[step3(r, k) + 128];
             if (++f->acq_n < 6800u) continue;      /* ~8 lines: never one V interval */
@@ -329,12 +343,15 @@ static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
             f->acq_runs = 0;
             continue;
         }
-        if (++f->acq_n > 6800u) { f->acq_phase = 0; f->acq_n = 0; continue; }   /* 8 lines, no match */
-        if (lowm(f, r, k)) { f->acq_run += 3u; continue; }
-        uint32_t run = f->acq_run;
-        f->acq_run = 0;
-        if (run < 150u || run > 230u) continue;
-        uint64_t start = k - run;
+        if (++f->acq_n > 6800u) { f->acq_phase = 0; f->acq_n = 0; continue; }   /* ~100 lines, no match */
+        f->scan_pos = k + ACQ_COARSE;
+        if (k + 320u > end) { f->scan_pos = k; break; }        /* the pulse is not complete yet */
+        if (!lowm(f, r, k)) continue;
+        uint64_t start = k;
+        for (unsigned back = 0; back < ACQ_COARSE + 3u && lowm(f, r, start - 3u); back += 3u) start -= 3u;
+        uint32_t inside, run = pulse_width(f, r, start, 260u, &inside);
+        f->scan_pos = start + run + 3u;
+        if (classify(run, inside) != P_NORMAL) continue;
         if (f->acq_have_last) {
             uint64_t d = start - f->acq_last_start;
             if (d >= 2552u && d <= 2568u) { start_track(f, start, SFW_PAL_LINE_Q8); return; }
@@ -359,8 +376,6 @@ static uint32_t pulse_width(const sync_flywheel_t *f, const sfw_ring_t *r, uint6
     *inside = total - highs;
     return w - 3u * highs;
 }
-
-typedef enum { P_NONE, P_NORMAL, P_EQ, P_BROAD } pulse_t;
 
 static pulse_t classify(uint32_t w, uint32_t inside)
 {

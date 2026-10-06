@@ -324,9 +324,10 @@ own revision.
   - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
     re-lock and mask-safe bytes. Goggle behaviour is not measured.
   - Hardware, 2026-10-06: default on starved IDLE (task watchdog in
-    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Now
-    default off, `w` opts in; the CPU gate in `SYNC_FLYWHEEL.md` must pass
-    first.
+    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Since
+    the same day it shares the 200 us tick at priority 2 with a 50 us
+    budget, and its acquisition probes coarsely; default on again with line
+    repair (operator, 2026-10-06), `w` or the menu opts out.
 - **Span75 post-detection aliasing (host model, 2026-10-05):**
   `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated
   Unwrap75 LUTs on simulated Q4/I4 bytes.
@@ -441,15 +442,16 @@ requirements by themselves**.
   It must keep these properties:
   - picture content is never decoded or altered, except by its opt-in
     line repair (operator request 2026-10-06, menu `LINE REPAIR`, default
-    off): a dropout line is replaced by the line with the same subcarrier
+    on, menu opts out): a dropout line is replaced by the line with the same subcarrier
     phase 2 (NTSC) / 4 (PAL) lines earlier, never at the range edge's
     uniform noise (host evidence in `SYNC_FLYWHEEL.md`);
   - clean pulses are left untouched;
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
     observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
-  It is off by default since its first hardware run starved the CPU
-  (`w`, NVS `sync_fw` or the menu SETUP page opts in) and hardware-pending.
+  It is on by default again since 2026-10-06 (25 % CPU, below the V5
+  observer; `w`, NVS `sync_fw` or the menu SETUP page opts out); goggle
+  behaviour remains hardware-pending.
   The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical

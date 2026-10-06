@@ -117,12 +117,12 @@ void c5vrx4_last_standard_store(uint8_t standard);
  * 13..32 to 30..46 for finer phase quantization; the first rail code, P95
  * or level jump drops it. NVS radius_boost. */
 bool c5vrx4_radius_boost_enabled(void);
-/* Line repair inside the sync flywheel (opt-in, menu, reboot;
+/* Line repair inside the sync flywheel (default on, menu opts out, reboot;
  * SYNC_FLYWHEEL.md): a dropout line is replaced by the line with the same
  * subcarrier phase 2 (NTSC) / 4 (PAL) lines earlier. Needs the flywheel.
  * NVS line_fix. */
 bool c5vrx4_line_repair_enabled(void);
-/* Sync flywheel (default off, 'w' toggles, reboot; SYNC_FLYWHEEL.md): missing
+/* Sync flywheel (default on, 'w' toggles, reboot; SYNC_FLYWHEEL.md): missing
  * or noisy H/V sync pulses are rebuilt in the raw ring ahead of the TX read so
  * the goggles always see a valid PAL/NTSC raster. NVS sync_fw. */
 bool c5vrx4_sync_flywheel_enabled(void);

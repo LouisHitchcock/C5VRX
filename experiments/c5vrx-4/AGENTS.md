@@ -56,7 +56,8 @@ no-carrier idle raster (HDZERO.md, 2026-10-04) only replaces demodulated
 receiver noise: keep it out of any state with a carrier or sync, exit at the
 first one, keep V5 at its no-carrier maximum while it owns TX, and keep the `_`
 opt-out. It is not sync regeneration of a received picture. Leon asked on 2026-10-06 for line repair in
-the sync flywheel (SYNC_FLYWHEEL.md): opt-in `LINE REPAIR`, needs the
+the sync flywheel (SYNC_FLYWHEEL.md): `LINE REPAIR`, default on with the
+flywheel since the same day (operator), menu opt-out, needs the
 flywheel, copies only to bytes TX has not read and only from bytes RX has not
 overwritten, never in the vertical interval, at most 6 lines in a row; keep
 its dropout criterion (score >= 8, >= 7 worse than a clean source), which the

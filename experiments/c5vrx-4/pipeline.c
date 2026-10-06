@@ -355,19 +355,19 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
-    /* Default off (operator, 2026-10-05): on hardware the 100 us wake starved
-     * IDLE and the USB console (task watchdog) and the menu stopped working.
-     * 'w' opts in until its CPU gate passes (SYNC_FLYWHEEL.md). */
-    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", false);
+    /* Default on again (operator, 2026-10-06), now at 25 % CPU below the V5
+     * observer: the 100 us wake of 2026-10-05 starved IDLE and the console.
+     * 'w' or the menu opts out (SYNC_FLYWHEEL.md). */
+    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", true);
     return s_sync_fw;
 }
 
 static int8_t s_line_fix = -1;
 bool c5vrx4_line_repair_enabled(void)
 {
-    /* Opt-in (operator request 2026-10-06): it alters picture content, and
-     * the goggle result is hardware-pending. Runs inside the flywheel. */
-    if (s_line_fix < 0) s_line_fix = nvs_flag("line_fix", false);
+    /* Default on (operator, 2026-10-06, after the goggle check); it alters
+     * picture content, the menu opts out. Runs inside the flywheel. */
+    if (s_line_fix < 0) s_line_fix = nvs_flag("line_fix", true);
     return s_line_fix && c5vrx4_sync_flywheel_enabled();
 }
 
@@ -419,13 +419,13 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_SPHASE]       = {"SAMPLE PHASE",  "sphase_auto",  1, 2, s_off_on},
     [C5VRX4_OPT_IDLE_RASTER]  = {"IDLE RASTER",   "idle_raster",  1, 2, s_off_on},
     [C5VRX4_OPT_RADIUS_BOOST] = {"RADIUS BOOST",  "radius_boost", 0, 2, s_off_on},
-    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      0, 2, s_off_on},
+    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      1, 2, s_off_on},
     [C5VRX4_OPT_LEVEL]        = {"LEVEL SERVO",   "level_lab",    1, 2, s_off_on},
     [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
     [C5VRX4_OPT_NATIVE_PATCH] = {"NATIVE PATCH",  "native_patch", 1, 2, s_off_on},
     [C5VRX4_OPT_HW_DCO]       = {"HW DC CORR",    "dco_auto",     1, 2, s_off_on},
-    [C5VRX4_OPT_LINE_FIX]     = {"LINE REPAIR",   "line_fix",     0, 2, s_off_on},
+    [C5VRX4_OPT_LINE_FIX]     = {"LINE REPAIR",   "line_fix",     1, 2, s_off_on},
 };
 static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
 static bool s_option_snapshot;

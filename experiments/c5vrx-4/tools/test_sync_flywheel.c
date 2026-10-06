@@ -338,6 +338,22 @@ static void scenario(bool pal)
            name, f.repaired, f.slots_repaired, f.clean, f.relocks, f.acquisitions, epl);
     assert(f.relocks == 0u && f.acquisitions == 1u && sfw_locked(&f));
     free(out);
+
+    /* 6. The firmware budget: >= 256 evaluations per 200 us run, ~128 per
+     * descriptor here (board 2026-10-06: at ~140 per run the stride-3
+     * acquisition never locked). Lock, and keep every pulse at the range
+     * edge. */
+    out = run_ring(in, n, &f, c5v4_phase_static, false, 0, &epl, 128);
+    for (unsigned a = 0; a < 3u; ++a) {
+        verdict_t v = verify(&weak, out, n, 4 * F, 9 * F, a);
+        printf("%s weak, budget 128 align=%u: output ok %u/%u (missing %u, bad width %u, max edge %u)\n",
+               name, a, v.ok, v.checked, v.missing, v.bad_width, v.max_edge);
+        assert(v.missing == 0 && v.bad_width == 0 && v.max_edge <= 9u);
+    }
+    printf("%s weak, budget 128: acquisitions=%u skipped=%u evals/line=%.1f\n",
+           name, f.acquisitions, f.skipped_lines, epl);
+    assert(sfw_locked(&f) && f.acquisitions == 1u);
+    free(out);
     free(in);
 }
 

@@ -104,7 +104,7 @@ C5VRX-4. Hardware acceptance is pending.
 
 | Key | Action |
 |---|---|
-| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default off since the first hardware run: task watchdog, USB console and menu starved), reboot |
+| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default on; it was off after the first hardware run starved the task watchdog, USB console and menu, until the 200 us / priority 2 / 50 us budget fix of 2026-10-06), reboot |
 | `!` | `SYNC_FW` line: lock and standard, lines/clean/repaired/slots/rebuilt/missed, V syncs found/coasted, parity fixes, re-locks, acquisitions, skipped lines, floor skips, levels, period, noisy mode, `last_us`/`max_us`, budget, ns/evaluation |
 
 ## Host evidence (`tools/test_sync_flywheel.c`)
@@ -150,12 +150,22 @@ descriptor still holds the received bytes.
 5. **Re-lock.** Power-cycle the VTX: one short timing jump, no rolling.
 6. **Native mode with the mask.** Same as 3, plus `AGC_MASK` unchanged.
 
-## Line repair (opt-in, 2026-10-06)
+## Line repair (default on, 2026-10-06)
 
 Operator request (Leon, 2026-10-06): repair static streaks from short
 dropouts, VCR-style. This **alters picture content**: a dropout line shows an
 older line instead of noise. It runs inside the flywheel and needs it on;
-menu SETUP `LINE REPAIR` (NVS `c5vrx4/line_fix`, default off, reboot).
+menu SETUP `LINE REPAIR` (NVS `c5vrx4/line_fix`, default on since the
+operator's goggle check the same day, reboot).
+
+**Acquisition at the real budget.** The first board run with the flywheel at
+25 % CPU never locked: the preempted-run cost estimate (357 ns/eval) set the
+budget to ~140 evaluations per run, and the stride-3 search needs ~1700
+contiguous ones before RX overwrites the data. The search now probes every
+45 samples and measures only around a low probe (~140 evaluations per
+line); preempted runs no longer update the estimate, and the budget is at
+least 256. `tools/test_sync_flywheel.c` locks and keeps every range-edge
+pulse at 128 evaluations per descriptor.
 
 - **Detection.** When line L starts, line L-1 is complete. 24 spans across
   its active picture (9.4 us after the sync to 1.5 us before the next line)
