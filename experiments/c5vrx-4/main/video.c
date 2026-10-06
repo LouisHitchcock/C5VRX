@@ -7009,6 +7009,10 @@ static void sync_flywheel_task(void *arg)
         if (spent > s_sfw_max_us) s_sfw_max_us = spent;
         if (s_sfw.evals >= 64u) {
             uint32_t ns = spent * 1000u / s_sfw.evals;
+            /* Wall time includes preemption (priority 2, below V5): board
+             * 2026-10-06 one 101 ms run pinned the estimate at 202 us/eval
+             * and the budget at its floor. A sample may at most double it. */
+            if (ns > 2u * s_sfw_ns_per_eval) ns = 2u * s_sfw_ns_per_eval;
             s_sfw_ns_per_eval = (7u * s_sfw_ns_per_eval + ns) / 8u;
             if (!s_sfw_ns_per_eval) s_sfw_ns_per_eval = 1u;
         }
