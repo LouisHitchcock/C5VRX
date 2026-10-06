@@ -688,21 +688,20 @@ static bool s_fixed_bw_edge;
 /* Native packet-AGC restart patch candidates from the PHY bit scan ('i',
  * board 2026-10-06, A1, VTX near, base 15.8 restarts/ms). Lab state in RAM
  * ('z' cycles it), re-applied in every PHY restore, native mode only.
- * 71C4[25]=1: 3.0 restarts/ms, walks bottom out at G34 instead of G20,
- *   trapped G36..47 (still tracking). Field undecoded.
+ * 71C4[25:23] (field sweep '1', vendor 2): 0..3 restart 22-47/ms with
+ *   walks to G20; 7 restarts 1.2-2.4/ms, walks only G36..45, trapped G38..45
+ *   (still moving); 5 mostly freezes. Field undecoded.
  * 702C[7]=0: 4.8/ms but gain parked at G36; flips the sign of the vendor
  *   compensation byte (phy_set_rx_comp_new), i.e. an offset, kept for A/B. */
-static const struct { uint32_t addr; uint8_t bit, value; } s_agc_patches[] = {
-    {0x600A71C4u, 25u, 1u},
-    {0x600A702Cu, 7u, 0u},
+static const struct { uint32_t addr, mask, value, vendor; } s_agc_patches[] = {
+    {0x600A71C4u, 7u << 23, 7u << 23, 2u << 23},
+    {0x600A702Cu, 1u << 7, 0u, 1u << 7},
 };
 static uint8_t s_agc_patch;
 static void agc_patch_write(unsigned k, bool patched)
 {
-    uint32_t m = 1u << s_agc_patches[k].bit;
-    bool one = patched ? s_agc_patches[k].value : !s_agc_patches[k].value;
-    REG32(s_agc_patches[k].addr) = one ? (REG32(s_agc_patches[k].addr) | m)
-                                       : (REG32(s_agc_patches[k].addr) & ~m);
+    uint32_t v = patched ? s_agc_patches[k].value : s_agc_patches[k].vendor;
+    REG32(s_agc_patches[k].addr) = (REG32(s_agc_patches[k].addr) & ~s_agc_patches[k].mask) | v;
 }
 void rf_apply_agc_patch(void)
 {

@@ -3531,9 +3531,11 @@ static bool lab_run_agc_witness(bool automatic)
  * (docs/native-agc-v2.md); no decoded register stops that while keeping it
  * tracking. This flips one bit at a time in the BB AGC/detection blocks,
  * measures gain-walk starts per ms on DIAG[20..26] (the witness capture)
- * and restores the word. A bit that moves the restart rate past 2x, either
- * way, is re-measured on 16 windows and reported. Video is garbage while it
- * runs; nothing is persisted. */
+ * and restores the word. A bit that at least halves the share of samples
+ * inside gain walks while the AGC still acquires is re-measured on 16
+ * windows and reported; bits that stop it (frozen gain) are only counted.
+ * The baseline includes any 'z' patch, so a second run searches on top of
+ * the first result. Video is garbage while it runs; nothing is persisted. */
 #define AGC_SCAN_WINDOWS 4u
 extern void phy_enable_agc(void);
 static void agc_scan_measure(uint8_t *window, unsigned windows, agc_witness_result_t *r)
@@ -3550,7 +3552,7 @@ static void agc_scan_measure(uint8_t *window, unsigned windows, agc_witness_resu
     (void)agc_witness_choose(&w, r);
 }
 
-/* 'z': next native AGC patch candidate set (none, 71C4[25], 702C[7], both),
+/* 'z': next native AGC patch candidate set (none, 71C4[25:23]=7, 702C[7], both),
  * measured on 3 x 16 windows; it stays applied for a picture/range check. */
 static void lab_cycle_agc_patch(void)
 {
@@ -3562,7 +3564,7 @@ static void lab_cycle_agc_patch(void)
         printf("AGC_PATCH refused=other_lab_or_menu\n");
         return;
     }
-    static const char *const names[] = {"none", "71C4b25", "702Cb7", "both"};
+    static const char *const names[] = {"none", "71C4f7", "702Cb7", "both"};
     uint8_t mask = (uint8_t)((rf_agc_patch() + 1u) & 3u);
     rf_set_agc_patch(mask);
     uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
@@ -3587,6 +3589,197 @@ static void lab_cycle_agc_patch(void)
     free(window);
 }
 
+/* '1': value sweep of the field around the scan's best bit, 71C4[28:23]
+ * (64 values, native, VTX on). 71C4[25] alone cut restarts 4-8x but left
+ * deep walks (board, 2026-10-06); a single bit is rarely the whole field.
+ * Prints every value, restores the word, keeps any 'z' patch afterwards. */
+#define AGC_FIELD_REG   0x600A71C4u
+#define AGC_FIELD_SHIFT 23u
+#define AGC_FIELD_BITS  6u
+static void lab_run_agc_field_sweep(void)
+{
+    if (!rf_native_agc_active()) { printf("AGC_FIELD refused=native_agc_only\n"); return; }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_FIELD refused=other_lab_or_menu\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_FIELD refused=no_memory\n"); return; }
+    s_rssi_probe_active = true;
+    c5vrx4_suspend();
+    const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, 28};
+    rf_route_diag_capture(diag);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    volatile uint32_t *reg = (volatile uint32_t *)AGC_FIELD_REG;
+    const uint32_t orig = *reg;
+    const uint32_t mask = ((1u << AGC_FIELD_BITS) - 1u) << AGC_FIELD_SHIFT;
+    printf("AGC_FIELD reg=0x%08lx bits=%u..%u orig=0x%08lx orig_value=%lu\n",
+           (unsigned long)AGC_FIELD_REG, AGC_FIELD_SHIFT + AGC_FIELD_BITS - 1u, AGC_FIELD_SHIFT,
+           (unsigned long)orig, (unsigned long)((orig & mask) >> AGC_FIELD_SHIFT));
+    for (uint32_t v = 0; v < (1u << AGC_FIELD_BITS); ++v) {
+        *reg = (orig & ~mask) | (v << AGC_FIELD_SHIFT);
+        __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+        vTaskDelay(pdMS_TO_TICKS(3));
+        agc_witness_result_t r;
+        agc_scan_measure(window, 8u, &r);
+        if (!r.acq_per_ms_x10) phy_enable_agc(); /* resume for the next value */
+        printf("AGC_FIELD value=%lu acq_per_ms=%u.%u acq_us=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
+               (unsigned long)v, r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u,
+               r.acq_us_x10 / 10u, r.acq_us_x10 % 10u, r.acq_share_pm,
+               r.trapped_min, r.trapped_max, r.gain_min_acq);
+    }
+    *reg = orig;
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    phy_enable_agc();
+    rf_apply_agc_patch();
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("AGC_FIELD done restored=0x%08lx\n", (unsigned long)*reg);
+}
+
+/* '2': native AGC level on top of the restart patch ('z' -> 71C4f7). With
+ * the patch the AGC barely restarts but settles too high on a near VTX
+ * (clip 148 pm vs 40-76 without; board 2026-10-06). The vendor rx
+ * compensation bytes 702C[7:0] and 70A0[31:24] (phy_set_rx_comp_new, -30)
+ * move the settled level (docs/native-agc-v2.md sweep). Static register
+ * values, no control loop: each value is measured for clipping/coherence on
+ * the normal lanes and for restarts on DIAG[20..26], then restored. */
+static void agc_level_measure(uint8_t *window, unsigned *clip, unsigned *coh,
+                              unsigned *p50, unsigned *p95)
+{
+    unsigned n = 0;
+    *clip = *coh = *p50 = *p95 = 0;
+    for (unsigned k = 0; k < 16u; ++k) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+        if (!rx_probe_copy_completed(window)) continue;
+        dg3_observation_t o = direct_gain_v3_measure(window, RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES,
+                                                     c5vrx_phase8_gain_lut,
+                                                     (uint64_t)esp_timer_get_time());
+        *clip += o.clip_pm; *coh += o.coherence; *p50 += o.p50; *p95 += o.p95; ++n;
+    }
+    if (n) { *clip /= n; *coh /= n; *p50 /= n; *p95 /= n; }
+}
+
+static void lab_run_agc_level_sweep(void)
+{
+    if (!rf_native_agc_active() || !(rf_agc_patch() & 1u)) {
+        printf("AGC_LEVEL refused=native_with_71C4f7_patch_only ('z' first)\n");
+        return;
+    }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_LEVEL refused=other_lab_or_menu\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_LEVEL refused=no_memory\n"); return; }
+    s_rssi_probe_active = true;
+    c5vrx4_suspend();
+    static const struct { uint32_t addr; uint8_t shift; const char *name; } fields[] = {
+        {0x600A702Cu, 0u, "702C[7:0]"}, {0x600A70A0u, 24u, "70A0[31:24]"},
+    };
+    static const int8_t comps[] = {-30, -33, -36, -39, -42, -45, -48, -54};
+    const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, 28};
+    for (unsigned f = 0; f < 2u; ++f) {
+        volatile uint32_t *reg = (volatile uint32_t *)fields[f].addr;
+        const uint32_t orig = *reg, mask = 0xFFu << fields[f].shift;
+        printf("AGC_LEVEL field=%s orig=%d\n", fields[f].name, (int)(int8_t)((orig & mask) >> fields[f].shift));
+        for (unsigned c = 0; c < sizeof(comps); ++c) {
+            *reg = (orig & ~mask) | ((uint32_t)(uint8_t)comps[c] << fields[f].shift);
+            __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            unsigned clip, coh, p50, p95;
+            agc_level_measure(window, &clip, &coh, &p50, &p95);
+            rf_route_diag_capture(diag);
+            vTaskDelay(pdMS_TO_TICKS(3));
+            agc_witness_result_t r;
+            agc_scan_measure(window, 8u, &r);
+            rf_restore_iq_routes();
+            printf("AGC_LEVEL field=%s comp=%d clip_pm=%u coh=%u p50=%u p95=%u acq_per_ms=%u.%u "
+                   "share_pm=%u trapped=%u..%u walk_min=%u\n", fields[f].name, comps[c], clip, coh,
+                   p50, p95, r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u, r.acq_share_pm,
+                   r.trapped_min, r.trapped_max, r.gain_min_acq);
+        }
+        *reg = orig;
+        __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    }
+    phy_enable_agc();
+    rf_apply_agc_patch();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("AGC_LEVEL done\n");
+}
+
+/* '3': interleaved A/B check of the second scan's strongest candidates (on
+ * top of 71C4f7 + coarse lanes, board 2026-10-06). The remaining restarts
+ * are rare and bursty, so a single 16-window confirm let 1297 of 5088 bits
+ * "halve" the share by chance; here each bit alternates off/on for 6 rounds
+ * of 16 windows and both means are printed. */
+static void lab_run_agc_ab(void)
+{
+    static const struct { uint32_t addr; uint8_t bit; } cand[] = {
+        {0x600A7000u, 11}, {0x600A7000u, 19}, {0x600A7000u, 21}, {0x600A7000u, 24},
+        {0x600A7000u, 28}, {0x600A7000u, 29}, {0x600A7008u, 4}, {0x600A7008u, 15},
+        {0x600A7008u, 24}, {0x600A7008u, 27}, {0x600A7008u, 29}, {0x600A700Cu, 6},
+        {0x600A7010u, 14}, {0x600A7010u, 15}, {0x600A7010u, 31}, {0x600A7014u, 7},
+        {0x600A70ECu, 26}, {0x600A70F8u, 10}, {0x600A7108u, 2}, {0x600A719Cu, 29},
+        {0x600A71C4u, 31},
+    };
+    if (!rf_native_agc_active()) { printf("AGC_AB refused=native_agc_only\n"); return; }
+    if (s_menu_active || s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) {
+        printf("AGC_AB refused=other_lab_or_menu\n");
+        return;
+    }
+    uint8_t *window = malloc(CONTROL_SAMPLE_BYTES);
+    if (!window) { printf("AGC_AB refused=no_memory\n"); return; }
+    s_rssi_probe_active = true;
+    c5vrx4_suspend();
+    const uint8_t diag[8] = {20, 21, 22, 23, 24, 25, 26, 28};
+    rf_route_diag_capture(diag);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    for (unsigned c = 0; c < sizeof(cand) / sizeof(cand[0]); ++c) {
+        volatile uint32_t *reg = (volatile uint32_t *)cand[c].addr;
+        const uint32_t orig = *reg;
+        unsigned share[2] = {0, 0}, rate[2] = {0, 0}, walk[2] = {255, 255}, lo[2] = {255, 255}, hi[2] = {0, 0};
+        for (unsigned round = 0; round < 6u; ++round) {
+            for (unsigned on = 0; on < 2u; ++on) {
+                *reg = on ? (orig ^ (1u << cand[c].bit)) : orig;
+                __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+                vTaskDelay(pdMS_TO_TICKS(3));
+                agc_witness_result_t r;
+                agc_scan_measure(window, 16u, &r);
+                if (!r.acq_per_ms_x10 && !on) phy_enable_agc();
+                share[on] += r.acq_share_pm;
+                rate[on] += r.acq_per_ms_x10;
+                if (r.gain_min_acq < walk[on]) walk[on] = r.gain_min_acq;
+                if (r.trapped_min < lo[on]) lo[on] = r.trapped_min;
+                if (r.trapped_max > hi[on] && r.trapped_max != 255u) hi[on] = r.trapped_max;
+            }
+        }
+        *reg = orig;
+        __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+        phy_enable_agc();
+        vTaskDelay(pdMS_TO_TICKS(3));
+        printf("AGC_AB reg=0x%08lx bit=%u off_share_pm=%u.%u on_share_pm=%u.%u off_acq_per_ms=%u.%u "
+               "on_acq_per_ms=%u.%u off_walk_min=%u on_walk_min=%u on_trapped=%u..%u\n",
+               (unsigned long)cand[c].addr, cand[c].bit,
+               share[0] / 6u, (share[0] % 6u) * 10u / 6u, share[1] / 6u, (share[1] % 6u) * 10u / 6u,
+               rate[0] / 60u, (rate[0] / 6u) % 10u, rate[1] / 60u, (rate[1] / 6u) % 10u,
+               walk[0], walk[1], lo[1], hi[1]);
+    }
+    rf_apply_agc_patch();
+    rf_restore_iq_routes();
+    c5vrx4_resume();
+    ++s_profile_generation;
+    s_rssi_probe_active = false;
+    free(window);
+    printf("AGC_AB done\n");
+}
+
 static void lab_run_agc_bitscan(void)
 {
     if (!rf_native_agc_active()) {
@@ -3605,15 +3798,17 @@ static void lab_run_agc_bitscan(void)
     rf_route_diag_capture(diag);
     vTaskDelay(pdMS_TO_TICKS(5));
     agc_witness_result_t r;
-    unsigned base = 0, tried = 0, hits = 0;
+    unsigned base = 0, base_share = 0, tried = 0, hits = 0, frozen = 0;
     for (unsigned k = 0; k < 3u; ++k) {
-        agc_scan_measure(window, 8u, &r);
+        agc_scan_measure(window, 16u, &r);
         base += r.acq_per_ms_x10;
+        base_share += r.acq_share_pm;
         printf("AGC_SCAN baseline acq_per_ms=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
                r.acq_per_ms_x10 / 10u, r.acq_per_ms_x10 % 10u, r.acq_share_pm,
                r.trapped_min, r.trapped_max, r.gain_min_acq);
     }
     base /= 3u;
+    base_share = (base_share + 2u) / 3u;
     if (base < 20u) {
         printf("AGC_SCAN refused=no_restarts_carrier_needed\n");
     } else {
@@ -3631,21 +3826,29 @@ static void lab_run_agc_bitscan(void)
                     vTaskDelay(pdMS_TO_TICKS(3));
                     agc_scan_measure(window, AGC_SCAN_WINDOWS, &r);
                     unsigned rate = r.acq_per_ms_x10;
-                    if (rate * 2u < base || rate > base * 2u) {
+                    /* Improvement = disturbed-sample share at least halved
+                     * while the AGC still acquires (a stopped AGC is a
+                     * frozen gain, counted but not reported). */
+                    bool better = rate && r.acq_share_pm * 2u <= base_share;
+                    if (better) {
                         agc_scan_measure(window, 16u, &r); /* confirm */
                         rate = r.acq_per_ms_x10;
-                        if (rate * 2u < base || rate > base * 2u) {
+                        if (rate && r.acq_share_pm * 2u <= base_share) {
                             ++hits;
                             printf("AGC_SCAN hit reg=0x%08lx bit=%u orig=0x%08lx acq_per_ms=%u.%u "
-                                   "base=%u.%u share_pm=%u trapped=%u..%u walk_min=%u\n",
+                                   "base=%u.%u share_pm=%u base_share_pm=%u acq_us=%u.%u "
+                                   "trapped=%u..%u walk_min=%u\n",
                                    (unsigned long)addr, bit, (unsigned long)orig,
                                    rate / 10u, rate % 10u, base / 10u, base % 10u,
-                                   r.acq_share_pm, r.trapped_min, r.trapped_max, r.gain_min_acq);
+                                   r.acq_share_pm, base_share, r.acq_us_x10 / 10u, r.acq_us_x10 % 10u,
+                                   r.trapped_min, r.trapped_max, r.gain_min_acq);
                         }
+                    } else if (!rate) {
+                        ++frozen;
                     }
                     *reg = orig;
                     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
-                    if (rate * 2u < base || rate > base * 2u) {
+                    if (rate * 2u < base) {
                         /* A stopped BB AGC resumes only with the vendor
                          * strobe (702C[23], native-agc-analog-patch.md). */
                         vTaskDelay(pdMS_TO_TICKS(3));
@@ -3660,8 +3863,8 @@ static void lab_run_agc_bitscan(void)
                     vTaskDelay(pdMS_TO_TICKS(2));
                 }
             }
-            printf("AGC_SCAN block=0x%08lx done tried=%u hits=%u\n",
-                   (unsigned long)blocks[b].first, tried, hits);
+            printf("AGC_SCAN block=0x%08lx done tried=%u hits=%u frozen=%u\n",
+                   (unsigned long)blocks[b].first, tried, hits, frozen);
         }
     }
     rf_restore_iq_routes();
@@ -7639,6 +7842,12 @@ static void console_diag_task(void *arg)
                     lab_run_filter_sweep();
                 } else if (c == '=') {
                     (void)lab_run_bw_calibration(false);
+                } else if (c == '3') {
+                    lab_run_agc_ab();
+                } else if (c == '2') {
+                    lab_run_agc_level_sweep();
+                } else if (c == '1') {
+                    lab_run_agc_field_sweep();
                 } else if (c == 'z') {
                     lab_cycle_agc_patch();
                 } else if (c == 'i') {
@@ -7994,7 +8203,9 @@ static void console_diag_task(void *arg)
                     printf("  '=' / '^':   Fixed analog BW: measure noise width + store code (VTX off) / toggle, reboot\n");
                     printf("  '*' / '|':   Native AGC witness calibration (VTX on, native) / toggle acquisition mask, reboot\n");
                     printf("  'i':         PHY bit scan for the native AGC restart (VTX on, native; ~2 min garbage video)\n");
-                    printf("  'z':         Next native AGC patch candidate (none/71C4b25/702Cb7/both), measured, RAM only\n");
+                    printf("  'z':         Next native AGC patch candidate (none/71C4f7/702Cb7/both), measured, RAM only\n");
+                    printf("  '1':         Native AGC field sweep 71C4[28:23], 64 values (VTX on, native)\n");
+                    printf("  '2':         Native AGC level sweep 702C/70A0 comp on top of the 'z' patch (VTX on)\n");
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");
