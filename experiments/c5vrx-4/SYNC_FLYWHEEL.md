@@ -104,7 +104,7 @@ C5VRX-4. Hardware acceptance is pending.
 
 | Key | Action |
 |---|---|
-| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default on; it was off after the first hardware run starved the task watchdog, USB console and menu, until the 200 us / priority 2 / 50 us budget fix of 2026-10-06), reboot |
+| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default on; it was off after the first hardware run starved the task watchdog, USB console and menu, until the 2026-10-06 fix: 200 us tick, 50 us budget, priority 4 so its expiring data is processed on time, phase table in RAM), reboot |
 | `!` | `SYNC_FW` line: lock and standard, lines/clean/repaired/slots/rebuilt/missed, V syncs found/coasted, parity fixes, re-locks, acquisitions, skipped lines, floor skips, levels, period, noisy mode, `last_us`/`max_us`, budget, ns/evaluation |
 
 ## Host evidence (`tools/test_sync_flywheel.c`)

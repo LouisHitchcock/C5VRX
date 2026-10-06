@@ -7041,7 +7041,7 @@ static void sync_flywheel_task(void *arg)
         uint32_t spent = (uint32_t)(esp_timer_get_time() - t0);
         s_sfw_last_us = spent;
         if (spent > s_sfw_max_us) s_sfw_max_us = spent;
-        /* Wall time includes preemption (priority 2, below V5): a run that
+        /* Wall time includes preemption (Wi-Fi, esp_timer): a run that
          * took more than twice its target was preempted and says nothing
          * about the cost (board 2026-10-06: such runs drove the estimate to
          * 357 ns/eval, the budget to ~140 and acquisition never locked). */
@@ -8683,10 +8683,12 @@ esp_err_t video_start(void)
                                 &s_v3_sentinel_task_handle) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
 #ifdef C5VRX4_EXPERIMENT
-    /* Priority 2: below the V5 observer (gain reaction first), above the
-     * console. */
+    /* Priority 4: its data expires ~0.5 ms after RX writes it, so it must
+     * run on time (board 2026-10-06: at priority 2 the analog AGC task held
+     * it off for up to 90 ms and it never locked). Its CPU share is bounded
+     * by its per-run budget (50 us per 200 us), not by its priority. */
     if (c5vrx4_sync_flywheel_enabled())
-        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 2,
+        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 4,
                                     &s_sfw_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 #endif
     const esp_timer_create_args_t v3_timer_args = {

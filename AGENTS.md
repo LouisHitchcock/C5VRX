@@ -325,8 +325,10 @@ own revision.
     re-lock and mask-safe bytes. Goggle behaviour is not measured.
   - Hardware, 2026-10-06: default on starved IDLE (task watchdog in
     gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Since
-    the same day it shares the 200 us tick at priority 2 with a 50 us
-    budget, and its acquisition probes coarsely; default on again with line
+    the same day it shares the 200 us tick with a 50 us budget at priority
+    4 (its data expires ~0.5 ms after RX; at priority 2 the analog AGC task
+    held it off for up to 90 ms), reads a RAM copy of the phase table, and
+    its acquisition probes coarsely; default on again with line
     repair (operator, 2026-10-06), `w` or the menu opts out.
 - **Span75 post-detection aliasing (host model, 2026-10-05):**
   `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated

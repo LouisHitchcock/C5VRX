@@ -39,10 +39,13 @@
 #define SCORE_NONE     255u
 
 static uint32_t s_evals;
+/* RAM copy of the phase table (256 bytes): every evaluation looks it up, and
+ * the generated tables live in flash (board 2026-10-06: ~340 ns/eval). */
+static uint8_t s_phase[256];
 
 static inline uint8_t ph_at(const sfw_ring_t *r, uint64_t k)
 {
-    return r->phase[r->ring[(uint32_t)k & (r->ring_bytes - 1u)]];
+    return s_phase[r->ring[(uint32_t)k & (r->ring_bytes - 1u)]];
 }
 
 static inline int wrap8(int d)
@@ -96,6 +99,7 @@ static void build_cells(const sfw_ring_t *r)
 {
     int key = r->mask_bit0 ? (int)(r->clear_bit0 & 1u) : 2;
     if (s_cell_phase == r->phase && s_cell_mask == key) return;
+    memcpy(s_phase, r->phase, sizeof(s_phase));
     int best[256];
     for (int t = 0; t < 256; ++t) best[t] = 1 << 30;
     for (int raw = 0; raw < 256; ++raw) {
@@ -201,7 +205,7 @@ static bool conceal(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_
         uint8_t raw = r->ring[(uint32_t)(a - off + k) & mask];
         int d = k < SEAM ? d0 * (int)(SEAM - k) / (int)(SEAM + 1u) :
                 k >= n - SEAM ? d1 * (int)(k - (n - SEAM) + 1u) / (int)(SEAM + 1u) : 0;
-        if (d) raw = s_cell[(uint32_t)((int)r->phase[raw] + d) & 255u];
+        if (d) raw = s_cell[(uint32_t)((int)s_phase[raw] + d) & 255u];
         else if (r->mask_bit0) raw = (uint8_t)((raw & 0xFEu) | keep);
         r->ring[(uint32_t)(a + k) & mask] = raw;
     }
