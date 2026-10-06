@@ -6739,6 +6739,12 @@ static bool predemod_quiet_owner(void)
  * service re-holds the new gain's codes. Direct V5 only. A carrier cannot
  * be searched on; thermal drift while the VTX stays on is not tracked. */
 #define DCO_RESEARCH_US 120000000LL
+/* No carrier = no sync fragment for this long at the table maximum. The idle
+ * raster alone is not enough: board 2026-10-06, VTX off at G83, the
+ * uncorrected DC (~1.1 fine cell) made receiver noise read q 57-65, so the
+ * raster never entered and the search that removes that DC never ran. */
+#define DCO_NO_SYNC_US  3000000LL
+static volatile int64_t s_last_idle_sync_us;
 typedef struct { int16_t code[2]; uint8_t valid; } dco_entry_t;
 typedef struct {
     uint16_t freq;
@@ -6784,7 +6790,10 @@ static void predemod_dco_service(void)
         dco_table_select(freq, lo, hi);
     }
     const int64_t now = esp_timer_get_time();
-    if (IDLE_RASTER_ACTIVE()) {
+    const bool no_carrier = IDLE_RASTER_ACTIVE() ||
+        (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+         now - s_last_idle_sync_us > DCO_NO_SYNC_US);
+    if (no_carrier) {
         /* Next stale gain, maximum first. */
         int target = -1;
         for (int g = hi; g >= (int)lo; --g)
@@ -7584,7 +7593,7 @@ static void analog_agc_task(void *arg)
          * transmitter there (IDLE_RASTER_SYNC_Q), not only a clean one. */
         static unsigned idle_sync_age = 100u;
         const bool idle_sync = sync_quality >= IDLE_RASTER_SYNC_Q;
-        if (idle_sync) idle_sync_age = 0;
+        if (idle_sync) { idle_sync_age = 0; s_last_idle_sync_us = esp_timer_get_time(); }
         else if (idle_sync_age < 100u) ++idle_sync_age;
         bool recent_sync = sync_age_ticks < 20;
 #ifdef C5VRX4_EXPERIMENT
