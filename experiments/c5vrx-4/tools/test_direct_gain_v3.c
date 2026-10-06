@@ -121,13 +121,19 @@ int main(void)
     dg3_observation_t multipath = obs(20, 35, 50, 0, 20, 300000u);
     assert(direct_gain_v3_tick(&v3, &multipath) == next);
     assert(v3.writes == 1u);
+    for (unsigned k = 0; k < 1000u; ++k) {
+        multipath.observed_us += 200u;
+        multipath.coherence = (uint8_t)(k % 101u);
+        assert(direct_gain_v3_tick(&v3, &multipath) == next);
+    }
+    assert(v3.writes == 1u);
 
     /* Saturation drops sensitivity; carrier loss listens at maximum gain
      * (the table maximum, not the G62 survival trap). */
-    dg3_observation_t clipped = obs(50, 105, 0, 200, 90, 400000u);
+    dg3_observation_t clipped = obs(50, 105, 0, 200, 90, 600000u);
     uint8_t down = direct_gain_v3_tick(&v3, &clipped);
     assert(down != next && v3.overloads == 1u);
-    dg3_observation_t lost = obs(1, 2, 950, 0, 0, 500000u);
+    dg3_observation_t lost = obs(1, 2, 950, 0, 0, 700000u);
     assert(direct_gain_v3_tick(&v3, &lost) == table.max_index);
     /* Still no carrier at maximum gain: stays there, no further writes. */
     uint32_t lost_writes = v3.writes;
@@ -162,7 +168,7 @@ int main(void)
     direct_gain_v3_reset(&v3, &table, 35u, 62u);
     v3.bad_state[34] = 3u;
     high.observed_us += 100000u;
-    assert(direct_gain_v3_tick(&v3, &high) != 34u);          /* bad state skipped */
+    assert(direct_gain_v3_tick(&v3, &high) == 34u);          /* old fade ban ignored */
 
     /* A rapidly changing input around the write must not teach a false
      * receiver gain ratio, even if the post-write envelope stabilizes. */
@@ -454,15 +460,20 @@ int main(void)
         v3.confidence[61] = 3u;
         v3.uncertainty_pm[61] = 100u;
         v3.learned = 5u;
+        v3.bad_state[61] = 3u; /* old indoor fade history */
         dg3_map_blob_t blob;
         assert(direct_gain_v3_export_map(&v3, &blob) == 2u);
+        assert(blob.bad_state[61] == 0u);
+        blob.bad_state[61] = 3u; /* a legacy on-device v1 map */
         direct_gain_v3_reset(&v3, &table, 60u, 62u);
         assert(v3.confidence[61] == 3u && v3.relative_power_q10[61] == 1300u);
+        assert(v3.bad_state[61] == 0u);
         direct_gain_v3_t fresh;
         memset(&fresh, 0, sizeof(fresh));
         direct_gain_v3_reset(&fresh, &table, 60u, 62u);
         assert(!fresh.confidence[61]);
         assert(direct_gain_v3_import_map(&fresh, &blob) && fresh.relative_power_q10[61] == 1300u);
+        assert(fresh.bad_state[61] == 0u);
         direct_gain_v3_reset(&fresh, &table, 70u, 62u);
         assert(!fresh.confidence[61]);
         direct_gain_v3_reset(&fresh, &table, 70u, 62u);

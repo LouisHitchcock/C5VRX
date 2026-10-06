@@ -267,7 +267,6 @@ unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *b
     blob->max_index = v3->table.max_index;
     unsigned confident = 0;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
-        blob->bad_state[g] = v3->bad_state[g];
         if (!v3->confidence[g] || !v3->relative_power_q10[g]) continue;
         blob->confidence[g] = v3->confidence[g];
         blob->power_q10[g] = v3->relative_power_q10[g];
@@ -285,7 +284,7 @@ bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
     const uint8_t anchor = v3->current_gain;
     if (!blob->confidence[anchor] || !blob->power_q10[anchor]) return false;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
-        v3->bad_state[g] = blob->bad_state[g];
+        v3->bad_state[g] = 0u; /* ignore legacy channel-dependent bans */
         if (!blob->confidence[g] || !blob->power_q10[g]) continue;
         v3->relative_power_q10[g] = blob->power_q10[g];
         v3->uncertainty_pm[g] = blob->uncertainty_pm[g];
@@ -295,7 +294,9 @@ bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
     return true;
 }
 
-/* An unknown bank or RF stage is never assigned a fabricated dB value.
+/* Channel-dependent fault counters must not exclude destinations: three
+ * fades used to ban a bank permanently, including across NVS/PHY resets.
+ * An unknown bank or RF stage is never assigned a fabricated dB value.
  * Within one BB bank the physical Fine order supplies only a low-confidence
  * local prior. Measured tuple responses replace that prior. */
 static bool predict(const direct_gain_v3_t *v3, uint8_t candidate,
@@ -332,7 +333,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
                           (up ? -distance : distance);
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if (v3->confidence[g] && v3->confidence[v3->current_gain]) {
                 bool measured_up = v3->relative_power_q10[g] >
                                    v3->relative_power_q10[v3->current_gain];
@@ -351,7 +351,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
         int boundary_fine = up ? 5 - distance : distance;
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if (t->rf_stage == current->rf_stage &&
                 t->bb_code == wanted_bb &&
                 t->fine_code == boundary_fine) return (uint8_t)g;
@@ -364,7 +363,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
         int boundary_fine = up ? 5 - distance : distance;
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if ((int)t->rf_stage == wanted_rf && t->bb_code == 1u &&
                 t->fine_code == boundary_fine) return (uint8_t)g;
         }
@@ -407,7 +405,6 @@ static uint8_t select_destination(const direct_gain_v3_t *v3,
     int best_artifact = 999;
     for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
         if (g == v3->current_gain) continue;
-        if (v3->bad_state[g] >= 3u) continue;
         int ratio, uncertainty;
         if (!predict(v3, (uint8_t)g, &ratio, &uncertainty)) continue;
         int p50 = (int)o->p50 * ratio / 1024;
@@ -783,7 +780,11 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         uint16_t *score = &v3->artifact_score[v3->current_gain];
         *score = *score ? (uint16_t)((3u * *score + artifact) / 4u) :
                           (uint16_t)artifact;
-        if (o->clip_pm >= 100 || o->origin_pm >= 500 || o->coherence < 30) {
+        /* Poor phase/origin occupancy can be a moving-channel fade, not a
+         * defective gain tuple. Even clipping depends on incoming RF power:
+         * count it diagnostically, but never blacklist a physical gain state.
+         * Saturation still takes the immediate protected drop below. */
+        if (o->clip_pm >= 100) {
             if (v3->bad_state[v3->current_gain] < 15u)
                 ++v3->bad_state[v3->current_gain];
         } else if (healthy_in(o, band)) v3->bad_state[v3->current_gain] = 0u;

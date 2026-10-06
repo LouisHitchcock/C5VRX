@@ -21,7 +21,13 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 - Six original DAC GPIOs and resistor network; no CPU sample-paced output.
 - Direct Gain V5 by default: first-window physical correction, 200-us observer,
   descriptor dedupe, table-maximum listening, measured noise lane cap and
-  anti-hunt damping. Native AGC remains a separate opt-in gain owner.
+  anti-hunt damping. Channel fades, poor phase coherence and prior clipping
+  never permanently blacklist gain tuples; legacy NVS bans are ignored while
+  measured gain ratios remain available. A healthy envelope stays write-free
+  even with poor phase, while real overload still drops gain immediately.
+  This prevents firmware-induced loss of available gain; indoor multipath and
+  any RF/dB improvement still require a board A/B test with the moving quad.
+  Native AGC remains a separate opt-in gain owner.
 - Fixed fine IQ lanes by default: ADC bits {9,7,6,5} on I and Q (step 32
   codes, signed window +-256), selected before PARLIO RX starts and never
   switched at runtime, for every gain owner. Analog gain does all amplitude

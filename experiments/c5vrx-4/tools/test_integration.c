@@ -59,6 +59,30 @@ int main(void)
      * ultrafine without a carrier, not to escape rail codes, not when the
      * envelope is starved or high; analog gain does all the tracking. */
     fixed = 1u;
+    /* A moving indoor channel must not permanently remove a whole gain bank.
+     * Reproduce three settled low-coherence visits, then the old saved bank
+     * blacklist: a weak carrier must still reach the remaining gain range. */
+    memset(&v, 0, sizeof(v));
+    direct_gain_v3_reset(&v, &table, 63, 62);
+    dg3_observation_t fade = {.p50=9, .p90=13, .p95=17, .origin_pm=400,
+                              .coherence=20, .observed_us=90000};
+    for (unsigned n = 0; n < 3; ++n) {
+        direct_gain_v3_sync_applied(&v, 63, fade.observed_us);
+        fade.observed_us += 1000;
+        (void)direct_gain_v3_tick(&v, &fade);
+    }
+    assert(v.bad_state[63] == 0u && v.learned == 0u);
+    memset(&v, 0, sizeof(v));
+    direct_gain_v3_reset(&v, &table, 62, 62);
+    for (unsigned g = 63; g <= 73; ++g) v.bad_state[g] = 3u;
+    fade.origin_pm = 100; fade.coherence = 90;
+    for (unsigned n = 0; n < 2000; ++n) {
+        fade.observed_us += 200;
+        uint8_t gain = direct_gain_v3_tick(&v, &fade);
+        if (v.state == DG3_SETTLE && v.write_us == fade.observed_us)
+            direct_gain_v3_sync_applied(&v, gain, fade.observed_us);
+    }
+    assert(v.current_gain == table.max_index && v.writes > 0u);
     direct_gain_v3_reset(&v, &table, 81, 62);
     direct_gain_v3_enable_lanes(&v, 2);
     assert(v.lane == 1u && v.lane_cap == 1u);

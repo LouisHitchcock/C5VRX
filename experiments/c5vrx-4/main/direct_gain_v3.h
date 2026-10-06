@@ -35,7 +35,7 @@ typedef struct {
     uint16_t uncertainty_pm[DG3_STATES];
     uint16_t artifact_score[DG3_STATES];
     uint8_t confidence[DG3_STATES];
-    uint8_t bad_state[DG3_STATES];
+    uint8_t bad_state[DG3_STATES]; /* diagnostic clipping count; never a ban */
     uint16_t settle_us[3];
     /* Continuous requested gain relative to the current physical tuple. */
     int32_t virtual_gain_q8;
@@ -93,7 +93,7 @@ void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
 typedef struct {
     uint8_t version, max_index;
     uint8_t confidence[DG3_STATES];
-    uint8_t bad_state[DG3_STATES];
+    uint8_t bad_state[DG3_STATES]; /* v1 compatibility: export zero, ignore on import */
     uint16_t power_q10[DG3_STATES];
     uint16_t uncertainty_pm[DG3_STATES];
 } dg3_map_blob_t;
