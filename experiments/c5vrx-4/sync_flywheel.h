@@ -24,7 +24,18 @@
  * keeps coasting (the idle raster takes over after 2 s); when the VTX returns
  * at another phase, two matching full-line scans re-lock it in one step.
  * The colour burst is left alone (HDZero Goggles 2 uses colour-carrier
- * detect for its PAL/NTSC switch). Pure C, host-tested. */
+ * detect for its PAL/NTSC switch). Pure C, host-tested.
+ *
+ * Line repair (opt-in, operator request 2026-10-06; VCR-style dropout
+ * compensation): a line whose active video is mostly implausible phase
+ * steps (a short fade or multipath null) is replaced, from just after the
+ * burst to just before the front porch, by the same span of the line two
+ * (NTSC) or four (PAL) lines earlier - the same colour-subcarrier phase -
+ * when that line was clean. The copy is re-phased to the real samples at
+ * both ends (no seam glitch). At most SFW_CONCEAL_RUN lines in a row, never
+ * in the vertical interval, only bytes not yet read by TX and only from
+ * bytes RX has not overwritten (sfw_ring_t.intact_from). This alters picture
+ * content: a stale line instead of a noise streak. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -41,7 +52,12 @@ typedef struct {
      * value (the "not flagged" polarity). Ignored when !mask_bit0. */
     bool mask_bit0;
     uint8_t clear_bit0;
+    /* Line repair: oldest absolute sample RX has not overwritten (the copy
+     * source must be at or after it); 0 disables line repair. */
+    uint64_t intact_from;
 } sfw_ring_t;
+
+#define SFW_CONCEAL_RUN 6u      /* consecutive repaired lines at most */
 
 typedef enum { SFW_ACQUIRE = 0, SFW_TRACK = 1 } sfw_state_t;
 
@@ -81,9 +97,17 @@ typedef struct {
     int16_t v_slot;             /* next slot, -npre .. nbroad+npost-1 */
     bool v_found;               /* real broad pulses seen in this field */
     uint64_t v_end_q8;          /* end of the last handled interval: its lines stay vertical */
+    /* line repair: implausible-step score (of 24 points; 255 = not a
+     * picture line) per grid line, and the previous picture line */
+    uint8_t line_score[8];
+    uint64_t prev_line_start;
+    uint32_t prev_line;
+    bool prev_line_valid;
+    uint8_t conceal_run;
     /* counters */
     uint32_t lines, clean, repaired, missed, slots_repaired, vsyncs, v_coasted, v_parity,
-             acquisitions, relocks, skipped_lines, fast_lines, skipped_floor, rebuilt;
+             acquisitions, relocks, skipped_lines, fast_lines, skipped_floor, rebuilt,
+             concealed, conceal_no_source, conceal_late;
     uint32_t evals;             /* lowm evaluations in the last call */
 } sync_flywheel_t;
 

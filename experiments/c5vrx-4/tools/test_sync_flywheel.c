@@ -30,6 +30,7 @@ typedef struct {
 } scene_t;
 
 static unsigned s_seed = 1;
+static bool s_conceal;      /* line repair on in run_ring */
 static double urand(void) { s_seed = s_seed * 1103515245u + 12345u; return ((s_seed >> 8) & 0xFFFFFF) / 16777216.0; }
 static double grand(void)
 {
@@ -121,7 +122,7 @@ static uint8_t *run_ring(const uint8_t *in, uint64_t n, sync_flywheel_t *f, cons
                          bool mask, uint8_t clear, double *evals_per_line, uint32_t budget)
 {
     uint8_t *ring = calloc(RING, 1), *out = malloc(n);
-    sfw_ring_t r = {ring, RING, phase, mask, clear};
+    sfw_ring_t r = {ring, RING, phase, mask, clear, 0};
     sfw_init(f);
     uint64_t rx = 0, tx = 0, evals = 0, lines0 = 0;
     while (tx < n) {
@@ -132,6 +133,8 @@ static uint8_t *run_ring(const uint8_t *in, uint64_t n, sync_flywheel_t *f, cons
          * writes only data older than the newest completed descriptor,
          * which the control observers copy. */
         if (rx > DSCR) {
+            /* RX overwrites the ring RING bytes behind its write position. */
+            r.intact_from = s_conceal ? (rx > RING ? rx - RING + 1u : 1u) : 0u;
             uint64_t ceiling = rx - DSCR;
             uint64_t floor = (rx > LAG ? rx - LAG : 0) + DSCR + 512u;
             uint32_t before = f->lines;
@@ -238,6 +241,13 @@ static void scenario(bool pal)
            name, f.lines, f.clean, f.fast_lines, f.vsyncs, epl);
     assert(epl < 40.0);
     free(out);
+    /* Line repair on a clean signal: not one byte changes. */
+    s_conceal = true;
+    out = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_conceal = false;
+    printf("%s clean, line repair on: concealed=%u\n", name, f.concealed);
+    assert(f.concealed == 0 && memcmp(in, out, n) == 0);
+    free(out);
     free(in);
 
     /* 2. Deep fades: 0.5 field of pure noise (H and V syncs gone), then
@@ -331,11 +341,109 @@ static void scenario(bool pal)
     free(in);
 }
 
+/* Mean |DAC code error| over the active picture of grid line k. */
+static double line_err(const uint8_t *out, const uint8_t *truth, double L, uint64_t k)
+{
+    uint64_t a = (uint64_t)llround(k * L) + 420u, b = (uint64_t)llround((k + 1) * L) - 90u;
+    a += (3u - a % 3u) % 3u;
+    double e = 0; unsigned n = 0;
+    for (uint64_t j = a; j < b; j += 3, ++n) e += fabs((double)tx_code(out, j) - (double)tx_code(truth, j));
+    return e / n;
+}
+
+/* 6. Line repair: eight short dropouts (1.6 lines of noise each). The
+ * repaired picture must be far closer to the truth than the noise, and
+ * syncs stay intact. */
+static void line_repair_scenario(bool pal)
+{
+    const char *name = pal ? "PAL" : "NTSC";
+    uint64_t F = field_samples(pal), n = 8 * F;
+    double L = line_us(pal) * FS;
+    scene_t clean = {.pal = pal, .cfo_mhz = 0.15, .amp = 5.0, .noise = 0.25};
+    s_seed = 31;
+    uint8_t *truth = generate(&clean, n);
+    scene_t drop = clean;
+    /* The test picture changes brightness every 20 lines: keep each dropout
+     * and its 2/4-line source inside one block (a real vertical edge there
+     * would show the source line's content, as it must). */
+    uint64_t first = (uint64_t)(3.0 * F / L) + 40u;
+    first += (28u - first % 20u) % 20u;
+    for (unsigned j = 0; j < 8u; ++j) {
+        uint64_t k = first + j * 20u;
+        drop.fade[j] = (fade_t){(uint64_t)(k * L) + 500u, (uint64_t)(k * L) + 500u + (uint64_t)(1.6 * L), 0.0, 1.6, false};
+    }
+    drop.nfade = 8;
+    s_seed = 31;
+    uint8_t *in = generate(&drop, n);
+    sync_flywheel_t f;
+    uint8_t *plain = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_conceal = true;
+    uint8_t *fixed = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_conceal = false;
+    double e_plain = 0, e_fixed = 0;
+    for (unsigned j = 0; j < 8u; ++j)
+        for (unsigned d = 0; d < 2u; ++d) {
+            e_plain += line_err(plain, truth, L, first + j * 20u + d);
+            e_fixed += line_err(fixed, truth, L, first + j * 20u + d);
+            if (getenv("SFW_DEBUG"))
+                printf("  line %llu: plain %.2f fixed %.2f\n", (unsigned long long)(first + j * 20u + d),
+                       line_err(plain, truth, L, first + j * 20u + d), line_err(fixed, truth, L, first + j * 20u + d));
+        }
+    printf("%s line repair: concealed=%u no_source=%u late=%u  active-picture error %.2f -> %.2f codes/span\n",
+           name, f.concealed, f.conceal_no_source, f.conceal_late, e_plain / 16, e_fixed / 16);
+    assert(f.concealed >= 12u && e_fixed * 3.0 < e_plain);
+    for (unsigned a = 0; a < 3u; ++a) {
+        verdict_t v = verify(&clean, fixed, n, 3 * F, 7 * F, a);
+        assert(v.missing == 0 && v.bad_width == 0 && v.max_edge <= 15u);
+    }
+    /* Mask mode: copied bytes keep bit 0 unflagged. */
+    s_conceal = true;
+    uint8_t *masked = run_ring(in, n, &f, c5v4_phase_mask, true, 0, NULL, 4000);
+    s_conceal = false;
+    unsigned flagged = 0;
+    for (uint64_t k = 0; k < n; ++k) if (in[k] != masked[k]) flagged += masked[k] & 1u;
+    printf("%s line repair mask: concealed=%u flagged=%u\n", name, f.concealed, flagged);
+    assert(f.concealed >= 12u && flagged == 0);
+    free(masked); free(fixed); free(plain); free(in);
+
+    /* Range edge: every line weak. Repair must not make the picture worse. */
+    scene_t weak = clean;
+    weak.fade[0] = (fade_t){2 * F, n, 1.5, 0.9, false};
+    weak.nfade = 1;
+    s_seed = 31;
+    in = generate(&weak, n);
+    plain = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_conceal = true;
+    fixed = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+    s_conceal = false;
+    e_plain = e_fixed = 0;
+    double i_plain = 0, i_fixed = 0;
+    unsigned lines = 0, inner = 0;
+    for (uint64_t k = (uint64_t)(3.0 * F / L) + 30u; k < (uint64_t)(7.0 * F / L); ++k) {
+        long y = (long)(k % (uint64_t)(pal ? 625 : 525));
+        if (y < 30 || (y > 300 && y < 340)) continue;     /* stay off the vertical intervals */
+        double ep = line_err(plain, truth, L, k), ef = line_err(fixed, truth, L, k);
+        e_plain += ep; e_fixed += ef; ++lines;
+        /* Lines whose 2/4-line source lies in the same 20-line picture block. */
+        if (k % 20u >= (pal ? 4u : 2u)) { i_plain += ep; i_fixed += ef; ++inner; }
+    }
+    printf("%s line repair weak: concealed=%u no_source=%u  active-picture error %.2f -> %.2f codes/span "
+           "(away from the test picture's hard edges %.2f -> %.2f)\n", name, f.concealed,
+           f.conceal_no_source, e_plain / lines, e_fixed / lines, i_plain / inner, i_fixed / inner);
+    /* Uniformly weak lines are swapped only rarely (a line must look like a
+     * dropout against a clearly cleaner source); the cost stays at the
+     * noise level of this measurement. */
+    assert(e_fixed <= e_plain * 1.01 && i_fixed <= i_plain * 1.01);
+    free(fixed); free(plain); free(in); free(truth);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     scenario(true);
     scenario(false);
-    puts("PASS sync_flywheel: clean lines untouched, H and V syncs rebuilt through fades for every span alignment, mask-safe bytes, re-lock after a phase jump");
+    line_repair_scenario(true);
+    line_repair_scenario(false);
+    puts("PASS sync_flywheel: clean lines untouched, H and V syncs rebuilt through fades for every span alignment, mask-safe bytes, re-lock after a phase jump, dropout lines repaired");
     return 0;
 }

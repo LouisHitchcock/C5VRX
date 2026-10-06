@@ -24,6 +24,19 @@
 #define MAX_LAG        (4u * 2560u + 4096u)
 #define NEED_LINE      420u   /* window + a normal pulse (field phase known) */
 #define NEED_V_ACQ     2700u  /* + a broad pulse here or half a line later */
+/* Line repair: active picture from 9.4 us (after the burst) to 1.5 us before
+ * the next line start; 24 sampled spans; a line is bad at >= 8 implausible
+ * spans (pure noise scores ~13), a source clean at <= 3. */
+#define ACT_START      376u
+#define ACT_END        60u
+#define SCORE_POINTS   24u
+#define SCORE_BAD      8u
+#define SCORE_GOOD     3u
+/* A dropout, not range-edge noise: the line must score this much worse than
+ * its source (host model, uniformly weak carrier: at bad 6 / margin 0, 224 lines were
+ * swapped for equally noisy older ones and the picture got 2 % worse). */
+#define SCORE_MARGIN   7u
+#define SCORE_NONE     255u
 
 static uint32_t s_evals;
 
@@ -143,6 +156,97 @@ static inline int32_t blank_step(const sync_flywheel_t *f) { return (int32_t)f->
 
 /* ---- geometry ---------------------------------------------------------- */
 static inline bool pal(const sync_flywheel_t *f) { return f->nominal_q8 == (int32_t)SFW_PAL_LINE_Q8; }
+
+/* ---- line repair ------------------------------------------------------- */
+/* Implausible spans among SCORE_POINTS in [a, b): active video steps lie
+ * between blanking (black) and white, 7/3 of the sync depth above blanking
+ * (-2 MHz sync, +4.67 MHz white). Below half the sync depth or above white
+ * plus margin only noise or a click lands (uniform noise: ~54 %). */
+static unsigned line_score(const sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_t b)
+{
+    int blank = f->blank_q4 / 16, depth = (f->blank_q4 - f->sync_q4) / 16;
+    int lo = blank - depth / 2, hi = blank + depth * 7 / 3 + 10;
+    uint64_t stride = (b - a - 6u) / SCORE_POINTS;
+    unsigned bad = 0;
+    for (unsigned i = 0; i < SCORE_POINTS; ++i) {
+        int d = step3(r, a + 3u + i * stride);
+        bad += d < lo || d > hi;
+    }
+    s_evals += SCORE_POINTS;
+    return bad;
+}
+
+/* Copy [a, b) from off samples earlier. The decoder uses phase differences
+ * only, so the interior is a bit-exact copy; just the seams are re-phased:
+ * over the first and last SEAM samples the offset to the real sample before
+ * a (and at b) ramps in and out, so neither edge carries a glitch. (Re-phasing
+ * every byte through the strong cells added their ~8-bin quantization and
+ * cost ~1 % at the range edge in the host model.) */
+#define SEAM 48u
+static bool conceal(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_t b, uint64_t off,
+                    uint64_t floor, uint64_t avail_end)
+{
+    if (a < floor) {
+        if (b <= floor + 300u) { ++f->conceal_late; return false; }
+        a = floor;
+    }
+    if (b >= avail_end || a < off + 1u || a - off < r->intact_from) { ++f->conceal_no_source; return false; }
+    const uint32_t mask = r->ring_bytes - 1u;
+    uint32_t n = (uint32_t)(b - a);
+    if (n < 4u * SEAM) { ++f->conceal_late; return false; }
+    int d0 = wrap8((int)ph_at(r, a - 1u) - (int)ph_at(r, a - off - 1u));
+    int d1 = wrap8((int)ph_at(r, b) - (int)ph_at(r, b - off));
+    uint8_t keep = r->mask_bit0 ? (uint8_t)(r->clear_bit0 & 1u) : 0u;
+    for (uint32_t k = 0; k < n; ++k) {
+        uint8_t raw = r->ring[(uint32_t)(a - off + k) & mask];
+        int d = k < SEAM ? d0 * (int)(SEAM - k) / (int)(SEAM + 1u) :
+                k >= n - SEAM ? d1 * (int)(k - (n - SEAM) + 1u) / (int)(SEAM + 1u) : 0;
+        if (d) raw = s_cell[(uint32_t)((int)r->phase[raw] + d) & 255u];
+        else if (r->mask_bit0) raw = (uint8_t)((raw & 0xFEu) | keep);
+        r->ring[(uint32_t)(a + k) & mask] = raw;
+    }
+    s_evals += n / 16u;
+    return true;
+}
+
+/* A grid line that is not scored (vertical interval, skipped, repair off)
+ * can never be a source, and breaks the previous-line chain. */
+static inline void unscored(sync_flywheel_t *f, uint32_t line)
+{
+    f->line_score[line & 7u] = SCORE_NONE;
+    f->prev_line_valid = false;
+}
+
+/* Judge the previous picture line (now complete) and repair it from the
+ * line with the same subcarrier phase; then remember this line. */
+static void line_repair(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t start, uint32_t line,
+                        bool picture, uint64_t floor, uint64_t avail_end)
+{
+    f->line_score[line & 7u] = SCORE_NONE;
+    if (f->prev_line_valid && f->prev_line + 1u == line &&
+        start > f->prev_line_start + ACT_START + ACT_END + 600u) {
+        uint64_t a = f->prev_line_start + ACT_START, b = start - ACT_END;
+        unsigned score = line_score(f, r, a, b);
+        uint32_t back = pal(f) ? 4u : 2u;
+        uint8_t src = f->line_score[(f->prev_line - back) & 7u];
+        f->line_score[f->prev_line & 7u] = (uint8_t)score;
+        if (score < SCORE_BAD || score < (unsigned)src + SCORE_MARGIN) {
+            f->conceal_run = 0;
+        } else if (f->conceal_run >= SFW_CONCEAL_RUN || src > SCORE_GOOD) {
+            ++f->conceal_no_source;
+        } else if (conceal(f, r, a, b, ((uint64_t)back * (uint64_t)f->period_q8 + 128u) >> 8,
+                           floor, avail_end)) {
+            /* It now carries the source's picture (a later source too). */
+            f->line_score[f->prev_line & 7u] = src;
+            ++f->conceal_run;
+            ++f->concealed;
+        }
+    }
+    f->prev_line_start = start;
+    f->prev_line = line;
+    f->prev_line_valid = picture;
+    if (!picture) f->line_score[line & 7u] = SCORE_NONE;
+}
 static inline unsigned npre(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
 static inline unsigned nbroad(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
 static inline unsigned npost(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
@@ -447,6 +551,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         if ((f->v_armed && base >= v_start_q8(f) && base < v_stop_q8(f)) ||
             (f->v_valid && base < f->v_end_q8)) {
             {
+                unscored(f, f->grid_line);
                 advance(f, base + (uint64_t)(int64_t)f->period_q8);
                 ++f->lines;
                 ++processed;
@@ -454,6 +559,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
             }
         }
         if (avail_end - pred > MAX_LAG) {
+            unscored(f, f->grid_line);
             advance(f, base + (uint64_t)(int64_t)f->period_q8);
             ++f->skipped_lines;
             if (f->lines_since_clean < 0xFFFFFFFFu) ++f->lines_since_clean;
@@ -525,6 +631,10 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
             }
         }
         bool in_v = f->v_armed && base >= v_start_q8(f) && base < v_stop_q8(f);
+        if (r->intact_from && repair && f->v_valid)
+            line_repair(f, r, rnd(base), line, !in_v, write_floor, avail_end);
+        else
+            unscored(f, line);
 
         ++f->lines;
         ++processed;

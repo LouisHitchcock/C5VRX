@@ -362,6 +362,15 @@ bool c5vrx4_sync_flywheel_enabled(void)
     return s_sync_fw;
 }
 
+static int8_t s_line_fix = -1;
+bool c5vrx4_line_repair_enabled(void)
+{
+    /* Opt-in (operator request 2026-10-06): it alters picture content, and
+     * the goggle result is hardware-pending. Runs inside the flywheel. */
+    if (s_line_fix < 0) s_line_fix = nvs_flag("line_fix", false);
+    return s_line_fix && c5vrx4_sync_flywheel_enabled();
+}
+
 static int16_t s_last_std = -1;
 uint8_t c5vrx4_last_standard(void)
 {
@@ -416,6 +425,7 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
     [C5VRX4_OPT_NATIVE_PATCH] = {"NATIVE PATCH",  "native_patch", 1, 2, s_off_on},
     [C5VRX4_OPT_HW_DCO]       = {"HW DC CORR",    "dco_auto",     1, 2, s_off_on},
+    [C5VRX4_OPT_LINE_FIX]     = {"LINE REPAIR",   "line_fix",     0, 2, s_off_on},
 };
 static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
 static bool s_option_snapshot;

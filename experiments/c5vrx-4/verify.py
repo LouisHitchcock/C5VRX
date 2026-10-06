@@ -63,6 +63,10 @@ def main():
     assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video
     assert '"sync_fw", false' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, 200)" in video and "sync_flywheel_task, \"sync_fw\", 3072, NULL, 2," in video
     assert "sync_flywheel.c" in (ROOT / "component.cmake").read_text()
+    # Line repair: opt-in, needs the flywheel, selectable in SETUP, source bound set.
+    assert '"line_fix", false' in pipeline and "return s_line_fix && c5vrx4_sync_flywheel_enabled();" in pipeline
+    assert "    C5VRX4_OPT_LINE_FIX,\n};" in video.replace("\r\n", "\n")
+    assert "c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u" in video
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

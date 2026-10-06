@@ -150,10 +150,63 @@ descriptor still holds the received bytes.
 5. **Re-lock.** Power-cycle the VTX: one short timing jump, no rolling.
 6. **Native mode with the mask.** Same as 3, plus `AGC_MASK` unchanged.
 
+## Line repair (opt-in, 2026-10-06)
+
+Operator request (Leon, 2026-10-06): repair static streaks from short
+dropouts, VCR-style. This **alters picture content**: a dropout line shows an
+older line instead of noise. It runs inside the flywheel and needs it on;
+menu SETUP `LINE REPAIR` (NVS `c5vrx4/line_fix`, default off, reboot).
+
+- **Detection.** When line L starts, line L-1 is complete. 24 spans across
+  its active picture (9.4 us after the sync to 1.5 us before the next line)
+  are checked against the learned levels: video lies between half the sync
+  depth below blanking and white (7/3 of the sync depth above blanking) plus
+  a margin. Pure noise lands outside ~54 % of the time (~13 of 24); a clean
+  line 0.
+- **Decision.** Repair only a dropout: score >= 8, at least 7 worse than the
+  source line, the source clean (<= 3), at most 6 lines in a row, never in
+  the vertical interval or on a skipped line.
+- **Source.** The line 2 (NTSC, 455 subcarrier cycles) or 4 (PAL, 1135
+  cycles) lines earlier: the same colour-subcarrier phase, so the colour
+  stays right. It must not be overwritten by RX (`intact_from`: one ring
+  behind RX plus two descriptors); the copy goes only to bytes TX has not
+  read.
+- **Copy.** Bit-exact interior; only the first and last 48 samples (1.2 us,
+  in the blanking edges) are re-phased onto the real neighbours, so neither
+  seam carries a glitch. Mask mode keeps data bit 0 unflagged.
+- **Cost.** 24 evaluations per line plus a ~2.4 KB copy per repaired line,
+  inside the flywheel budget.
+
+Host evidence (`tools/test_sync_flywheel.c`, `line_repair_scenario`):
+
+| Case | Result |
+| --- | --- |
+| Clean signal, repair on | 0 lines repaired, output byte-identical |
+| 8 dropouts x 1.6 lines, PAL | 16 repaired; active-picture error 17.3 -> 2.4 DAC codes/span |
+| 8 dropouts x 1.6 lines, NTSC | 15 repaired; 17.1 -> 3.4 |
+| Mask mode | repaired, no flagged byte written |
+| Uniformly weak carrier (range edge) | 23 (PAL) / 11 (NTSC) lines swapped; error 13.44 -> 13.49 / 13.29 -> 13.30 (noise level) |
+
+Rejected while building it (host model, same file):
+
+- Re-phasing every copied byte through the strong cells: ~8-bin quantization,
+  ~1 % worse at the range edge. Only the seams are re-phased now.
+- Score >= 6 with no margin: at the range edge 224 lines were swapped for
+  equally noisy older ones and the picture got 1.3 % worse.
+- The decoder side of the same request (class-3 trajectories held/greyed
+  instead of blanking; wider near-origin history prior): <= 0.4 dB and
+  <= 3 % fewer sparkles at C/N 3-12 dB in `postdetect_alias_model.py`. Not
+  worth a change; the span75 endpoint decoder is at its information limit.
+
+Hardware gates: goggle picture through hand-over-antenna dropouts with
+repair on/off; `!` status `concealed` / `conceal_no_source` /
+`conceal_late`; no task watchdog with flywheel + repair on.
+
 ## Limits
 
-- The repair cannot recover the picture content of a damaged line. It only
-  keeps the raster valid.
+- The sync repair cannot recover the picture content of a damaged line; it
+  keeps the raster valid. Line repair (above) replaces a dropout line with an
+  older one, it does not recover it either.
 - Timing when coasting through a long blackout follows the learned period: a
   slow drift of a few ppm, invisible to the goggles. The VTX picture can sit a
   fraction of a microsecond off until the PLL pulls it back.

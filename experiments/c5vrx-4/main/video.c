@@ -5632,6 +5632,7 @@ static const uint8_t s_setup_options[] = {
     C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
     C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW, C5VRX4_OPT_CVBS,
     C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
+    C5VRX4_OPT_LINE_FIX,
 };
 #define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + sizeof(s_setup_options))
 
@@ -5649,10 +5650,14 @@ static bool menu_changes_pending(void)
 
 static void menu_option_text(unsigned option, char *value, size_t n)
 {
-    /* Native-AGC-only options do nothing under Direct V5: say so. */
+    /* Native-AGC-only options do nothing under Direct V5, and line repair
+     * runs inside the sync flywheel: say so. */
     bool native_only = option == C5VRX4_OPT_AGC_MASK || option == C5VRX4_OPT_NATIVE_PATCH;
+    bool needs_fw = option == C5VRX4_OPT_LINE_FIX &&
+                    !strcmp(c5vrx4_option_value(C5VRX4_OPT_SYNC_FW), "OFF");
     snprintf(value, n, "%s%s%s", c5vrx4_option_value(option),
-             native_only && !rf_native_agc_requested() ? " (NATIVE)" : "",
+             native_only && !rf_native_agc_requested() ? " (NATIVE)" :
+             needs_fw ? " (FLYWHEEL)" : "",
              c5vrx4_option_pending(option) ? " *" : "");
 }
 
@@ -7020,9 +7025,14 @@ static void sync_flywheel_task(void *arg)
         uint64_t ceiling = rx_abs - (newest ? newest : s_rx_dscr_nodes[ni].length);
         bool mask = c5vrx4_agc_mask_active();
         uint8_t flag = c5vrx4_agc_flag();
+        /* Line repair source bound: RX overwrites the ring one ring behind
+         * its write position; it may finish this descriptor and fill the
+         * next one while the flywheel runs. */
+        uint64_t reach = rx_abs + 2u * s_rx_dscr_nodes[ri].length + 512u;
         const sfw_ring_t ring = {
             s_raw_ring, RAW_RING_BYTES, c5v4_cvbs_phase_table(mask), mask,
             (uint8_t)((flag != C5VRX4_AGC_FLAG_UNKNOWN && (flag & 0x80u)) ? 1u : 0u),
+            c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u,
         };
         int64_t t0 = esp_timer_get_time();
         (void)sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget);
@@ -7051,6 +7061,7 @@ static void sync_flywheel_status_print(void)
            "repaired=%lu slots=%lu rebuilt=%lu missed=%lu vsyncs=%lu v_coasted=%lu parity=%lu "
            "relocks=%lu acq=%lu skipped=%lu floor_skips=%lu fast=%lu thr=%d sync_q4=%d blank_q4=%d "
            "period_q8=%ld noisy=%u last_us=%lu max_us=%lu budget=%lu ns_per_eval=%lu rebases=%lu "
+           "line_repair=%u concealed=%lu conceal_no_source=%lu conceal_late=%lu "
            "hardware_acceptance=pending\n",
            c5vrx4_sync_flywheel_enabled(), s_sfw_running, sfw_locked(f),
            std == 1 ? "PAL" : std == 2 ? "NTSC" : "none", (unsigned)f->state,
@@ -7061,7 +7072,9 @@ static void sync_flywheel_status_print(void)
            (unsigned long)f->skipped_floor, (unsigned long)f->fast_lines, f->thr, f->sync_q4,
            f->blank_q4, (long)f->period_q8, f->rebuild_lines ? 1u : 0u,
            (unsigned long)s_sfw_last_us, (unsigned long)s_sfw_max_us, (unsigned long)s_sfw_budget,
-           (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases);
+           (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases,
+           c5vrx4_line_repair_enabled(), (unsigned long)f->concealed,
+           (unsigned long)f->conceal_no_source, (unsigned long)f->conceal_late);
 }
 
 static void idle_raster_status_print(void)

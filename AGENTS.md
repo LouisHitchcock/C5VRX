@@ -438,7 +438,11 @@ requirements by themselves**.
   pulses (with part of the front porch) and vertical-interval slots in the raw
   ring ahead of the TX read, on a PLL line grid locked to the real VTX sync.
   It must keep these properties:
-  - picture content is never decoded or altered;
+  - picture content is never decoded or altered, except by its opt-in
+    line repair (operator request 2026-10-06, menu `LINE REPAIR`, default
+    off): a dropout line is replaced by the line with the same subcarrier
+    phase 2 (NTSC) / 4 (PAL) lines earlier, never at the range edge's
+    uniform noise (host evidence in `SYNC_FLYWHEEL.md`);
   - clean pulses are left untouched;
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
