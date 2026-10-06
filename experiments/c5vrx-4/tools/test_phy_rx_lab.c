@@ -138,10 +138,13 @@ void phy_force_rx_gain(bool enable, uint8_t gain_idx)
 }
 void phy_pbus_workmode(void) { pbus_debug = false; if (corrupt_workmode) pbus[2][2] ^= 1u; }
 /* Linear DC model with cross-coupling: block 2 bank 2 mainly I, block 3 bank 2 mainly Q. */
+static unsigned measure_calls, fail_call;   /* fail exactly the Nth measurement */
 static bool dco_measure(int dc[2])
 {
     assert(phy_rx_lab_busy());
     if (fail_measure) return false;
+    ++measure_calls;
+    if (fail_call && measure_calls == fail_call) return false;
     int a = (int)pbus[2][2] - 200, b = (int)pbus[3][2] - 300;
     dc[0] = 1500 + 25 * a + 3 * b;
     dc[1] = -900 + 30 * b - 2 * a;
@@ -151,7 +154,7 @@ static unsigned dco_stages;
 static void dco_observe(const char *stage)
 {
     int dc[2];
-    if (fail_measure) { assert(!strcmp(stage, "RESTORED")); ++dco_stages; return; }
+    if (fail_measure || fail_call) { ++dco_stages; return; }
     assert(dco_measure(dc));
     if (!strcmp(stage, "CORRECTED")) assert(dc[0] * dc[0] + dc[1] * dc[1] <= 100 * 100 && pbus_debug);
     if (!strcmp(stage, "RESTORED")) assert(dc[0] == 1500 && dc[1] == -900 && !pbus_debug);
@@ -365,6 +368,33 @@ int main(void)
     assert(phy_rx_lab_run_dco_probe(dco_measure, dco_observe) == ESP_FAIL);
     assert(dco_stages == 2 && !phy_rx_lab_busy());
     corrupt_workmode = false; pbus[2][2] = 200;
+
+    /* Review 2026-10-07 acceptance: baseline, I-probe and Q-probe failing
+     * apart never yield codes, never use unmeasured values, and roll back;
+     * a rollback failure after an earlier valid result never reports the
+     * earlier codes as this search's result. */
+    for (unsigned fc = 1; fc <= 3; ++fc) {
+        phy_rx_lab_dco_result_t r;
+        measure_calls = 0; fail_call = fc; dco_stages = 0;
+        esp_err_t e = phy_rx_lab_dco_search(dco_measure, dco_observe, &r);
+        int codes[2];
+        printf("DCO fault at measurement %u: result=%d measured=%u rolled_back=%u\n", fc, (int)e, r.measured, r.rolled_back);
+        assert(!r.measured && r.rolled_back && e == ESP_ERR_INVALID_RESPONSE);
+        assert(!phy_rx_lab_dco_codes(codes) && !pbus_debug && !phy_rx_lab_busy());
+        assert(pbus[2][2] == 200 && pbus[3][2] == 300);
+    }
+    fail_call = 0;
+    {
+        phy_rx_lab_dco_result_t r;
+        int codes[2];
+        assert(phy_rx_lab_dco_search(dco_measure, dco_observe, &r) == ESP_OK && r.measured);
+        assert(phy_rx_lab_dco_codes(codes));                 /* an earlier valid result */
+        measure_calls = 0; fail_call = 2; corrupt_workmode = true;
+        esp_err_t e = phy_rx_lab_dco_search(dco_measure, dco_observe, &r);
+        assert(e == ESP_FAIL && !r.measured && !r.rolled_back);
+        assert(!phy_rx_lab_dco_codes(codes));                /* not offered as new */
+        fail_call = 0; corrupt_workmode = false; pbus[2][2] = 200;
+    }
 
     /* Filter lab: relative codes saturating at 60, exact restore. */
     for (unsigned r = 6; r <= 13; ++r) analog_regs[r] = 0xC0u | (r + 10u);

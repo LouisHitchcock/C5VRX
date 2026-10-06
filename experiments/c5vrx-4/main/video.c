@@ -6757,6 +6757,12 @@ static bool predemod_quiet_owner(void)
  * uncorrected DC (~1.1 fine cell) made receiver noise read q 57-65, so the
  * raster never entered and the search that removes that DC never ran. */
 #define DCO_NO_SYNC_US  3000000LL
+#define CAL_QUIET_US    5000000LL
+static int64_t s_quiet_since_us, s_quiet_eval_us;
+static bool s_quiet_last;
+static uint16_t s_rx_recal_freq;
+static uint32_t s_rx_recal_runs;
+static void rx_recal_now(const char *tag);
 /* Envelope test (predemod_envelope_ratio_x100): noise ~100 with or without
  * receiver DC, a carrier at 0 dB SNR ~146 in the host model. */
 #define DCO_NOISE_RATIO_X100 115u
@@ -6783,7 +6789,6 @@ static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_car
 static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
 
-static bool s_dco_skip_nvs;   /* stored codes belong to a replaced vendor DC */
 extern unsigned char phy_param[];
 static void dco_context(dco_table_blob_t *t, uint16_t freq, uint8_t lo, uint8_t hi)
 {
@@ -6810,8 +6815,7 @@ static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     dco_context(&s_dco_tab, freq, lo, hi);
     dco_table_blob_t saved;
-    if (!s_dco_skip_nvs &&
-        c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && dco_same_context(&saved, &s_dco_tab)) {
+    if (c5vrx4_blob_load("dco_tab", &saved, sizeof(saved)) && dco_same_context(&saved, &s_dco_tab)) {
         s_dco_tab = saved;          /* last measured codes; re-searched when idle */
         ++s_dco_loads;
     }
@@ -6850,9 +6854,20 @@ static void predemod_dco_service(void)
         dco_table_select(freq, lo, hi);
     }
     const int64_t now = esp_timer_get_time();
-    bool no_carrier = IDLE_RASTER_ACTIVE();
-    if (!no_carrier && s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
-        now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
+    /* Automatic calibration only in CONFIRMED quiet (operator 2026-10-07:
+     * everything automatic, nothing odd between antenna swaps): the carrier
+     * test below runs at most once a second, and calibration starts only
+     * after CAL_QUIET_US of uninterrupted quiet - a swap or a short loss of
+     * signal never triggers it. */
+    bool no_carrier = false;
+    if (IDLE_RASTER_ACTIVE()) {
+        no_carrier = true;
+    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+               now - s_last_idle_sync_us > DCO_NO_SYNC_US && now - s_quiet_eval_us < 1000000LL) {
+        no_carrier = s_quiet_last;      /* rate-limited carrier test result */
+    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
+               now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
+        s_quiet_eval_us = now;
         /* No sync is not proof of no carrier: a weak FM carrier below sync
          * detection would bias the DC estimate (review 2026-10-07). Real
          * receiver DC is constant; a carrier rotates and moves the mean, so
@@ -6868,6 +6883,18 @@ static void predemod_dco_service(void)
                 if (!no_carrier) ++s_dco_carrier_refusals;
             }
         }
+        s_quiet_last = no_carrier;
+    }
+    if (!no_carrier) s_quiet_since_us = 0;
+    else if (!s_quiet_since_us) s_quiet_since_us = now;
+    no_carrier = no_carrier && now - s_quiet_since_us >= CAL_QUIET_US;
+    /* First, once per channel per boot: the vendor's full RX DC/IQ
+     * calibration at the tuned frequency (rx_recal.c). The per-gain table
+     * holds absolute DC-DAC codes and stays valid. */
+    if (no_carrier && rx_recal_supported() && s_rx_recal_freq != freq) {
+        s_rx_recal_freq = freq;
+        rx_recal_now("RX_RECAL_AUTO");
+        return;
     }
     if (no_carrier) {
         /* Next stale gain, maximum first. */
@@ -6925,15 +6952,16 @@ static void predemod_dco_service(void)
  * (rx_recal.c, ESPARGOS esp-sdr route verified on C5VRX's PHY pin). The
  * vendor calibrates 5 GHz DC only up to 5855 MHz and IQ at 5520 MHz; this
  * measures at the tuned channel instead. Lab only (external research,
- * 2026-10-07: candidate, no RF dB measured). DC is logged before/after; the
- * per-gain DC-DAC table is rebuilt because its codes corrected the old
- * vendor DC. */
-static void lab_run_rx_recal(void)
+ * 2026-10-07: candidate, no RF dB measured). DC is logged before/after. Runs
+ * automatically once per channel per boot after CAL_QUIET_US of confirmed
+ * quiet (predemod_dco_service); '~' runs it by hand. */
+static void rx_recal_now(const char *tag)
 {
-    if (!rx_recal_supported()) { printf("RX_RECAL refused=unverified_PHY_binary\n"); return; }
-    if (rf_native_agc_active()) { printf("RX_RECAL refused=native_agc\n"); return; }
+    if (!rx_recal_supported()) { printf("%s refused=unverified_PHY_binary\n", tag); return; }
+    if (rf_native_agc_active()) { printf("%s refused=native_agc\n", tag); return; }
     analog_agc_mode_t saved;
-    if (!predemod_pause("RX_RECAL", &saved)) return;
+    if (!predemod_pause(tag, &saved)) return;
+    ++s_rx_recal_runs;
     const uint16_t mhz = rf_get_frequency_mhz();
     const uint8_t gain = s_current_gain;
     (void)phy_rx_lab_dco_release();
@@ -6953,13 +6981,16 @@ static void lab_run_rx_recal(void)
     vTaskDelay(pdMS_TO_TICKS(50));
     bool ok1 = predemod_collect(64, &w);
     phy_rx_lab_dco_invalidate();
-    s_dco_skip_nvs = true;
-    s_dco_tab.freq = 0;            /* reselect -> re-search every gain */
+    /* The per-gain table holds ABSOLUTE DC-DAC codes (forced in PBUS debug
+     * mode), independent of the vendor's own codes: it stays valid. */
+    s_rx_recal_freq = mhz;
     predemod_resume(saved);
-    printf("RX_RECAL mhz=%u gain=%u took_us=%lld restore=%s dc_before_mcells=%d/%d dc_after_mcells=%d/%d "
-           "valid=%u/%u hardware_acceptance=pending\n",
-           mhz, gain, took, esp_err_to_name(err), before[0], before[1], w.dc_i, w.dc_q, ok0, ok1);
+    printf("%s mhz=%u gain=%u took_us=%lld restore=%s dc_before_mcells=%d/%d dc_after_mcells=%d/%d "
+           "valid=%u/%u runs=%lu hardware_acceptance=pending\n",
+           tag, mhz, gain, took, esp_err_to_name(err), before[0], before[1], w.dc_i, w.dc_q, ok0, ok1,
+           (unsigned long)s_rx_recal_runs);
 }
+static void lab_run_rx_recal(void) { rx_recal_now("RX_RECAL"); }
 
 /* Gain readback (external research 2026-10-07, eSpDR practice): compare the
  * gain the hardware is actually forced to (0x600A702C: index [31:24], force
@@ -7244,12 +7275,13 @@ static void predemod_correction_print(void)
      * the request, not a correction (external audit, PR #174). */
     printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
            "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
-           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u "
+           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u quiet_s=%lld rx_recal_freq=%u rx_recal_runs=%lu "
            "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
            "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
            c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
            (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, (unsigned long)s_dco_carrier_refusals,
-           s_dco_env_ratio, s_dc_measured[0], s_dc_measured[1],
+           s_dco_env_ratio, s_quiet_since_us ? (esp_timer_get_time() - s_quiet_since_us) / 1000000 : 0LL,
+           s_rx_recal_freq, (unsigned long)s_rx_recal_runs, s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
            s_sphase_auto_done ? s_sphase_auto_ppm : 0u, sphase_state_name(), s_sphase_scans);
