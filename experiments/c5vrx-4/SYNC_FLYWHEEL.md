@@ -150,7 +150,17 @@ descriptor still holds the received bytes.
 5. **Re-lock.** Power-cycle the VTX: one short timing jump, no rolling.
 6. **Native mode with the mask.** Same as 3, plus `AGC_MASK` unchanged.
 
-## Line repair (default on, 2026-10-06)
+## Board result 2026-10-06: default off again
+
+With the priority-4 / RAM-table build the flywheel locked (NTSC, V syncs
+found), but on a strong clean carrier (P50 37, Q 99 %) it re-acquired 862
+times and rebuilt 2916 pulses in 14 s while handling only ~60 % of the
+lines: it fell behind, re-acquired at a new phase and wrote synthetic syncs
+off the real ones - black streaks in a clean picture (operator). Default
+off; `w` / the menu opt in for tests. A redesign that cannot write into a
+clean picture is required before it returns (see below).
+
+## Line repair (2026-10-06)
 
 Operator request (Leon, 2026-10-06): repair static streaks from short
 dropouts, VCR-style. This **alters picture content**: a dropout line shows an
