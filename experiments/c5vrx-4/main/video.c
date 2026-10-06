@@ -2012,9 +2012,9 @@ static void settings_load(void)
                    RX_PROFILE_DIRECT_GAIN_V1 :
                    settings.rx_profile == RX_PROFILE_ARC_V3_EXP ?
                    RX_PROFILE_ARC_V3_EXP : RX_PROFILE_DIRECT_GAIN;
-    s_rf_bw_mode = RF_BW_MODE_AUTO; /* V5 gear: starts BW40 */
-    s_afc_mode = AFC_MODE_OFF;
-    apply_rf_bandwidth(true);
+    /* The menu's DIGITAL BW and AFC choices persist (menu audit
+     * 2026-10-06: both were saved and then reset here on every boot). The
+     * defaults above (no/old settings) stay AUTO and OFF. */
     if (s_video_std_mode == VIDEO_STD_MODE_PAL) s_video_std = VIDEO_STD_PAL;
     else if (s_video_std_mode == VIDEO_STD_MODE_NTSC) s_video_std = VIDEO_STD_NTSC;
     if (settings.agc_mode <= ANALOG_AGC_MANUAL) s_agc_mode = (analog_agc_mode_t)settings.agc_mode;
@@ -5624,7 +5624,16 @@ enum {
     RF_ITEM_CAL_BW, RF_ITEM_CAL_AGC, RF_ITEM_COUNT
 };
 enum { SETUP_ITEM_AFC, SETUP_ITEM_BOOT_MENU, SETUP_ITEM_OPTIONS };
-#define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + C5VRX4_OPT_COUNT - C5VRX4_OPT_AGC_MASK)
+/* Only options that do something in this firmware are selectable (menu
+ * audit 2026-10-06). DC RECENTER and LEVEL SERVO rewrite the running
+ * decoder LUT, which is refused (random read-back while the engine runs);
+ * they keep their stored value and stay console-only. */
+static const uint8_t s_setup_options[] = {
+    C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
+    C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW, C5VRX4_OPT_CVBS,
+    C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
+};
+#define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + sizeof(s_setup_options))
 
 static unsigned menu_item_count(void)
 {
@@ -5640,7 +5649,10 @@ static bool menu_changes_pending(void)
 
 static void menu_option_text(unsigned option, char *value, size_t n)
 {
-    snprintf(value, n, "%s%s", c5vrx4_option_value(option),
+    /* Native-AGC-only options do nothing under Direct V5: say so. */
+    bool native_only = option == C5VRX4_OPT_AGC_MASK || option == C5VRX4_OPT_NATIVE_PATCH;
+    snprintf(value, n, "%s%s%s", c5vrx4_option_value(option),
+             native_only && !rf_native_agc_requested() ? " (NATIVE)" : "",
              c5vrx4_option_pending(option) ? " *" : "");
 }
 
@@ -5685,7 +5697,7 @@ static const char *menu_item_text(unsigned item, char *value, size_t n)
         snprintf(value, n, "%s", s_menu_boot_btn_enabled ? "ON" : "OFF");
         return "BOOT MENU";
     }
-    unsigned option = C5VRX4_OPT_AGC_MASK + (item - SETUP_ITEM_OPTIONS);
+    unsigned option = s_setup_options[item - SETUP_ITEM_OPTIONS];
     menu_option_text(option, value, n);
     return c5vrx4_option_label(option);
 }
@@ -5769,7 +5781,7 @@ static bool menu_item_apply(unsigned item)
                s_menu_boot_btn_enabled ? "on" : "off");
         return true;
     }
-    (void)c5vrx4_option_cycle(C5VRX4_OPT_AGC_MASK + (item - SETUP_ITEM_OPTIONS));
+    (void)c5vrx4_option_cycle(s_setup_options[item - SETUP_ITEM_OPTIONS]);
     return true;
 }
 #endif
