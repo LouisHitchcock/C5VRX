@@ -54,3 +54,16 @@ trees, against `d3af38e`).
 | No-sync DC search could run on a weak carrier below sync detection | **Fixed**: two DC estimates 100 ms apart must agree (a carrier rotates the mean); refusals counted (`hw_dco_carrier_refusals`) |
 | Measured RF gain routine | Not used: 2.4 GHz only in this binary |
 | IQ image leakage under a strong neighbour | **Open (measurement)**: lab `~` recalibrates IQ at the tuned frequency; image rejection still to be measured with a blocker |
+
+## Deeper Espressif PHY traces (2026-10-07)
+
+"C5VRX: diepere Espressif-PHY-sporen voor bereik" (against `d6fc6fc`).
+
+| § | Item | Status |
+|---|---|---|
+| 1 | No-sync DC search could treat a weak carrier as quiet | **Fixed**: an independent carrier test (`predemod_envelope_ratio_x100`: whole-capture DC removed, then envelope mean^2/var; noise ~100 with or without DC, carrier at 0 dB SNR ~146 in the host test) plus two agreeing DC estimates; rate-limited to once a second. All automatic calibration needs 5 s of uninterrupted confirmed quiet (operator: automatic, nothing odd between antenna swaps) |
+| 2 | Unmeasured probe values; old codes taken as a new result | **Fixed**: `phy_rx_lab_dco_search()` with a result object (`measured`, `codes`, `residual`, `rolled_back`, id); a missing baseline/I/Q measurement goes straight to rollback; the previous result is invalidated at the start. Host fault injection: baseline, I-probe and Q-probe failures and a rollback failure after an earlier valid result |
+| 3 | `phy_pbus_workmode()` G50 / unforced gain | **Fixed (re-force, no vendor write removed)**; the physical transition is still to be captured on the board |
+| 4 | DCO rollback missed the 5 GHz RF word (block 8) | **Fixed + readback**: all vendor blocks 0..10 are re-asserted with their live words (debug mode freezes every block on its test register; a live copy keeps the state, leaving them would not); read-only RF/BB/fine words (8/1, 0/2, 1/2) traced at hold enter / in debug / after release + replay; the RF word is compared with the vendor tuple's RF code every 250 ms (`GAIN_PBUS`, `rf_mismatches`) |
+| 5 | DCO cache without context | **Fixed**: blob v2 keyed on frequency, gain table range and band, lane policy, analog filter code/skirt and IQ-scale selector; per-gain residual as provenance; no boot epoch. Codes are absolute DC-DAC values, so a vendor recalibration does not invalidate them. Temperature not stored (no validated sensor path); stale entries are re-searched after 120 s of quiet |
+| 6 | IQ image rejection | **Read-only state + automatic exact-frequency IQ calibration**: `IQ_STATE` prints `phy_param[44]` (rxiq_opt branch), `phy_param[650]` (scale selector), `0x600A043C`, `0x600A0438`; the vendor RX DC/IQ calibration at the tuned frequency now runs automatically once per channel per boot in confirmed quiet (`~` by hand). **Open (bench)**: IRR with a known tone at +-1/4/8/12 MHz and a blocker |
