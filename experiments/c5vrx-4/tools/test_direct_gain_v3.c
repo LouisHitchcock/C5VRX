@@ -84,10 +84,13 @@ int main(void)
     }
     assert(v3.writes == 0u && v3.state == DG3_HOLD);
 
-    /* Direct mode: the first coherent, origin-heavy weak window already
-     * selects a physical Fine move (no multi-window wait). */
+    /* A moderate excursion (P50 10, band 13..32) must hold for two windows
+     * before a write: single multipath dips no longer move the gain. */
     dg3_observation_t weak = obs(10, 17, 200, 0, 90, 199000u);
     uint8_t next = direct_gain_v3_tick(&v3, &weak);
+    assert(next == 35u && v3.writes == 0u);
+    weak.observed_us += 200u;
+    next = direct_gain_v3_tick(&v3, &weak);
     assert(next != 35u && v3.writes == 1u);
     /* Learning needs a stable pre-write pair; run the move once more from a
      * stable weak history to exercise it. */
@@ -97,8 +100,10 @@ int main(void)
     weak.observed_us = 199000u;
     weak.p50 = 22; weak.p95 = 40; weak.origin_pm = 0;       /* same as pre */
     assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* still in band */
-    weak = obs(10, 17, 200, 0, 90, 200000u);
+    weak = obs(10, 17, 200, 0, 90, 199800u);
     v3.last_tracking = obs(10, 17, 200, 0, 90, 199500u);     /* stable weak prior */
+    assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* first window holds */
+    weak.observed_us = 200000u;
     next = direct_gain_v3_tick(&v3, &weak);
     assert(next != 35u && v3.writes == 1u &&
            v3.tuple[next].rf_stage == v3.tuple[35].rf_stage &&
@@ -152,7 +157,7 @@ int main(void)
     v3.relative_power_q10[34] = 1200u;
     v3.relative_power_q10[33] = 620u;
     v3.confidence[34] = v3.confidence[33] = 3u;
-    dg3_observation_t high = obs(40, 55, 0, 0, 95, 600000u);
+    dg3_observation_t high = obs(41, 55, 0, 0, 95, 600000u) /* severe: acts on one window */;
     assert(direct_gain_v3_tick(&v3, &high) == 33u);          /* direct */
 
     /* At a Fine boundary, a known BB+Fine tuple is selected directly. */
@@ -190,7 +195,7 @@ int main(void)
     uint32_t w0 = v3.writes;
     for (unsigned k = 0; k < 40u; ++k) {
         dg3_observation_t o = (k & 1u) ? obs(8, 14, 100, 0, 90, t)
-                                       : obs(40, 60, 0, 0, 95, t);
+                                       : obs(41, 60, 0, 0, 95, t);
         uint8_t g = direct_gain_v3_tick(&v3, &o);
         direct_gain_v3_sync_applied(&v3, g, t);
         t += 1000u;
@@ -478,6 +483,14 @@ int main(void)
         assert(!fresh.confidence[61]);
         direct_gain_v3_reset(&fresh, &table, 70u, 62u);
         assert(!direct_gain_v3_import_map(&fresh, &blob)); /* anchor 70 unknown */
+    }
+
+    /* A severe excursion still acts on one window: P50 6 (< band - 4). */
+    {
+        memset(&v3, 0, sizeof(v3));
+        direct_gain_v3_reset(&v3, &table, 35u, 62u);
+        dg3_observation_t starved = obs(6, 12, 300, 0, 90, 900000u);
+        assert(direct_gain_v3_tick(&v3, &starved) != 35u && v3.writes == 1u);
     }
 
     puts("direct gain v3 core: OK");

@@ -874,8 +874,18 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         return v3->current_gain;
     }
     bool damped = o->observed_us < v3->damp_until_us;
-    unsigned need_high = damped ? DG3_DAMPED_WINDOWS : DG3_HIGH_WINDOWS;
-    unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : DG3_WEAK_WINDOWS;
+    /* Severe excursions (clipping, rail P95, far outside the band) still act
+     * on one window. A moderate one must hold for two: indoors at 1-2 m the
+     * multipath envelope crosses the band edge for single 200 us windows,
+     * and every write is a short PHY transient the operator sees as a little
+     * static (board 2026-10-06: ~17 writes, G32..G55, in ~2 min of moving the
+     * VTX 1 <-> 2 m; "about 10 small static bursts"). */
+    bool severe = high ? ((int)o->clip_pm >= (int)band->clip_pm ||
+                          (int)o->p95 > (int)band->high_p95 ||
+                          (int)o->p50 > (int)band->hi + 8)
+                       : ((int)o->p50 + 4 < (int)band->lo);
+    unsigned need_high = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_HIGH_WINDOWS : 2u;
+    unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_WEAK_WINDOWS : 2u;
     if ((high && v3->high_windows < need_high) ||
         (weak && v3->weak_windows < need_weak)) return v3->current_gain;
     /* Lanes are the last gain stage in and the first one out, but only in

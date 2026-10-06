@@ -7215,8 +7215,14 @@ static void analog_agc_task(void *arg)
         uint32_t arc_generation = rf_get_arc_generation();
         if (seen_arc_generation != arc_generation) {
             seen_arc_generation = arc_generation;
-            target_gain = rf_get_arc_survival_gain();
-            apply_rx_gain_tracked(target_gain);
+            /* Direct V5 owns its gain and resets itself on a new table
+             * (observer: arc generation), listening at the table maximum
+             * without a carrier. Forcing the G62 survival gain here wrote
+             * behind its back after every retune (audit 2026-10-06). */
+            if (s_rx_profile != RX_PROFILE_DIRECT_GAIN || rf_native_agc_active()) {
+                target_gain = rf_get_arc_survival_gain();
+                if (!rf_native_agc_active()) apply_rx_gain_tracked(target_gain);
+            }
             target_gain = s_current_gain;
             arc_controller_reset(&arc_controller, rf_get_arc_gain_table(),
                                  target_gain);
