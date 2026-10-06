@@ -44,6 +44,19 @@ void rf_dump_tracked_timers(void);
 /** Runtime analog receive filter: true=BW40, false=BW20. */
 void rf_set_analog_bandwidth(bool bw40);
 bool rf_get_analog_bandwidth(void);
+/* C5VRX-4 AGC witness calibration: raw DIAG lane capture and restore. */
+void rf_route_diag_capture(const uint8_t diag[8]);
+void rf_restore_iq_routes(void);
+/* C5VRX-4 fixed analog BW: re-apply the stored measured RX filter code
+ * (inside a phy_rx_lab transaction). No-op when disabled or uncalibrated. */
+void rf_apply_fixed_bw(void);
+/* Native AGC restart patch candidates (lab, RAM only): bit k = candidate k. */
+void rf_apply_agc_patch(void);
+void rf_set_agc_patch(uint8_t mask);
+uint8_t rf_agc_patch(void);
+uint32_t rf_fixed_bw_failures(void);
+void rf_set_fixed_bw_edge(bool edge);
+bool rf_fixed_bw_edge_active(void);
 
 void rf_set_rx_gain(bool force, uint8_t gain_idx);
 /* True only when vendor gain write ran under the expected PHY generation. */
@@ -98,6 +111,8 @@ typedef struct {
 } rf_native_agc_state_t;
 
 esp_err_t rf_request_native_agc_boot(bool enable);
+/* Gain owner stored for the next boot (the menu shows it as pending). */
+bool rf_native_agc_requested(void);
 void rf_dump_agc_regs(void);
 bool rf_native_agc_active(void);
 

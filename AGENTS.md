@@ -311,6 +311,35 @@ own revision.
   `{9,6,5,4}` at every distance, deliberately without automatic coarse fallback.
   ADC-window folding and phase-endpoint winding are different failure modes.
   Read its `experiments/c5vrx-4/ULTRAFINE_TEST.md`.
+- **Sync flywheel (C5VRX-4, 2026-10-05):** extends the C5VRX-3
+  `feat/sync-flywheel` idea (PLL line tracker, repair in the raw ring before
+  the TX read).
+  - It detects without demodulation, from the 75 ns endpoint phase step at a
+    few points per line (~32 evaluations per clean line in the host model).
+  - It synthesizes a constant per-sample phase step, so the result is valid
+    for every 3-byte span alignment.
+  - It also rebuilds vertical-interval slots, keeping the field timing on the
+    PLL line grid.
+  - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
+    re-lock and mask-safe bytes. Goggle behaviour is not measured.
+  - Hardware, 2026-10-06: default on starved IDLE (task watchdog in
+    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Now
+    default off, `w` opts in; the CPU gate in `SYNC_FLYWHEEL.md` must pass
+    first.
+- **Span75 post-detection aliasing (host model, 2026-10-05):**
+  `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated
+  Unwrap75 LUTs on simulated Q4/I4 bytes.
+  - The 75 ns endpoint delta is resampled at 13.33 MS/s with no anti-alias
+    filter. FM noise from 6.67–20 MHz folds into the video band: about
+    -3 dB total and -3.5 to -4.6 dB per 1 MHz band versus a filtered
+    detector.
+  - avg3 (span-mean phase difference, still 13.33 MS/s) recovers it, but
+    needs about five lookups per span, beyond the measured TX BitScrambler
+    throughput.
+  - A narrower pre-detection width also reduces the loss. The C5VRX-4 V5
+    gear therefore uses a measured edge profile (`BW_EDGE`: ≥ 14 MHz, ≥ 0.5 dB
+    lower noise bandwidth) at the range edge.
+  - Host evidence only; see `experiments/c5vrx-4/docs/range-max.md`.
 - **Wider IQ / complex filter / FM tracking / external DSP:** investigated C5-only
   tap/filter/lane options and a twelve-lane I6/Q6 external-processing route with
   DC/IQ correction, complex channel filtering, adjacent/tracking FM, matched
@@ -403,6 +432,20 @@ requirements by themselves**.
   decode pixels or regenerate PAL/NTSC. (A sync-flywheel experiment that
   repairs broken H-sync is parked on branch `feat/sync-flywheel`; see
   docs/range-max.md for why it is not in main.)
+  **Exception, C5VRX-4 only (operator decision 2026-10-05):** the goggles must
+  never see a moment without valid PAL/NTSC sync, so the C5VRX-4 sync flywheel
+  (`experiments/c5vrx-4/SYNC_FLYWHEEL.md`) rebuilds missing or noisy H-sync
+  pulses (with part of the front porch) and vertical-interval slots in the raw
+  ring ahead of the TX read, on a PLL line grid locked to the real VTX sync.
+  It must keep these properties:
+  - picture content is never decoded or altered;
+  - clean pulses are left untouched;
+  - the colour burst is not killed;
+  - it never writes the newest completed RX descriptor, which the control
+    observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
+  It is off by default since its first hardware run starved the CPU
+  (`w`, NVS `sync_fw` or the menu SETUP page opts in) and hardware-pending.
+  The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical
   8.2k/3.9k/2k/1k/470R/240R plus 200R network.

@@ -56,6 +56,31 @@ static bool s_lut_ready;
  * Each further fold drop within 2 s doubles the hold-off (up to ~1.3 s). */
 #define DG3_LANE_UP_P95     45u
 #define DG3_FOLD_STREAK_US  2000000u
+/* Strong-signal radius boost. With 4 bits per axis the phase step is set by
+ * radius / cell; at strong signal quantization dominates, so a larger ring
+ * is a finer phase (host model, fine lanes, sigma 6 codes: 4.1 deg rms at
+ * r ~150 codes, ~3.2 deg at ~195-200). The outer cells (|v| >= 224) are the
+ * fold warning, so the boost band stops at P50 46 and drops at the first
+ * rail codes. Entry needs 20 ms of strong, tight, rail-free HOLD windows. */
+#define DG3_BOOST_LO            30
+#define DG3_BOOST_HI            46
+#define DG3_BOOST_P95           53
+#define DG3_BOOST_CLIP_PM       10
+/* Moves stop short of the target by the transition hysteresis (up moves
+ * land below it, down moves above), so the aims straddle the band centre. */
+#define DG3_BOOST_WEAK_TARGET   43
+#define DG3_BOOST_HIGH_TARGET   38
+#define DG3_BOOST_ENTRY_TARGET  40
+#define DG3_BOOST_EXIT_P50      50
+#define DG3_BOOST_EXIT_P95      59
+#define DG3_BOOST_EXIT_CLIP_PM  20
+#define DG3_BOOST_EXIT_COH      60
+#define DG3_BOOST_ENTRY_WINDOWS 100u   /* ~20 ms at the 200 us cadence */
+#define DG3_BOOST_ENTRY_COH     75
+#define DG3_BOOST_ENTRY_SPREAD  8      /* P95 - P50: a tight ring */
+#define DG3_BOOST_ENTRY_P95     50     /* predicted P95 at the boost target */
+#define DG3_BOOST_HOLD_US       200000u
+#define DG3_BOOST_STREAK_US     10000000u
 
 static int clamp_i(int value, int low, int high)
 {
@@ -140,10 +165,27 @@ static bool carrier(const dg3_observation_t *o)
     return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650;
 }
 
+/* Amplitude band: zero-write zone, destination limits and targets. */
+typedef struct {
+    int lo, hi, p95, clip_pm, weak_target, high_target;
+    int high_p90, high_p95, schmitt_hi, schmitt_p90, schmitt_p95, schmitt_lo;
+} dg3_band_t;
+
+static const dg3_band_t s_band_normal = {13, 32, 65, 20, 17, 27, 53, 72, 30, 47, 65, 14};
+static const dg3_band_t s_band_boost = {DG3_BOOST_LO, DG3_BOOST_HI, DG3_BOOST_P95,
+    DG3_BOOST_CLIP_PM, DG3_BOOST_WEAK_TARGET, DG3_BOOST_HIGH_TARGET,
+    DG3_BOOST_EXIT_P95 - 2, DG3_BOOST_P95, DG3_BOOST_HI - 2, DG3_BOOST_EXIT_P95 - 4,
+    DG3_BOOST_P95 - 2, DG3_BOOST_LO + 1};
+
+static bool healthy_in(const dg3_observation_t *o, const dg3_band_t *b)
+{
+    return carrier(o) && o->p50 >= b->lo && o->p50 <= b->hi &&
+           o->p95 <= b->p95 && o->clip_pm < b->clip_pm && o->origin_pm <= 250;
+}
+
 static bool healthy(const dg3_observation_t *o)
 {
-    return carrier(o) && o->p50 >= 13 && o->p50 <= 32 &&
-           o->p95 <= 65 && o->clip_pm < 20 && o->origin_pm <= 250;
+    return healthy_in(o, &s_band_normal);
 }
 
 static bool valid_learning(const dg3_observation_t *o)
@@ -178,10 +220,27 @@ static int ratio_db_q8(int ratio_q10)
     return ((whole * 256 + fraction) * 771 + 128) / 256;
 }
 
+#define DG3_MAGIC 0x44473321u
+static bool same_table(const arc_gain_table_t *a, const arc_gain_table_t *b)
+{
+    if (!a || !b || a->max_index != b->max_index) return false;
+    for (unsigned k = 0; k < ARC_RX_STAGE_COUNT; ++k)
+        if (a->spans[k] != b->spans[k]) return false;
+    return true;
+}
+
 void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
                           uint8_t current_gain, uint8_t survival_gain)
 {
     if (!v3) return;
+    /* A tracking reset (profile, PHY lab, epoch) used to drop every measured
+     * tuple response, so V5 explored the same unknown or mis-modelled steps
+     * again after each one - a burst of corrective writes, each a little
+     * grain (operator, 2026-10-06: VTX 1 m -> 2 m). Keep the map when the
+     * gain table is unchanged. */
+    dg3_map_blob_t kept;
+    bool keep = v3->magic == DG3_MAGIC && v3->learned && table && same_table(&v3->table, table) &&
+                direct_gain_v3_export_map(v3, &kept) > 0u;
     memset(v3, 0, sizeof(*v3));
     prepare_lut();
     if (table && table->max_index >= 20u &&
@@ -196,9 +255,48 @@ void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
     v3->confidence[v3->current_gain] = 1u;
     v3->uncertainty_pm[v3->current_gain] = 50u;
     v3->state = DG3_ACQUIRE;
+    v3->magic = DG3_MAGIC;
+    if (keep) (void)direct_gain_v3_import_map(v3, &kept);
 }
 
-/* An unknown bank or RF stage is never assigned a fabricated dB value.
+unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *blob)
+{
+    if (!v3 || !blob) return 0u;
+    memset(blob, 0, sizeof(*blob));
+    blob->version = DG3_MAP_VERSION;
+    blob->max_index = v3->table.max_index;
+    unsigned confident = 0;
+    for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
+        if (!v3->confidence[g] || !v3->relative_power_q10[g]) continue;
+        blob->confidence[g] = v3->confidence[g];
+        blob->power_q10[g] = v3->relative_power_q10[g];
+        blob->uncertainty_pm[g] = v3->uncertainty_pm[g];
+        ++confident;
+    }
+    /* A lone anchor (the reset state) carries no information. */
+    return confident > 1u ? confident : 0u;
+}
+
+bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
+{
+    if (!v3 || !blob || blob->version != DG3_MAP_VERSION ||
+        blob->max_index != v3->table.max_index) return false;
+    const uint8_t anchor = v3->current_gain;
+    if (!blob->confidence[anchor] || !blob->power_q10[anchor]) return false;
+    for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
+        v3->bad_state[g] = 0u; /* ignore legacy channel-dependent bans */
+        if (!blob->confidence[g] || !blob->power_q10[g]) continue;
+        v3->relative_power_q10[g] = blob->power_q10[g];
+        v3->uncertainty_pm[g] = blob->uncertainty_pm[g];
+        v3->confidence[g] = blob->confidence[g];
+    }
+    v3->learned = 1u; /* the map is known; a later reset keeps it */
+    return true;
+}
+
+/* Channel-dependent fault counters must not exclude destinations: three
+ * fades used to ban a bank permanently, including across NVS/PHY resets.
+ * An unknown bank or RF stage is never assigned a fabricated dB value.
  * Within one BB bank the physical Fine order supplies only a low-confidence
  * local prior. Measured tuple responses replace that prior. */
 static bool predict(const direct_gain_v3_t *v3, uint8_t candidate,
@@ -235,7 +333,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
                           (up ? -distance : distance);
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if (v3->confidence[g] && v3->confidence[v3->current_gain]) {
                 bool measured_up = v3->relative_power_q10[g] >
                                    v3->relative_power_q10[v3->current_gain];
@@ -254,7 +351,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
         int boundary_fine = up ? 5 - distance : distance;
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if (t->rf_stage == current->rf_stage &&
                 t->bb_code == wanted_bb &&
                 t->fine_code == boundary_fine) return (uint8_t)g;
@@ -267,7 +363,6 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
         int boundary_fine = up ? 5 - distance : distance;
         for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (v3->bad_state[g] >= 3u) continue;
             if ((int)t->rf_stage == wanted_rf && t->bb_code == 1u &&
                 t->fine_code == boundary_fine) return (uint8_t)g;
         }
@@ -303,19 +398,18 @@ static uint8_t emergency_drop(const direct_gain_v3_t *v3)
 
 static uint8_t select_destination(const direct_gain_v3_t *v3,
                                   const dg3_observation_t *o, bool up,
-                                  int32_t desired_q8)
+                                  int32_t desired_q8, const dg3_band_t *band)
 {
     uint8_t best = v3->current_gain;
     int best_class = 4, best_error = 99999, best_uncertainty = 999;
     int best_artifact = 999;
     for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
         if (g == v3->current_gain) continue;
-        if (v3->bad_state[g] >= 3u) continue;
         int ratio, uncertainty;
         if (!predict(v3, (uint8_t)g, &ratio, &uncertainty)) continue;
         int p50 = (int)o->p50 * ratio / 1024;
         int p95_worst = (int)o->p95 * ratio * (1000 + uncertainty) / 1024000;
-        if (p50 < 13 || p50 > 32 || p95_worst > 65) continue;
+        if (p50 < band->lo || p50 > band->hi || p95_worst > band->p95) continue;
         if (up && ratio <= 1024) continue;
         if (!up && ratio >= 1024) continue;
         int kind = transition_kind(v3, v3->current_gain, (uint8_t)g);
@@ -357,19 +451,28 @@ static void learn_transition(direct_gain_v3_t *v3,
     uint8_t a = v3->prior_gain, b = v3->current_gain;
     uint32_t base = v3->relative_power_q10[a];
     if (!base) return;
+    /* The tuple model can call a step "fine" that the 5 GHz vendor table
+     * makes a BB jump (external review; the old medium sweep went G62 P=17,
+     * G63 P=1, G64 P=17). Rejecting such a measurement meant that exact
+     * index was never learned and kept being mis-predicted - a corrective
+     * write, and a little grain, every time V5 crossed it. The stable
+     * before/after windows above already qualify the measurement, so it is
+     * learned anyway, with high uncertainty and the lowest confidence. */
+    bool model_mismatch = false;
     if (v3->transition == DG3_FINE) {
         int steps = abs_i((int)v3->tuple[a].fine_code -
                           (int)v3->tuple[b].fine_code);
         int high = 1024, low = 1024;
         while (steps-- > 0) { high = high * 18 / 10; low = low * 10 / 18; }
         int observed_ratio = (int)after->p50 * 1024 / v3->before.p50;
-        if (observed_ratio < low || observed_ratio > high) return;
+        model_mismatch = observed_ratio < low || observed_ratio > high;
     }
     uint32_t estimate = base * after->p50 / v3->before.p50;
     estimate = (uint32_t)clamp_i((int)estimate, 1, 65535);
+    if (model_mismatch) ++v3->model_mismatches;
     if (!v3->confidence[b]) {
         v3->relative_power_q10[b] = (uint16_t)estimate;
-        v3->uncertainty_pm[b] = 350u;
+        v3->uncertainty_pm[b] = model_mismatch ? 600u : 350u;
     } else {
         uint32_t old = v3->relative_power_q10[b];
         uint32_t residual_pm = old ?
@@ -410,7 +513,7 @@ static uint8_t set_lane(direct_gain_v3_t *v3, const dg3_observation_t *o,
                         uint8_t lane)
 {
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) return v3->current_gain;
+    if (c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE) return v3->current_gain;
 #endif
     if (lane > v3->lane_max) lane = v3->lane_max;
     if (lane == v3->lane) return v3->current_gain;
@@ -463,6 +566,27 @@ static uint8_t lane_for(const direct_gain_v3_t *v3,
     return 0u;
 }
 
+void direct_gain_v3_enable_boost(direct_gain_v3_t *v3, bool enabled)
+{
+    if (!v3) return;
+    v3->boost_enabled = enabled;
+    if (!enabled) v3->boost = false;
+    v3->boost_ok_windows = 0;
+}
+
+static void boost_exit(direct_gain_v3_t *v3, uint64_t now_us)
+{
+    v3->boost = false;
+    v3->boost_ok_windows = 0;
+    ++v3->boost_exits;
+    if (v3->boost_exit_us && now_us - v3->boost_exit_us > DG3_BOOST_STREAK_US)
+        v3->boost_streak = 0;
+    v3->boost_hold_until_us = now_us +
+        ((uint64_t)DG3_BOOST_HOLD_US << (v3->boost_streak < 4u ? v3->boost_streak : 4u));
+    if (v3->boost_streak < 255u) ++v3->boost_streak;
+    v3->boost_exit_us = now_us;
+}
+
 void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
 {
     if (!v3) return;
@@ -470,7 +594,10 @@ void direct_gain_v3_enable_lanes(direct_gain_v3_t *v3, uint8_t lane_max)
     v3->lane_cap = lane_max;
     v3->lane = 0u;
 #ifdef C5VRX4_EXPERIMENT
-    if (c5vrx4_ultrafine_forced()) v3->lane = lane_max;
+    /* A fixed policy holds its lane from the first window: no listening or
+     * fold escape on another lane, and the BW gear sees it as the cap. */
+    uint8_t fixed = c5vrx4_fixed_lane();
+    if (fixed <= lane_max) v3->lane = v3->lane_cap = fixed;
 #endif
 }
 
@@ -490,6 +617,10 @@ static void learn_noise(direct_gain_v3_t *v3, const dg3_observation_t *o)
         if (((uint32_t)v3->noise_p50_q4 << (2u * k)) >=
             DG3_NOISE_R2_TARGET_Q4) { cap = k; break; }
     }
+#ifdef C5VRX4_EXPERIMENT
+    /* Noise is still learned for telemetry; a fixed lane stays the cap. */
+    if (c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE) cap = v3->lane;
+#endif
     v3->lane_cap = cap;
 }
 
@@ -534,7 +665,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     bool at_max = v3->current_gain == v3->table.max_index;
     bool fixed_lane = false;
 #ifdef C5VRX4_EXPERIMENT
-    fixed_lane = c5vrx4_ultrafine_forced();
+    fixed_lane = c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE;
 #endif
     /* Fold guard. On a finer lane the rail codes are the last warning before
      * the window folds; a folded strong carrier reads as wide, incoherent
@@ -557,6 +688,15 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         return set_lane(v3, o, 0u);
     }
     v3->junk_windows = 0;
+    /* Boost only on the coarse lane or a fixed lane (no lane switching), and
+     * never through no-carrier, saturation or any rail/P95/jump warning. */
+    if (v3->boost &&
+        (!v3->boost_enabled || (!fixed_lane && v3->lane) || no_carrier || saturated ||
+         !carrier(o) || o->clip_pm >= DG3_BOOST_EXIT_CLIP_PM ||
+         o->p95 >= DG3_BOOST_EXIT_P95 || o->p50 >= DG3_BOOST_EXIT_P50 ||
+         o->coherence < DG3_BOOST_EXIT_COH))
+        boost_exit(v3, o->observed_us);
+    const dg3_band_t *band = v3->boost ? &s_band_boost : &s_band_normal;
     /* Listening always uses the finest lane (most sensitive carrier
      * detection, and it measures the noise); with a carrier the lanes stop
      * at the noise-referenced cap. */
@@ -640,10 +780,14 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         uint16_t *score = &v3->artifact_score[v3->current_gain];
         *score = *score ? (uint16_t)((3u * *score + artifact) / 4u) :
                           (uint16_t)artifact;
-        if (o->clip_pm >= 100 || o->origin_pm >= 500 || o->coherence < 30) {
+        /* Poor phase/origin occupancy can be a moving-channel fade, not a
+         * defective gain tuple. Even clipping depends on incoming RF power:
+         * count it diagnostically, but never blacklist a physical gain state.
+         * Saturation still takes the immediate protected drop below. */
+        if (o->clip_pm >= 100) {
             if (v3->bad_state[v3->current_gain] < 15u)
                 ++v3->bad_state[v3->current_gain];
-        } else if (healthy(o)) v3->bad_state[v3->current_gain] = 0u;
+        } else if (healthy_in(o, band)) v3->bad_state[v3->current_gain] = 0u;
         learn_transition(v3, o);
         v3->state = DG3_VERIFY;
         ++v3->verified;
@@ -651,10 +795,12 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (saturated) {
 #ifdef C5VRX4_EXPERIMENT
         /* #158: severe clipping on the coarse lane is real quantizer
-         * overdrive. Do not hunt through RF/BB stages. Finer-lane clipping
-         * first follows the fold escape above; manual/native stay untouched.
+         * overdrive. Do not hunt through RF/BB stages. Adaptive finer-lane
+         * clipping first follows the fold escape above. A fixed lane has no
+         * escape lane, so its severe overdrive or fold takes the same G20
+         * floor; manual/native stay untouched.
          * The settle freshness check above still rejects stale post-drop IQ. */
-        if (v3->lane == 0u && o->clip_pm >= 500u && o->p95 >= 95u) {
+        if ((v3->lane == 0u || fixed_lane) && o->clip_pm >= 500u && o->p95 >= 95u) {
             ++v3->overloads;
             v3->high_windows = v3->weak_windows = 0;
             v3->virtual_gain_q8 = 0;
@@ -676,7 +822,20 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         if (lane == v3->lane) return v3->current_gain;
         return set_lane(v3, o, lane);
     }
-    if (healthy(o)) {
+    if (!v3->boost && healthy(o) && v3->boost_enabled && (fixed_lane || !v3->lane) &&
+        v3->state != DG3_SETTLE && o->observed_us >= v3->boost_hold_until_us &&
+        o->observed_us >= v3->damp_until_us &&
+        o->coherence >= DG3_BOOST_ENTRY_COH && o->clip_pm == 0u &&
+        o->origin_pm <= 100u && (int)o->p95 - (int)o->p50 <= DG3_BOOST_ENTRY_SPREAD &&
+        (int)o->p95 * DG3_BOOST_ENTRY_TARGET <= DG3_BOOST_ENTRY_P95 * (int)o->p50) {
+        if (++v3->boost_ok_windows >= DG3_BOOST_ENTRY_WINDOWS) {
+            v3->boost = true;
+            v3->boost_ok_windows = 0;
+            ++v3->boost_entries;
+            band = &s_band_boost;
+        }
+    } else if (!v3->boost) v3->boost_ok_windows = 0;
+    if (healthy_in(o, band)) {
         v3->state = DG3_HOLD;
         v3->corrections = 0;
         v3->high_windows = v3->weak_windows = 0;
@@ -687,14 +846,20 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     }
     /* Act as soon as the envelope leaves the healthy band (13..32), before
      * it reaches the grainy/collapsing region, not after noise appeared. */
-    bool high = o->p50 > 32 || o->p90 >= 53 || o->p95 > 72 ||
-                o->clip_pm >= 20;
-    bool weak = o->p50 < 13 && carrier(o);
+    bool high = o->p50 > band->hi || o->p90 >= band->high_p90 || o->p95 > band->high_p95 ||
+                o->clip_pm >= band->clip_pm;
+    /* A starved envelope climbs whether or not the carrier is recognised
+     * yet: recognition (coherence >= 55) needs the gain this climb gives.
+     * Between carrier() and no_carrier the gain used to hold (P50 7 /
+     * coherence 30 stayed at G52 with zero writes), a range-edge trap. A
+     * healthy envelope with poor phase (multipath) still does not pump. */
+    bool weak = o->p50 < band->lo;
     /* Schmitt bands retain the previous direction through small envelope
      * fluctuations; they release only after crossing the inner boundary. */
     if (v3->last_direction == 2 &&
-        (o->p50 > 30 || o->p90 > 47 || o->p95 > 65)) high = true;
-    if (v3->last_direction == 1 && o->p50 < 14 && carrier(o)) weak = true;
+        (o->p50 > band->schmitt_hi || o->p90 > band->schmitt_p90 ||
+         o->p95 > band->schmitt_p95)) high = true;
+    if (v3->last_direction == 1 && o->p50 < band->schmitt_lo) weak = true;
     if (high) {
         v3->weak_windows = 0;
         v3->last_direction = 2;
@@ -709,8 +874,18 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         return v3->current_gain;
     }
     bool damped = o->observed_us < v3->damp_until_us;
-    unsigned need_high = damped ? DG3_DAMPED_WINDOWS : DG3_HIGH_WINDOWS;
-    unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : DG3_WEAK_WINDOWS;
+    /* Severe excursions (clipping, rail P95, far outside the band) still act
+     * on one window. A moderate one must hold for two: indoors at 1-2 m the
+     * multipath envelope crosses the band edge for single 200 us windows,
+     * and every write is a short PHY transient the operator sees as a little
+     * static (board 2026-10-06: ~17 writes, G32..G55, in ~2 min of moving the
+     * VTX 1 <-> 2 m; "about 10 small static bursts"). */
+    bool severe = high ? ((int)o->clip_pm >= (int)band->clip_pm ||
+                          (int)o->p95 > (int)band->high_p95 ||
+                          (int)o->p50 > (int)band->hi + 8)
+                       : ((int)o->p50 + 4 < (int)band->lo);
+    unsigned need_high = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_HIGH_WINDOWS : 2u;
+    unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_WEAK_WINDOWS : 2u;
     if ((high && v3->high_windows < need_high) ||
         (weak && v3->weak_windows < need_weak)) return v3->current_gain;
     /* Lanes are the last gain stage in and the first one out, but only in
@@ -718,7 +893,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
      * the analog gain trims down instead (continuous total gain). */
     if (!fixed_lane && high && v3->lane && scale_power(o->p50, -1) >= 13u)
         return set_lane(v3, o, lane_for(v3, o, false));
-    int target_power = weak ? 17 : 27;
+    int target_power = weak ? band->weak_target : band->high_target;
     int error_q8 = power_db_q8((unsigned)target_power) -
                    power_db_q8(o->p50);
     /* Direct: request the full relative correction in one step, both ways. */
@@ -726,7 +901,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     v3->virtual_gain_q8 = clamp_i(v3->virtual_gain_q8,
                                   -12 * 256, 12 * 256);
     uint8_t target = select_destination(v3, o, weak,
-                                        v3->virtual_gain_q8);
+                                        v3->virtual_gain_q8, band);
     /* No analog state predicts into the band: a lane step still does. */
     if (target == v3->current_gain && high && v3->lane)
         return set_lane(v3, o, (uint8_t)(v3->lane - 1u));

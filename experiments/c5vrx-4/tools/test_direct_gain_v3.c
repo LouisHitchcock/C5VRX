@@ -15,6 +15,52 @@ static dg3_observation_t obs(int p50, int p95, int origin, int clip,
     };
 }
 
+/* Radius-boost plant: every state is measured (0.5 dB per index), the ring
+ * power follows the gain exactly, spread and rail codes are scenario input. */
+static int boost_p50(const direct_gain_v3_t *v3, double base)
+{
+    double r = (double)v3->relative_power_q10[v3->current_gain] / 1024.0;
+    int p = (int)(base * r + 0.5);
+    return p > 113 ? 113 : p < 1 ? 1 : p;
+}
+
+static void boost_plant(direct_gain_v3_t *v3)
+{
+    for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
+        double db = ((double)g - 40.0) * 0.5;
+        double r = 1.0;
+        for (int k = 0; k < (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); ++k) r *= 1.0023052;
+        for (int k = 0; k > (int)(db * 100.0 + (db >= 0 ? 0.5 : -0.5)); --k) r /= 1.0023052;
+        v3->relative_power_q10[g] = (uint16_t)(r * 1024.0 + 0.5);
+        v3->confidence[g] = 3u;
+        v3->uncertainty_pm[g] = 40u;
+    }
+}
+
+static dg3_observation_t boost_window(direct_gain_v3_t *v3, double base, int spread,
+                                      int clip, int coherence, uint64_t us)
+{
+    int p50 = boost_p50(v3, base);
+    int p95 = p50 + spread > 113 ? 113 : p50 + spread;
+    dg3_observation_t o = obs(p50, p95, 0, clip, coherence, us);
+    o.p90 = (uint8_t)(p50 + spread * 3 / 4);
+    return o;
+}
+
+/* Run windows at 200 us; returns the number of gain writes. */
+static unsigned boost_run(direct_gain_v3_t *v3, double base, int spread, int clip,
+                          int coherence, unsigned windows, uint64_t *t)
+{
+    uint32_t w0 = v3->writes;
+    for (unsigned w = 0; w < windows; ++w) {
+        dg3_observation_t o = boost_window(v3, base, spread, clip, coherence, *t += 200u);
+        uint8_t g = direct_gain_v3_tick(v3, &o);
+        if (g != o.p50 && v3->state == DG3_SETTLE && v3->write_us == *t)
+            direct_gain_v3_sync_applied(v3, g, *t);
+    }
+    return v3->writes - w0;
+}
+
 int main(void)
 {
     arc_gain_table_t table;
@@ -38,10 +84,13 @@ int main(void)
     }
     assert(v3.writes == 0u && v3.state == DG3_HOLD);
 
-    /* Direct mode: the first coherent, origin-heavy weak window already
-     * selects a physical Fine move (no multi-window wait). */
+    /* A moderate excursion (P50 10, band 13..32) must hold for two windows
+     * before a write: single multipath dips no longer move the gain. */
     dg3_observation_t weak = obs(10, 17, 200, 0, 90, 199000u);
     uint8_t next = direct_gain_v3_tick(&v3, &weak);
+    assert(next == 35u && v3.writes == 0u);
+    weak.observed_us += 200u;
+    next = direct_gain_v3_tick(&v3, &weak);
     assert(next != 35u && v3.writes == 1u);
     /* Learning needs a stable pre-write pair; run the move once more from a
      * stable weak history to exercise it. */
@@ -51,8 +100,10 @@ int main(void)
     weak.observed_us = 199000u;
     weak.p50 = 22; weak.p95 = 40; weak.origin_pm = 0;       /* same as pre */
     assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* still in band */
-    weak = obs(10, 17, 200, 0, 90, 200000u);
+    weak = obs(10, 17, 200, 0, 90, 199800u);
     v3.last_tracking = obs(10, 17, 200, 0, 90, 199500u);     /* stable weak prior */
+    assert(direct_gain_v3_tick(&v3, &weak) == 35u);          /* first window holds */
+    weak.observed_us = 200000u;
     next = direct_gain_v3_tick(&v3, &weak);
     assert(next != 35u && v3.writes == 1u &&
            v3.tuple[next].rf_stage == v3.tuple[35].rf_stage &&
@@ -75,13 +126,19 @@ int main(void)
     dg3_observation_t multipath = obs(20, 35, 50, 0, 20, 300000u);
     assert(direct_gain_v3_tick(&v3, &multipath) == next);
     assert(v3.writes == 1u);
+    for (unsigned k = 0; k < 1000u; ++k) {
+        multipath.observed_us += 200u;
+        multipath.coherence = (uint8_t)(k % 101u);
+        assert(direct_gain_v3_tick(&v3, &multipath) == next);
+    }
+    assert(v3.writes == 1u);
 
     /* Saturation drops sensitivity; carrier loss listens at maximum gain
      * (the table maximum, not the G62 survival trap). */
-    dg3_observation_t clipped = obs(50, 105, 0, 200, 90, 400000u);
+    dg3_observation_t clipped = obs(50, 105, 0, 200, 90, 600000u);
     uint8_t down = direct_gain_v3_tick(&v3, &clipped);
     assert(down != next && v3.overloads == 1u);
-    dg3_observation_t lost = obs(1, 2, 950, 0, 0, 500000u);
+    dg3_observation_t lost = obs(1, 2, 950, 0, 0, 700000u);
     assert(direct_gain_v3_tick(&v3, &lost) == table.max_index);
     /* Still no carrier at maximum gain: stays there, no further writes. */
     uint32_t lost_writes = v3.writes;
@@ -100,7 +157,7 @@ int main(void)
     v3.relative_power_q10[34] = 1200u;
     v3.relative_power_q10[33] = 620u;
     v3.confidence[34] = v3.confidence[33] = 3u;
-    dg3_observation_t high = obs(40, 55, 0, 0, 95, 600000u);
+    dg3_observation_t high = obs(41, 55, 0, 0, 95, 600000u) /* severe: acts on one window */;
     assert(direct_gain_v3_tick(&v3, &high) == 33u);          /* direct */
 
     /* At a Fine boundary, a known BB+Fine tuple is selected directly. */
@@ -116,7 +173,7 @@ int main(void)
     direct_gain_v3_reset(&v3, &table, 35u, 62u);
     v3.bad_state[34] = 3u;
     high.observed_us += 100000u;
-    assert(direct_gain_v3_tick(&v3, &high) != 34u);          /* bad state skipped */
+    assert(direct_gain_v3_tick(&v3, &high) == 34u);          /* old fade ban ignored */
 
     /* A rapidly changing input around the write must not teach a false
      * receiver gain ratio, even if the post-write envelope stabilizes. */
@@ -138,7 +195,7 @@ int main(void)
     uint32_t w0 = v3.writes;
     for (unsigned k = 0; k < 40u; ++k) {
         dg3_observation_t o = (k & 1u) ? obs(8, 14, 100, 0, 90, t)
-                                       : obs(40, 60, 0, 0, 95, t);
+                                       : obs(41, 60, 0, 0, 95, t);
         uint8_t g = direct_gain_v3_tick(&v3, &o);
         direct_gain_v3_sync_applied(&v3, g, t);
         t += 1000u;
@@ -303,6 +360,137 @@ int main(void)
         printf("hunting regression: %u lane changes in 1 s, fold_streak %u\n",
                (unsigned)(v3.lane_changes - changes0), v3.fold_streak);
         assert(v3.lane_changes - changes0 < 60u);
+    }
+
+    /* Strong-signal radius boost. */
+    {
+        uint64_t t = 90000000u;
+        /* Disabled: a strong tight ring at P50 ~22 is never boosted. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 2000u, &t) == 0u && !v3.boost);
+
+        /* Enabled: 20 ms of strong, tight HOLD, then one move into 30..46. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 99u, &t) == 0u && !v3.boost);
+        unsigned moves = boost_run(&v3, 22.0, 4, 0, 90, 400u, &t);
+        int p50 = boost_p50(&v3, 22.0);
+        printf("radius boost: entries=%u moves=%u gain=%u p50=%d\n",
+               (unsigned)v3.boost_entries, moves, v3.current_gain, p50);
+        assert(v3.boost && v3.boost_entries == 1u && moves >= 1u && moves <= 2u);
+        assert(p50 >= 30 && p50 <= 46);
+        /* Steady boosted carrier: zero writes for 1 s. */
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 5000u, &t) == 0u && v3.boost);
+
+        /* First rail codes: boost off at once, gain back into 13..32. */
+        uint8_t boosted_gain = v3.current_gain;
+        assert(boost_run(&v3, 22.0, 4, 25, 90, 1u, &t) == 1u);
+        assert(!v3.boost && v3.boost_exits == 1u && v3.current_gain < boosted_gain);
+        boost_run(&v3, 22.0, 4, 0, 90, 50u, &t);
+        p50 = boost_p50(&v3, 22.0);
+        assert(p50 >= 13 && p50 <= 32);
+        /* Hold-off: no re-entry within 200 ms even on a clean ring. */
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 900u, &t) == 0u && !v3.boost);
+        boost_run(&v3, 22.0, 4, 0, 90, 600u, &t);
+        assert(v3.boost && v3.boost_entries == 2u);
+
+        /* A sudden level jump (fade recovery, +3 dB) exits through P50/P95. */
+        assert(boost_run(&v3, 44.0, 4, 0, 90, 1u, &t) == 1u && !v3.boost);
+        /* Second exit within 10 s: the hold-off doubles to 400 ms. */
+        assert(v3.boost_streak == 2u &&
+               v3.boost_hold_until_us - v3.boost_exit_us == 400000u);
+
+        /* Saturation inside the boost takes the emergency path. */
+        t += 20000000u;
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);
+        assert(v3.boost);
+        dg3_observation_t sat = obs(80, 110, 0, 300, 90, t += 200u);
+        assert(direct_gain_v3_tick(&v3, &sat) < 40u && !v3.boost && v3.overloads == 1u);
+
+        /* Never entered: a wide ring (noisy), low coherence, rail codes or a
+         * P95 that would not fit the boost band. */
+        static const int spread[] = {12, 4, 4, 9};
+        static const int coh[] = {90, 70, 90, 90};
+        static const int clip[] = {0, 0, 5, 0};
+        for (unsigned k = 0; k < 4u; ++k) {
+            direct_gain_v3_reset(&v3, &table, 40u, 62u);
+            boost_plant(&v3);
+            direct_gain_v3_enable_boost(&v3, true);
+            double base = k == 3u ? 14.0 : 22.0; /* P95/P50 = 23/14 > 1.35 */
+            boost_run(&v3, base, spread[k], clip[k], coh[k], 3000u, &t);
+            assert(!v3.boost && v3.boost_entries == 0u);
+        }
+        /* Disabling drops an active boost. */
+        direct_gain_v3_reset(&v3, &table, 40u, 62u);
+        boost_plant(&v3);
+        direct_gain_v3_enable_boost(&v3, true);
+        boost_run(&v3, 22.0, 4, 0, 90, 500u, &t);
+        assert(v3.boost);
+        direct_gain_v3_enable_boost(&v3, false);
+        assert(!v3.boost);
+    }
+
+    /* Gray zone (neither carrier() nor no_carrier): a weak, not yet
+     * recognised carrier must climb, not hold (it used to stay at G52). */
+    {
+        uint64_t t = 30000000u;
+        direct_gain_v3_reset(&v3, &table, 52u, 62u);
+        uint8_t start = v3.current_gain;
+        for (unsigned k = 0; k < 2000u; ++k) {
+            dg3_observation_t gray = obs(7, 13, 300, 0, 30, t += 5000u);
+            uint8_t g = direct_gain_v3_tick(&v3, &gray);
+            if (v3.state == DG3_SETTLE && v3.write_us == t) direct_gain_v3_sync_applied(&v3, g, t);
+        }
+        assert(v3.current_gain > start && v3.writes > 0u);
+        direct_gain_v3_reset(&v3, &table, 52u, 62u);
+        for (unsigned k = 0; k < 2000u; ++k) {
+            dg3_observation_t edge = obs(3, 6, 400, 0, 20, t += 5000u);
+            uint8_t g = direct_gain_v3_tick(&v3, &edge);
+            if (v3.state == DG3_SETTLE && v3.write_us == t) direct_gain_v3_sync_applied(&v3, g, t);
+        }
+        assert(v3.current_gain > 52u);
+    }
+
+    /* The measured map survives a tracking reset on the same table and
+     * round-trips through the NVS blob; an unknown anchor drops it. */
+    {
+        memset(&v3, 0, sizeof(v3)); /* earlier scenarios left a learned map */
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
+        v3.relative_power_q10[61] = 1300u;
+        v3.confidence[61] = 3u;
+        v3.uncertainty_pm[61] = 100u;
+        v3.learned = 5u;
+        v3.bad_state[61] = 3u; /* old indoor fade history */
+        dg3_map_blob_t blob;
+        assert(direct_gain_v3_export_map(&v3, &blob) == 2u);
+        assert(blob.bad_state[61] == 0u);
+        blob.bad_state[61] = 3u; /* a legacy on-device v1 map */
+        direct_gain_v3_reset(&v3, &table, 60u, 62u);
+        assert(v3.confidence[61] == 3u && v3.relative_power_q10[61] == 1300u);
+        assert(v3.bad_state[61] == 0u);
+        direct_gain_v3_t fresh;
+        memset(&fresh, 0, sizeof(fresh));
+        direct_gain_v3_reset(&fresh, &table, 60u, 62u);
+        assert(!fresh.confidence[61]);
+        assert(direct_gain_v3_import_map(&fresh, &blob) && fresh.relative_power_q10[61] == 1300u);
+        assert(fresh.bad_state[61] == 0u);
+        direct_gain_v3_reset(&fresh, &table, 70u, 62u);
+        assert(!fresh.confidence[61]);
+        direct_gain_v3_reset(&fresh, &table, 70u, 62u);
+        assert(!direct_gain_v3_import_map(&fresh, &blob)); /* anchor 70 unknown */
+    }
+
+    /* A severe excursion still acts on one window: P50 6 (< band - 4). */
+    {
+        memset(&v3, 0, sizeof(v3));
+        direct_gain_v3_reset(&v3, &table, 35u, 62u);
+        dg3_observation_t starved = obs(6, 12, 300, 0, 90, 900000u);
+        assert(direct_gain_v3_tick(&v3, &starved) != 35u && v3.writes == 1u);
     }
 
     puts("direct gain v3 core: OK");

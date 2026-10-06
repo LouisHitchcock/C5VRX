@@ -41,9 +41,12 @@ static int delta_for(unsigned idx)
     if(cls==2 && d>=0) d-=256;
     return d;
 }
+static bool s_mask_decode;
+void c5v4_cvbs_set_mask_decode(bool enabled) { s_mask_decode = enabled; }
+const uint8_t *c5v4_cvbs_phase_table(bool mask) { return mask ? c5v4_phase_mask : c5v4_phase_static; }
 static unsigned decode(uint8_t r,unsigned previous,bool history)
 {
-    if(!history) return c5v4_phase_static[r];
+    if(!history) return (s_mask_decode ? c5v4_phase_mask : c5v4_phase_static)[r];
     return (((-previous)&255)>>7 ? c5v4_phase_history1 : c5v4_phase_history0)[r];
 }
 
@@ -63,9 +66,14 @@ void c5v4_cvbs_analyze(const uint8_t *raw,size_t n,bool history,unsigned transfe
     /* C5 TX phase/stream alignment is not tagged in a frozen DMA snapshot.
      * Use one local stride-3 alignment and discard warmup. This is a semantic
      * estimator, not a claim of byte-exact output or measured connector volts. */
-    int16_t delta[2730];
-    uint8_t code[2730];
-    uint16_t hist[768]={0};
+    /* 9.7 KiB, once: as a stack frame it was reserved again in every caller
+     * task and left no DMA-capable heap for the menu. Not reentrant: the
+     * firmware serializes callers (video.c cvbs_analyze_locked). */
+    static struct { int16_t delta[2730]; uint8_t code[2730]; uint16_t hist[768]; } ws;
+    int16_t *delta=ws.delta;
+    uint8_t *code=ws.code;
+    uint16_t *hist=ws.hist;
+    memset(hist,0,sizeof(ws.hist));
     size_t count=0;
     unsigned previous=decode(raw[0],0,history), ambiguous=0,origin=0,clip=0;
     int sum_i=0,sum_q=0;

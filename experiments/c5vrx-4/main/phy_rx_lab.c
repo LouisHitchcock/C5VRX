@@ -2,6 +2,7 @@
  * No production overrides. Polling cannot prove absence of short gate pulses. */
 #include "phy_rx_lab.h"
 #include "rf.h"
+#include "predemod.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -437,6 +438,161 @@ esp_err_t phy_rx_lab_run_11p_probe(void (*observe)(const char *stage))
 #endif
 }
 
+/* ---- Range labs (2026-10-04) ----------------------------------------------
+ * Idea from FPVGateC5RX (RaceFPV / Louis Hitchcock, docs/PROVENANCE.md and
+ * EXTENDED_TUNING.md: facts only, no code). Own reading of the pinned
+ * libphy: phy_get_sigrssi() = (int8_t)(0x600A706C >> 8); the enable rewrites
+ * AGC words 0x600A7008/0C/10/18/30/48/90/B0/C4/EC/150. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_check_sigrssi_en(uint8_t enable);
+extern int8_t phy_get_sigrssi(void);
+extern void phy_param_track_tot(uint8_t wifi, uint8_t bt);
+static const uint16_t s_sigrssi_words[] = {
+    0x008, 0x00C, 0x010, 0x018, 0x030, 0x048, 0x090, 0x0B0, 0x0C4, 0x0EC, 0x150,
+};
+#define SIGRSSI_WORDS (sizeof(s_sigrssi_words) / sizeof(s_sigrssi_words[0]))
+#define SIGRSSI_SAMPLES 1000u
+#endif
+esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
+                                       phy_rx_lab_rssi_stats_t *stats)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe; (void)stats;
+    printf("SIGRSSI refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe || !stats) return ESP_ERR_INVALID_STATE;
+    if (REG(0x600A7030) & PHYBIT(29)) {
+        printf("SIGRSSI refused=bb_agc_gate_held\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    phy_rx_lab_begin("sigrssi_AB");
+    uint32_t saved[SIGRSSI_WORDS];
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i) saved[i] = REG(0x600A7000u + s_sigrssi_words[i]);
+    observe("BASELINE");
+    phy_check_sigrssi_en(1);
+    unsigned hist[256] = {0};
+    int64_t sum = 0;
+    *stats = (phy_rx_lab_rssi_stats_t){.min_dbm = 127, .max_dbm = -128};
+    for (unsigned n = 0; n < SIGRSSI_SAMPLES; ++n) {
+        int v = phy_get_sigrssi();
+        ++hist[(unsigned)(v + 128) & 255u];
+        sum += v;
+        if (v < stats->min_dbm) stats->min_dbm = v;
+        if (v > stats->max_dbm) stats->max_dbm = v;
+        vTaskDelay(1);
+    }
+    stats->samples = SIGRSSI_SAMPLES;
+    stats->mean_dbm_x10 = (int)(sum * 10 / (int64_t)SIGRSSI_SAMPLES);
+    unsigned cumulative = 0;
+    bool p10 = false, p50 = false;
+    for (unsigned b = 0; b < 256u; ++b) {
+        cumulative += hist[b];
+        int dbm = (int)b - 128;
+        if (!p10 && cumulative * 10u >= SIGRSSI_SAMPLES) { stats->p10_dbm = dbm; p10 = true; }
+        if (!p50 && cumulative * 2u >= SIGRSSI_SAMPLES) { stats->p50_dbm = dbm; p50 = true; }
+        if (cumulative * 10u >= SIGRSSI_SAMPLES * 9u) { stats->p90_dbm = dbm; break; }
+    }
+    observe("SIGRSSI_ON");
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i) REG(0x600A7000u + s_sigrssi_words[i]) = saved[i];
+    __sync_synchronize();
+    bool restored = true;
+    for (unsigned i = 0; i < SIGRSSI_WORDS; ++i)
+        restored &= REG(0x600A7000u + s_sigrssi_words[i]) == saved[i];
+    printf("SIGRSSI restore_verified=%u words=%u\n", restored, (unsigned)SIGRSSI_WORDS);
+    if (restored) observe("RESTORED");
+    phy_rx_lab_end();
+    return restored ? ESP_OK : ESP_FAIL;
+#endif
+}
+
+esp_err_t phy_rx_lab_run_track_probe(void (*observe)(const char *stage))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("PHYTRACK refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("track_AB");
+    observe("BASELINE");
+    int64_t start = esp_timer_get_time();
+    phy_param_track_tot(1, 0);
+    printf("PHYTRACK call_us=%u freq=%u\n", (unsigned)(esp_timer_get_time() - start),
+           rf_get_frequency_mhz());
+    observe("TRACKED");
+    phy_rx_lab_end();
+    return ESP_OK;
+#endif
+}
+
+/* ---- Digital RX filter / ADC-rate lab (2026-10-04) ------------------------
+ * Own reading of the pinned libphy. phy_chip_set_chan -> phy_rfpll_set_adc_rate:
+ * on 5 GHz phy_adc_rate_set(0) + phy_rx_filter_mode(0) (mode 4 when the stored
+ * width is BW20), then above 5830 MHz phy_adc_rate_set(1) + mode 8.
+ * phy_rx_filter_mode(m) = 0x600A0430[21:18]; phy_adc_rate_set(r) = I2C block
+ * 0x66 host 0 reg 4 bit 2 = !r and 0x600A0448[1:0] = r,r. The PARLIO capture
+ * takes every second sample of the ~80 MS/s MODEM_DIAG bus with no filter in
+ * between, so a digital filter ahead of the tap would be a free steep
+ * pre-detection filter. Whether one is ahead of the tap is unknown: this lab
+ * measures it. Normal C5 Wi-Fi never calls phy_spur_coef_cfg (only
+ * librftest's set_spur_reg does), so the spur slots are snapshotted, not
+ * changed. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern void phy_adc_rate_set(uint32_t rate);
+extern void phy_rx_filter_mode(uint32_t mode);
+#define DFILT_REG      0x600A0430u
+#define DFILT_SHIFT    18u
+#define DFILT_MASK     (UINT32_C(0xF) << DFILT_SHIFT)
+#define DFILT_ADC_REG  0x600A0448u
+#define DFILT_ADC_BLOCK 0x66u
+#define DFILT_ADC_HOST 0u
+#define DFILT_ADC_I2C  4u
+#endif
+esp_err_t phy_rx_lab_run_dfilt_probe(void (*observe)(const char *stage, int arg))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("DFILT refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!observe) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("dfilt_AB");
+    const uint32_t filt = REG(DFILT_REG), adc = REG(DFILT_ADC_REG);
+    const uint8_t adc_i2c = phy_i2c_readReg(DFILT_ADC_BLOCK, DFILT_ADC_HOST, DFILT_ADC_I2C);
+    const unsigned mode = (filt & DFILT_MASK) >> DFILT_SHIFT, rate = adc & 1u;
+    printf("DFILT begin freq=%u vendor_mode=%u adc_sel=%u adc_word=0x%08" PRIx32
+           " adc_i2c=0x%02x spur_slots=0x%08" PRIx32 "/0x%08" PRIx32 "/0x%08" PRIx32 "/0x%08" PRIx32 "\n",
+           rf_get_frequency_mhz(), mode, rate, adc, (unsigned)adc_i2c,
+           REG(0x600A7C14), REG(0x600A7C18), REG(0x600A7C1C), REG(0x600A7C20));
+    observe("BASELINE", (int)mode);
+    /* Filter mode alone, ADC rate unchanged. */
+    for (unsigned m = 0; m < 16u; ++m) {
+        REG(DFILT_REG) = (filt & ~DFILT_MASK) | ((uint32_t)m << DFILT_SHIFT);
+        observe("MODE", (int)m);
+    }
+    REG(DFILT_REG) = filt;
+    observe("MODE_RESTORED", (int)mode);
+    /* The other ADC rate through the vendor setter: first with the current
+     * filter mode, then with the mode the vendor pairs it with on 5 GHz. */
+    const unsigned alt = rate ^ 1u;
+    phy_adc_rate_set(alt);
+    observe("ADC_ALT", (int)alt);
+    phy_rx_filter_mode(alt ? 8u : 0u);
+    observe("ADC_ALT_VENDOR_MODE", alt ? 8 : 0);
+    phy_adc_rate_set(rate);
+    REG(DFILT_ADC_REG) = adc;
+    REG(DFILT_REG) = filt;
+    __sync_synchronize();
+    bool restored = REG(DFILT_REG) == filt && REG(DFILT_ADC_REG) == adc &&
+                    phy_i2c_readReg(DFILT_ADC_BLOCK, DFILT_ADC_HOST, DFILT_ADC_I2C) == adc_i2c;
+    printf("DFILT restore_verified=%u\n", restored);
+    if (restored) observe("RESTORED", (int)mode);
+    phy_rx_lab_end();
+    return restored ? ESP_OK : ESP_FAIL;
+#endif
+}
+
 /* Native analog patch prototype (#139): retain the hardware-selected tuple,
  * stop only BB acquisition, then use the vendor resume strobe. This bounded
  * console experiment does not infer acquisition-complete from an unknown FSM
@@ -492,5 +648,385 @@ esp_err_t phy_rx_lab_run_native_hold(unsigned cycles,
            "explicit_gain_index_writes=0 rf_disable_calls=0 hardware_acceptance=pending\n",
            completed,cycles,verified,restored);
     return restored ? (verified ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
+#endif
+}
+
+/* Pre-demodulation labs (#165): DC DACs and RX filter capacitors. Recovered
+ * from the pinned libphy: phy_pbus_set_dco() writes PBUS (block,bank)
+ * (2,1),(3,1),(2,2),(3,2); phy_pbus_force_test() owns them in debug mode;
+ * phy_filter_dcap_set() programs 0x67 regs 6..20 from phy_param[0xF5..0xFC];
+ * phy_11p_set(1,0) writes 60 to regs 6..13. Bank 2 is the pair ESPARGOS
+ * esp-sdr corrects on the S31; the response matrix is measured, not assumed. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+extern uint16_t phy_pbus_rd(uint32_t block, uint32_t bank);
+extern void phy_pbus_force_test(uint32_t block, uint32_t bank, uint32_t value);
+extern void phy_pbus_debugmode(void);
+extern void phy_pbus_workmode(void);
+#define DCO_PROBE 16
+#define DCO_RANGE 96
+#define DCO_TRIAL 32
+#define DCO_DONE_MCELLS 100
+static int dco_cost(const int dc[2]) { return dc[0] * dc[0] + dc[1] * dc[1]; }
+static int dco_clamp(int value, int base)
+{
+    if (value < base - DCO_RANGE) value = base - DCO_RANGE;
+    if (value > base + DCO_RANGE) value = base + DCO_RANGE;
+    return value < 0 ? 0 : value > 511 ? 511 : value;
+}
+static void dco_apply(int i, int q)
+{
+    phy_pbus_force_test(2, 2, (uint32_t)i);
+    phy_pbus_force_test(3, 2, (uint32_t)q);
+}
+/* Last search result, RAM only, for the on/off A/B ('6'). */
+static int s_dco_codes[2], s_dco_vendor[2];
+static bool s_dco_valid;
+#endif
+
+/* Fixed analog bandwidth state (see phy_rx_lab_filter_set_code). */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static uint8_t s_filter_base[8];
+static bool s_filter_base_valid;
+#endif
+static int s_filter_code = PHY_RX_LAB_FILTER_CALIBRATED;
+
+void phy_rx_lab_predemod_status(void)
+{
+    uint16_t mhz = rf_get_frequency_mhz();
+    printf("PREDEMOD_PHY freq=%u dc_cal_multi=%u dc_cal_mhz=%u above_last_point=%u "
+           "pll_track=disabled_by_config\n", mhz, phy_param[0x2a] != 0,
+           predemod_dc_cal_point(mhz, phy_param[0x2a] != 0), mhz > 5855u);
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    /* Recursive task ownership without a generation bump: read-only. */
+    transaction_take();
+    uint16_t dco[4] = {phy_pbus_rd(2, 1), phy_pbus_rd(3, 1), phy_pbus_rd(2, 2), phy_pbus_rd(3, 2)};
+    uint8_t caps[8];
+    for (uint8_t i = 0; i < 8; ++i) caps[i] = phy_i2c_readReg(0x67, 1, 6 + i);
+    transaction_give();
+    printf("PREDEMOD_DCO b2k1=%u b3k1=%u b2k2=%u b3k2=%u\n", dco[0], dco[1], dco[2], dco[3]);
+    printf("PREDEMOD_FILTER_BASE valid=%u regs6_13=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x fixed_code=%d\n",
+           s_filter_base_valid, s_filter_base[0], s_filter_base[1], s_filter_base[2],
+           s_filter_base[3], s_filter_base[4], s_filter_base[5], s_filter_base[6],
+           s_filter_base[7], s_filter_code);
+    printf("PREDEMOD_FILTER regs6_13=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x "
+           "cal_f5_fc=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x 11p=%02x/%02x\n",
+           caps[0], caps[1], caps[2], caps[3], caps[4], caps[5], caps[6], caps[7],
+           phy_param[0xF5], phy_param[0xF6], phy_param[0xF7], phy_param[0xF8],
+           phy_param[0xF9], phy_param[0xFA], phy_param[0xFB], phy_param[0xFC],
+           phy_param[0x26], phy_param[0x27]);
+#else
+    printf("PREDEMOD_PHY pbus_and_filter=unverified_PHY_binary\n");
+#endif
+}
+
+esp_err_t phy_rx_lab_run_dco_probe(bool (*measure)(int dc[2]),
+                                   void (*observe)(const char *stage))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)measure; (void)observe;
+    printf("DCO refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!measure || !observe || rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("DCO_AB");
+    uint16_t live[4][2];
+    for (unsigned b = 0; b < 4; ++b)
+        for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
+    esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+    int before[2] = {0, 0};
+    bool debug = false;
+    if (measure(before)) {
+        observe("BASELINE");
+        debug = true;
+        /* Debug mode stops the work-mode table replay; re-assert every live
+         * word first so RF/BB gain and the other DC pair stay as they were. */
+        phy_pbus_debugmode();
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+        int base[2] = {live[2][1], live[3][1]}, cur[2] = {base[0], base[1]};
+        int best[2] = {base[0], base[1]}, best_dc[2] = {before[0], before[1]};
+        int di = base[0] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
+        int dq = base[1] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
+        int mi[2], mq[2];
+        dco_apply(base[0] + di, base[1]);
+        bool ok = measure(mi);
+        dco_apply(base[0], base[1] + dq);
+        ok = ok && measure(mq);
+        dco_apply(base[0], base[1]);
+        float j[4] = {(float)(mi[0] - before[0]) / di, (float)(mq[0] - before[0]) / dq,
+                      (float)(mi[1] - before[1]) / di, (float)(mq[1] - before[1]) / dq};
+        printf("DCO baseline_mcells=%d/%d base=%d/%d jacobian_mcells_per_code=%.1f,%.1f,%.1f,%.1f\n",
+               before[0], before[1], base[0], base[1], (double)j[0], (double)j[1],
+               (double)j[2], (double)j[3]);
+        int err[2] = {before[0], before[1]};
+        for (unsigned it = 0; ok && it < 4 && dco_cost(best_dc) > DCO_DONE_MCELLS * DCO_DONE_MCELLS; ++it) {
+            int sa, sb;
+            if (!predemod_dco_step(j, (float)err[0], (float)err[1], DCO_TRIAL, &sa, &sb)) {
+                printf("DCO response=ill_conditioned\n");
+                break;
+            }
+            cur[0] = dco_clamp(cur[0] + sa, base[0]);
+            cur[1] = dco_clamp(cur[1] + sb, base[1]);
+            dco_apply(cur[0], cur[1]);
+            if (!measure(err)) { ok = false; break; }
+            printf("DCO iteration=%u codes=%d/%d mcells=%d/%d\n", it + 1, cur[0], cur[1], err[0], err[1]);
+            if (dco_cost(err) < dco_cost(best_dc)) {
+                best[0] = cur[0]; best[1] = cur[1];
+                best_dc[0] = err[0]; best_dc[1] = err[1];
+            }
+        }
+        if (ok) {
+            dco_apply(best[0], best[1]);
+            s_dco_codes[0] = best[0]; s_dco_codes[1] = best[1];
+            s_dco_vendor[0] = base[0]; s_dco_vendor[1] = base[1];
+            s_dco_valid = true;
+            printf("DCO corrected codes=%d/%d mcells=%d/%d before=%d/%d persistent=0\n",
+                   best[0], best[1], best_dc[0], best_dc[1], before[0], before[1]);
+            observe("CORRECTED");
+            result = ESP_OK;
+        }
+    }
+    /* Exact rollback: every saved word, then hand PBUS back to work mode. */
+    if (debug) {
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+        phy_pbus_workmode();
+    }
+    bool restored = true;
+    for (unsigned b = 0; b < 4; ++b)
+        for (unsigned k = 0; k < 2; ++k) {
+            uint16_t now = phy_pbus_rd(b, k + 1);
+            if (now != live[b][k]) {
+                /* Board 2026-10-06: work mode does not replay the table at
+                 * once; report which words differ instead of rebooting. */
+                printf("DCO restore_diff block=%u bank=%u saved=%u now=%u\n", b, k + 1, live[b][k], now);
+                restored = false;
+            }
+        }
+    printf("DCO restore_verified=%u\n", restored);
+    if (restored) observe("RESTORED");
+    phy_rx_lab_end();
+    return restored ? result : ESP_FAIL;
+#endif
+}
+
+/* Hold the last DCO search result (on) or release it (off). Board
+ * 2026-10-06: the forced pair exists only in PBUS debug mode; returning to
+ * work mode does not replay the current gain's row (block 0 bank 2 fell
+ * 383 -> 263 and the IQ went dead) until the next gain write. So "on" stays
+ * in debug mode with every live word re-asserted plus the corrected pair,
+ * and "off" returns to work mode; the caller then re-writes the gain. */
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+static bool s_dco_held;
+#endif
+esp_err_t phy_rx_lab_dco_set(bool on)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)on;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (on && !s_dco_valid) { printf("DCO_SET refused=no_search_result ('#' first, VTX off)\n"); return ESP_ERR_INVALID_STATE; }
+    if (rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    transaction_take();
+    if (on && !s_dco_held) {
+        uint16_t live[4][2];
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
+        phy_pbus_debugmode();
+        for (unsigned b = 0; b < 4; ++b)
+            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+        dco_apply(s_dco_codes[0], s_dco_codes[1]);
+        s_dco_held = true;
+    } else if (!on && s_dco_held) {
+        phy_pbus_workmode();
+        s_dco_held = false;
+    }
+    uint16_t i = phy_pbus_rd(2, 2), q = phy_pbus_rd(3, 2);
+    transaction_give();
+    printf("DCO_SET on=%u held=%u codes=%d/%d readback=%u/%u\n", on, s_dco_held,
+           s_dco_codes[0], s_dco_codes[1], i, q);
+    return ESP_OK;
+#endif
+}
+
+/* Range-edge DC correction (rf.c releases before every gain write and PHY
+ * restore; video.c searches and holds at maximum gain). */
+bool phy_rx_lab_dco_release(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    if (!s_dco_held) return false;
+    transaction_take();
+    phy_pbus_workmode();
+    s_dco_held = false;
+    transaction_give();
+    return true;
+#endif
+}
+bool phy_rx_lab_dco_held(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    return s_dco_held;
+#endif
+}
+bool phy_rx_lab_dco_valid(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    return s_dco_valid;
+#endif
+}
+void phy_rx_lab_dco_invalidate(void)
+{
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    s_dco_valid = false;
+#endif
+}
+
+esp_err_t phy_rx_lab_run_filter_sweep(void (*observe)(const char *stage, int offset))
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)observe;
+    printf("FILTER refused=unverified_PHY_binary\n");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    static const int offsets[] = {4, 8, 16, 24, 60};
+    if (!observe || rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
+    phy_rx_lab_begin("FILTER_SWEEP");
+    uint8_t saved[8];
+    for (uint8_t i = 0; i < 8; ++i) saved[i] = phy_i2c_readReg(0x67, 1, 6 + i);
+    observe("BASELINE", 0);
+    bool applied = true;
+    for (unsigned n = 0; applied && n < sizeof(offsets) / sizeof(offsets[0]); ++n) {
+        for (uint8_t i = 0; i < 8; ++i) {
+            /* Offsets are relative to the calibrated baseline, not to a
+             * fixed-BW offset that may already be applied. */
+            uint8_t code = predemod_filter_code(s_filter_base_valid ? s_filter_base[i] : saved[i],
+                                                offsets[n]);
+            phy_i2c_writeReg(0x67, 1, 6 + i, code);
+            if (phy_i2c_readReg(0x67, 1, 6 + i) != code) applied = false;
+        }
+        if (applied) observe("NARROW", offsets[n]);
+    }
+    bool restored = true;
+    for (uint8_t i = 0; i < 8; ++i) phy_i2c_writeReg(0x67, 1, 6 + i, saved[i]);
+    for (uint8_t i = 0; i < 8; ++i) restored = restored && phy_i2c_readReg(0x67, 1, 6 + i) == saved[i];
+    printf("FILTER apply_verified=%u restore_verified=%u persistent=0\n", applied, restored);
+    if (restored) observe("RESTORED", 0);
+    phy_rx_lab_end();
+    return restored ? (applied ? ESP_OK : ESP_ERR_INVALID_RESPONSE) : ESP_FAIL;
+#endif
+}
+
+/* Fixed analog bandwidth, after ESPARGOS esp-sdr (GPL-3.0, commit ac627b0b,
+ * main/families/c5_c6_c61/receiver.c): the C5 RX0 capacitor DAC is BBTOP 0x67
+ * regs 6/7; an absolute 6-bit code replaces the low bits, the upper bits and
+ * regs 8..13 keep the PHY calibration. The code is re-applied from the
+ * boot-captured bytes, so a retune that did or did not rewrite them gives the
+ * same result. PHY_RX_LAB_FILTER_CALIBRATED restores the calibrated bytes. */
+bool phy_rx_lab_filter_capture_base(void)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    return false;
+#else
+    transaction_take();
+    if (!s_filter_base_valid) {
+        for (uint8_t i = 0; i < 8; ++i) s_filter_base[i] = phy_i2c_readReg(0x67, 1, 6 + i);
+        s_filter_base_valid = true;
+        s_filter_code = PHY_RX_LAB_FILTER_CALIBRATED;
+    }
+    transaction_give();
+    return true;
+#endif
+}
+
+bool phy_rx_lab_filter_set_code(int code)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)code;
+    return false;
+#else
+    if (code != PHY_RX_LAB_FILTER_CALIBRATED && (code < 0 || code > 63)) return false;
+    transaction_take();
+    bool ok = s_filter_base_valid;
+    for (uint8_t i = 0; ok && i < 2; ++i) {
+        uint8_t value = code == PHY_RX_LAB_FILTER_CALIBRATED ? s_filter_base[i] :
+                        (uint8_t)((s_filter_base[i] & ~63u) | (unsigned)code);
+        phy_i2c_writeReg(0x67, 1, 6 + i, value);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == value;
+    }
+    if (ok) s_filter_code = code;
+    else if (s_filter_base_valid) {
+        for (uint8_t i = 0; i < 2; ++i) phy_i2c_writeReg(0x67, 1, 6 + i, s_filter_base[i]);
+        s_filter_code = PHY_RX_LAB_FILTER_CALIBRATED;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+
+/* Second filter stage (2026-10-04): regs 8..13 relative to the calibrated
+ * bytes, for a steeper skirt at the same -3 dB width. 0 restores them. */
+static int s_filter_skirt;
+bool phy_rx_lab_filter_set_skirt(int offset)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)offset;
+    return false;
+#else
+    if (offset < 0 || offset > 60) return false;
+    transaction_take();
+    bool ok = s_filter_base_valid;
+    for (uint8_t i = 2; ok && i < 8; ++i) {
+        uint8_t value = offset ? predemod_filter_code(s_filter_base[i], offset) : s_filter_base[i];
+        phy_i2c_writeReg(0x67, 1, 6 + i, value);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == value;
+    }
+    if (ok) s_filter_skirt = offset;
+    else if (s_filter_base_valid) {
+        for (uint8_t i = 2; i < 8; ++i) phy_i2c_writeReg(0x67, 1, 6 + i, s_filter_base[i]);
+        s_filter_skirt = 0;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+int phy_rx_lab_filter_skirt(void) { return s_filter_skirt; }
+
+/* BW20-wide lab: regs 6/7 low six bits on top of whatever the current channel
+ * setup wrote (another PHY channel mode may calibrate other upper bits).
+ * Bookkeeping is untouched: the caller ends with a normal retune, whose
+ * restore re-applies the stored fixed-BW code. */
+bool phy_rx_lab_filter_poke_live(int code)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)code;
+    return false;
+#else
+    if (code < 0 || code > 63) return false;
+    transaction_take();
+    bool ok = true;
+    for (uint8_t i = 0; ok && i < 2; ++i) {
+        uint8_t value = (uint8_t)((phy_i2c_readReg(0x67, 1, 6 + i) & ~63u) | (unsigned)code);
+        phy_i2c_writeReg(0x67, 1, 6 + i, value);
+        ok = phy_i2c_readReg(0x67, 1, 6 + i) == value;
+    }
+    transaction_give();
+    return ok;
+#endif
+}
+
+int phy_rx_lab_filter_code(void) { return s_filter_code; }
+
+int phy_rx_lab_filter_calibrated_code(void)
+{
+#ifdef C5VRX_PHY_RX_LAB_PINNED
+    return s_filter_base_valid ? (int)(s_filter_base[0] & 63u) : -1;
+#else
+    return -1;
 #endif
 }

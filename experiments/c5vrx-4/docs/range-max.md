@@ -12,7 +12,7 @@ Every 6 dB is roughly 2x the distance.
 | Noise figure | noise floor | C5 internal LNA (WiFi class) | external ~1 dB NF LNA: +3-5 dB |
 | Noise bandwidth | noise floor | 40 MHz | BW20 at the edge: +2-3 dB (built) |
 | Quantization | information | coarse Q4 at the edge | noise-referenced lanes (built) |
-| Demodulator | FM threshold | endpoint Phase8 | see "Demodulator limits" |
+| Demodulator | FM threshold + post-detection aliasing | span75 endpoint Phase8: -3 dB vs a filtered detector (host model) | see "Post-detection aliasing" |
 | Sync keeping | usable vs lost lock | raw sync | sync flywheel + colour killer (built) |
 
 Rough numbers: kTB over 40 MHz = -98 dBm; with a ~5 dB NF the floor is ~-93 dBm,
@@ -41,7 +41,9 @@ single-window bursts/s); 5 ms re-entry hold-off.
 BW20 only at maximum gain, on the lane cap, with a present but starved or
 incoherent carrier for 1 s; back to BW40 after 1 s of clear recovery. BW20
 was rejected as a fixed mode (chroma/detail); at the edge it trades a little
-colour for ~3 dB of CNR, as analog receivers narrow their IF.
+colour for ~3 dB of CNR, as analog receivers narrow their IF. In C5VRX-4
+with the fixed analog BW calibrated, the gear switches to the measured edge
+profile instead (see "Post-detection aliasing").
 
 ### Sync flywheel + colour killer (parked on `feat/sync-flywheel`)
 The BitScrambler demodulates on the fly from the ring TX reads ~409 us after
@@ -81,6 +83,85 @@ colour killer on during a 500-line fade and released afterwards.
 bw_switches, fold_drops) and `SFW` (lock, standard, repaired, missed, levels,
 colour killer). `tools/range_logger.py PORT out.csv` logs it continuously;
 typed lines become marker rows ("picture lost", "30 dB").
+
+## Post-detection aliasing in span75 (host model, 2026-10-05)
+
+`tools/postdetect_alias_model.py` runs the generated Unwrap75 LUTs (Phase8,
+trajectory class, STD150 DAC codes, resistor-DAC voltages) on simulated Q4/I4
+bytes with the fine-lane noise of 1.04 steps (from the VTX-off G81 reading
+above). The goggle is modelled as a 5 MHz 4th-order low-pass. These are host
+numbers, not hardware measurements.
+
+The 75 ns endpoint delta is an integrate-and-dump over three samples. Its
+first null is at 13.33 MHz and it is resampled at 13.33 MS/s with no
+anti-alias filter. FM discriminator noise rises as f² up to the
+pre-detection half-width (±20 MHz at 40 MS/s). The 6.67–20 MHz part, which
+holds most of that noise, folds into the 0–6.67 MHz video band.
+
+Video SNR at the channel width ±20 MHz (dB, total / 1-MHz bands):
+
+| CNR at ADC | Firmware (Unwrap75) | avg3 (same 13.33 MS/s) | adjacent 40 MS/s |
+|---|---|---|---|
+| 6 dB | 4.8 / 5.3 at 2–3 MHz | 7.9 / 8.3 | 6.7 / 8.7 |
+| 8 dB | 7.1 / 7.8 | 11.2 / 11.7 | 9.9 / 12.3 |
+| 10 dB | 9.2 / 9.7 | 13.5 / 14.0 | 12.3 / 14.7 |
+
+- The firmware follows an ideal exact span75 within ~0.5 dB, so trajectory
+  unwrap and the DAC transfer are not the loss.
+- In the 1–5 MHz bands, span75 is 3.5–4.6 dB below the adjacent detector.
+- avg3 is the mean phase of the three samples in a span minus the previous
+  span's mean (weights 1,2,3,2,1 on the adjacent deltas). It stays within
+  0.1–1 dB of the adjacent detector per band. That is worth about 2–3 dB of
+  input signal at the same picture SNR.
+- Golden span50 loses 2–3 dB in the same model. This is consistent with
+  C5VRX-4 being reported as slightly less clean than C5VRX-3.
+- The result depends little on the goggle low-pass: 4/5/6 MHz gives span75
+  -3.6/-2.9/-2.1 dB in total SNR.
+- Filtering after the 13.33 MS/s resampling does not help. Summing two spans,
+  or [1,2,1] across three spans, keeps the per-band SNR unchanged and only
+  softens the picture. The noise must be removed before resampling.
+
+**Throughput limit.** avg3 needs the full phase of all three samples: about
+five lookups per span. The TX BitScrambler sustains three bundles per three
+bytes. A four-bundle Phase6 geometry already emptied the FIFO
+(`docs/pr-derived-findings.md`), so avg3 does not fit as is. Open routes:
+
+1. A coarse middle-sample phase term via the trajectory LUT.
+2. A narrower pre-detection bandwidth (next paragraph).
+
+**A narrower pre-detection width also reduces the aliasing.** At a fixed
+C/N0 of 82 dB-Hz, with the AGC rescaling the noise to the lane:
+
+| Channel width | span75 total | span75 at 2–3 MHz |
+|---|---|---|
+| ±20 MHz | 4.3 dB | 4.8 dB |
+| ±14 MHz | 6.4 dB | 6.9 dB |
+| ±11 MHz | 7.6 dB | 8.4 dB |
+| ±9 MHz | 8.5 dB | 9.5 dB |
+
+- Going from ±20 to ±11 MHz is worth ~2.3 dB of input on top of the
+  threshold gain.
+- The nonlinear FM distortion of the test video stays at 37 dB SDR at
+  ±11 MHz (32 dB at ±9 MHz).
+- Whether BW20 or the digital filter mode narrows the noise *at the
+  MODEM_DIAG tap* is the open hardware question that `/`, `;` and
+  `nbw_khz` answer. If they do, the BW gear is worth more than its
+  threshold CNR alone.
+
+**Built (2026-10-05): edge profile.** The calibration measures the analog
+code × digital filter combinations at the tap (`BW_EDGE`). The V5 gear uses
+the best one (≥ 14 MHz, ≥ 0.5 dB better in noise bandwidth) only at the
+edge. The same 3rd-order model, with distortion and noise combined, gives
+the target:
+
+| Video SNR at C/N0 | 14 MHz width | 24 MHz width |
+|---|---|---|
+| 80 dB-Hz | 7.3 dB | 4.8 dB |
+| 82 dB-Hz | 9.4 dB | 7.2 dB |
+| 84 dB-Hz | 11.4 dB | 9.4 dB |
+
+That is about 2 dB of input. A narrower filter cannot undo the aliasing
+inside span75; only a detector change can (avg3, beyond the TX budget).
 
 ## Demodulator: what fits two bundles
 

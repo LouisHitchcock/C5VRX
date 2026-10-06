@@ -200,7 +200,8 @@ static esp_err_t route_modem_iq(void)
 
 void rf_set_iq_lanes(uint8_t set)
 {
-    if (c5vrx4_ultrafine_forced()) set = RF_IQ_LANE_SETS - 1u;
+    uint8_t fixed = c5vrx4_fixed_lane();
+    if (fixed < RF_IQ_LANE_SETS) set = fixed;
     if (set >= RF_IQ_LANE_SETS) set = RF_IQ_LANE_SETS - 1u;
     if (set == s_iq_lane_set) return;
 #ifdef C5VRX4_EXPERIMENT
@@ -214,7 +215,16 @@ void rf_set_iq_lanes(uint8_t set)
         gpio_func_out_sel_cfg_reg_t config;
         config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
         config.out_sel = MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane];
+        config.out_inv_sel = 0;
         route[lane] = config.val;
+    }
+    /* Native AGC acquisition mask: data bit 0 (Q LSB) is the witness. */
+    uint8_t flag = c5vrx4_agc_mask_active() ? c5vrx4_agc_flag() : C5VRX4_AGC_FLAG_UNKNOWN;
+    if (flag != C5VRX4_AGC_FLAG_UNKNOWN) {
+        gpio_func_out_sel_cfg_reg_t config = {.val = route[0]};
+        config.out_sel = MODEM_DIAG0_IDX + 28u + (flag & 3u);
+        config.out_inv_sel = (flag >> 7) & 1u;
+        route[0] = config.val;
     }
     uint64_t started = (uint64_t)esp_timer_get_time();
     for (unsigned step = 0; step < 3; ++step) {
@@ -246,6 +256,44 @@ uint8_t rf_get_iq_lanes(void)
 {
     return s_iq_lane_set;
 }
+
+#ifdef C5VRX4_EXPERIMENT
+/* AGC witness calibration only: route eight raw MODEM_DIAG signals onto the
+ * PARLIO lanes (data bit n = diag[n]), then restore the receive routes. Live
+ * video is garbage meanwhile; nothing else may switch lanes in between. */
+void rf_route_diag_capture(const uint8_t diag[8])
+{
+    portENTER_CRITICAL(&s_lane_route_lock);
+    for (unsigned lane = 0; lane < 8; ++lane) {
+        gpio_func_out_sel_cfg_reg_t config;
+        config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
+        config.out_sel = MODEM_DIAG0_IDX + (diag[lane] & 31u);
+        config.out_inv_sel = 0;
+        GPIO.func_out_sel_cfg[s_iq_pins[lane]].val = config.val;
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    portEXIT_CRITICAL(&s_lane_route_lock);
+}
+void rf_restore_iq_routes(void)
+{
+    portENTER_CRITICAL(&s_lane_route_lock);
+    uint8_t set = s_iq_lane_set < RF_IQ_LANE_SETS ? s_iq_lane_set : 0u;
+    uint8_t flag = c5vrx4_agc_mask_active() ? c5vrx4_agc_flag() : C5VRX4_AGC_FLAG_UNKNOWN;
+    for (unsigned lane = 0; lane < 8; ++lane) {
+        gpio_func_out_sel_cfg_reg_t config;
+        config.val = GPIO.func_out_sel_cfg[s_iq_pins[lane]].val;
+        config.out_sel = MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane];
+        config.out_inv_sel = 0;
+        if (lane == 0 && flag != C5VRX4_AGC_FLAG_UNKNOWN) {
+            config.out_sel = MODEM_DIAG0_IDX + 28u + (flag & 3u);
+            config.out_inv_sel = (flag >> 7) & 1u;
+        }
+        GPIO.func_out_sel_cfg[s_iq_pins[lane]].val = config.val;
+    }
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    portEXIT_CRITICAL(&s_lane_route_lock);
+}
+#endif
 
 static void rf_enable_continuous_modem(void)
 {
@@ -449,6 +497,11 @@ esp_err_t rf_request_native_agc_boot(bool enable)
     return err;
 }
 
+bool rf_native_agc_requested(void)
+{
+    return native_agc_boot_requested();
+}
+
 bool rf_native_agc_active(void)
 {
     return s_native_agc;
@@ -572,6 +625,12 @@ esp_err_t rf_start(void)
     if ((err = route_modem_iq()) != ESP_OK) return err;
 
     phy_rx_lab_begin("boot");
+#ifdef C5VRX4_EXPERIMENT
+    /* The RX filter capacitors still hold the per-chip calibration from
+     * rf_init; keep those bytes (upper bits, regs 8..13, restore target).
+     * The restore below then applies the stored fixed-BW code. */
+    (void)phy_rx_lab_filter_capture_base();
+#endif
     analog_phy_restore_lock();
     if (s_native_agc) {
         phy_fft_scale_force(false, 0);
@@ -604,6 +663,7 @@ esp_err_t rf_start(void)
  * filter, IQ/DC, ADC or calibration state is replayed from another channel. */
 static void analog_phy_restore_lock(void)
 {
+    (void)phy_rx_lab_dco_release(); /* the restore must replay vendor rows */
     phy_rx_lab_capture_vendor();
     rf_enable_continuous_modem();
     ESP_ERROR_CHECK(lock_rx_only());
@@ -614,7 +674,93 @@ static void analog_phy_restore_lock(void)
     phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
     if (s_native_agc) phy_force_rx_gain(false, 0);
     else phy_force_rx_gain(true, s_current_gain_val);
+#ifdef C5VRX4_EXPERIMENT
+    rf_apply_fixed_bw();
+    rf_apply_agc_patch();
+#endif
 }
+
+#ifdef C5VRX4_EXPERIMENT
+/* Fixed analog bandwidth: the stored measured RX0 capacitor code, re-applied
+ * in every tuning/bandwidth transaction (and at boot). Not gain: it is applied
+ * in native-AGC mode too. Before the first measurement nothing is written. */
+static uint32_t s_fixed_bw_failures;
+static bool s_fixed_bw_edge;
+/* Native packet-AGC restart patch candidates from the PHY bit scan ('i',
+ * board 2026-10-06, A1, VTX near, base 15.8 restarts/ms). Lab state in RAM
+ * ('z' cycles it), re-applied in every PHY restore, native mode only.
+ * 71C4[25:23] (field sweep '1', vendor 2): 0..3 restart 22-47/ms with
+ *   walks to G20; 7 restarts 1.2-2.4/ms, walks only G36..45, trapped G38..45
+ *   (still moving); 5 mostly freezes. Field undecoded.
+ * 702C[7]=0: 4.8/ms but gain parked at G36; flips the sign of the vendor
+ *   compensation byte (phy_set_rx_comp_new), i.e. an offset, kept for A/B. */
+static const struct { uint32_t addr, mask, value, vendor; } s_agc_patches[] = {
+    {0x600A71C4u, 7u << 23, 7u << 23, 2u << 23},
+    {0x600A702Cu, 1u << 7, 0u, 1u << 7},
+};
+static uint8_t s_agc_patch;
+static bool s_agc_patch_loaded;
+static void agc_patch_write(unsigned k, bool patched)
+{
+    uint32_t v = patched ? s_agc_patches[k].value : s_agc_patches[k].vendor;
+    REG32(s_agc_patches[k].addr) = (REG32(s_agc_patches[k].addr) & ~s_agc_patches[k].mask) | v;
+}
+void rf_apply_agc_patch(void)
+{
+    if (!s_native_agc) return;
+    if (!s_agc_patch_loaded) {
+        s_agc_patch_loaded = true;
+        s_agc_patch = c5vrx4_native_patch_enabled() ? 1u : 0u;
+    }
+    for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
+        if (s_agc_patch & (1u << k)) agc_patch_write(k, true);
+}
+void rf_set_agc_patch(uint8_t mask)
+{
+    if (!s_native_agc) return;
+    s_agc_patch_loaded = true;
+    /* Bits leaving the set go back to the vendor value seen by the scan. */
+    for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
+        if (s_agc_patch & ~mask & (1u << k)) agc_patch_write(k, false);
+    s_agc_patch = mask;
+    rf_apply_agc_patch();
+}
+uint8_t rf_agc_patch(void) { return s_agc_patch; }
+
+void rf_apply_fixed_bw(void)
+{
+    if (!c5vrx4_fixed_bw_enabled()) return;
+    uint8_t code = c5vrx4_bw_code();
+    if (code == C5VRX4_BW_UNCALIBRATED) return;
+    if (s_fixed_bw_edge && c5vrx4_bw_edge_code() != C5VRX4_BW_UNCALIBRATED)
+        code = c5vrx4_bw_edge_code();
+    if (!phy_rx_lab_filter_set_code(code) && ++s_fixed_bw_failures == 1u)
+        ESP_EARLY_LOGW(TAG, "fixed BW code=%u not applied (no baseline or read-back mismatch)", code);
+    unsigned skirt = c5vrx4_bw_skirt();
+    if (s_fixed_bw_edge && c5vrx4_bw_edge_skirt() != C5VRX4_BW_EDGE_SKIRT_NONE)
+        skirt = c5vrx4_bw_edge_skirt();
+    /* Written even at 0: leaving the edge profile must undo its skirt. */
+    if ((skirt || c5vrx4_bw_edge_skirt() != C5VRX4_BW_EDGE_SKIRT_NONE) &&
+        !phy_rx_lab_filter_set_skirt((int)skirt) && ++s_fixed_bw_failures == 1u)
+        ESP_EARLY_LOGW(TAG, "fixed BW skirt=%u not applied", skirt);
+}
+uint32_t rf_fixed_bw_failures(void) { return s_fixed_bw_failures; }
+/* Edge gear actuator: the measured edge profile (analog code, optionally the
+ * digital BW20 filter) or back to the normal fixed code + BW40. One restore
+ * transaction, the same cost as the former BW20/BW40 gear switch. */
+void rf_set_fixed_bw_edge(bool edge)
+{
+    if (edge && c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED) edge = false;
+    c5vrx4_suspend();
+    phy_rx_lab_begin("bw_edge");
+    s_fixed_bw_edge = edge;
+    s_analog_bw40 = !(edge && c5vrx4_bw_edge_digital());
+    analog_phy_restore_lock();
+    phy_rx_lab_end();
+    c5vrx4_resume();
+}
+bool rf_fixed_bw_edge_active(void) { return s_fixed_bw_edge; }
+#endif
 
 /* Read-only C5 PHY observations. Estimator/calibration routines are not called
  * while live because they reconfigure clocks and receive state. */
@@ -665,7 +811,12 @@ static uint16_t s_current_freq_mhz = 5865u;
 static int s_current_offset_khz = 0;
 
 #define C5_WIFI5_MIN_MHZ 5180u
-#define C5_WIFI5_MAX_MHZ 5885u
+/* Channels above the last public centre (177 / 5885 MHz) are reached with
+ * phy_set_freq from that centre. zerowidth/C5VRX PR #3 decoded R8 (5917 MHz)
+ * this way with full line lock and tuned E8 (5945 MHz); the band table already
+ * lists E6..E8 and R8, which the old 5885 MHz ceiling refused. The RX DC
+ * calibration's highest point is 5855 MHz, so DC centring matters up here. */
+#define C5_WIFI5_MAX_MHZ 5945u
 
 typedef struct {
     uint8_t channel;
@@ -710,6 +861,9 @@ void rf_set_analog_bandwidth(bool bw40)
 #endif
     phy_rx_lab_begin("bandwidth");
     s_analog_bw40 = bw40;
+#ifdef C5VRX4_EXPERIMENT
+    s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */
+#endif
     analog_phy_restore_lock();
     phy_rx_lab_end();
 #ifdef C5VRX4_EXPERIMENT
@@ -740,6 +894,9 @@ bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generati
         return false;
     }
     if (!phy_rx_lab_try_actuator(expected_generation)) return false;
+    /* A held edge DC correction keeps PBUS in debug mode, where a gain
+     * write would not replay its table row: release it first. */
+    (void)phy_rx_lab_dco_release();
     phy_force_rx_gain(force, gain_idx);
     if (force) s_current_gain_val = gain_idx;
     phy_rx_lab_end_actuator();

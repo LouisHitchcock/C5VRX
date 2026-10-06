@@ -135,8 +135,32 @@ static void check_electrical_slew(void)
         assert(code==target);
     }
 }
+/* HDZero: once settled, +-1-bin evidence jitter must not keep rewriting the
+ * live LUT; a real ~4-bin (~30 mV) level change still corrects. */
+static void check_settled_hold(void)
+{
+    c5v4_level_t s; c5v4_level_init(&s);
+    c5v4_cvbs_stats_t v=signal(38,0);
+    uint64_t now=1000000;
+    for(unsigned k=0;k<200;++k,now+=20000) c5v4_level_observe(&s,&v,true,1,now);
+    assert(s.settled);
+    unsigned before=s.updates;
+    for(unsigned k=0;k<250;++k,now+=20000) { /* 5 s of jittering evidence */
+        v=signal(38+(int)(k%3)-1,(int)(k&1));
+        c5v4_level_observe(&s,&v,true,1,now);
+    }
+    unsigned jitter_updates=s.updates-before;
+    printf("settled hold: %u LUT updates in 5 s of +-1-bin jitter\n", jitter_updates);
+    assert(jitter_updates<=1);
+    int black=mv(&s,0);
+    before=s.updates;
+    v=signal(38,5);
+    for(unsigned k=0;k<60;++k,now+=20000) c5v4_level_observe(&s,&v,true,1,now);
+    assert(s.updates>before && mv(&s,5)>=285 && mv(&s,5)<=335 && mv(&s,0)<black);
+}
 int main(void)
 {
+    check_settled_hold();
     check_seed_from_loaded_table();
     check_fade_and_rate();
     check_gain_step();
