@@ -42,6 +42,8 @@
 #include "cvbs_level.h"
 #include "cvbs_snapshot.h"
 #include "predemod.h"
+#include "snr_meter_hw.h"
+#include "heap_memory_layout.h"
 #include "agc_witness.h"
 #include "idle_raster.h"
 #include "rx_recal.h"
@@ -284,7 +286,27 @@ static inline void sync_dma_m2c(const void *addr, size_t size)
 
 /* Timing and descriptors are immutable while running; only text pixels change.
  * This raster is never linked to the RF ring. */
+#ifdef C5VRX4_EXPERIMENT
+/* The raster lives in a reserved region that starts at the RF dump bank
+ * (0x40830000, 64 KiB, the only address the dump writer fills), instead of
+ * static RAM that ran straight through that bank. Same RAM either way. While
+ * neither the menu nor the idle raster owns TX, nothing reads it and every
+ * entry rebuilds it (menu_init_buffers), so the SNR meter may lend its first
+ * 64 KiB to the dump writer for a reading (SNR_METER.md). Every render or
+ * rebuild bumps s_raster_gen so a reading that overlapped one is discarded. */
+#define MENU_RASTER_ADDR  0x40830000u
+#define MENU_RASTER_END   (MENU_RASTER_ADDR + ((sizeof(menu_raster_t) + 63u) & ~63u))
+SOC_RESERVE_MEMORY_REGION(MENU_RASTER_ADDR, MENU_RASTER_END, c5vrx4_menu_raster);
+#define s_menu_raster (*(menu_raster_t *)(uintptr_t)MENU_RASTER_ADDR)
+static volatile uint32_t s_raster_busy;
+static volatile uint32_t s_raster_gen;
+#define RASTER_WRITE_BEGIN() (++s_raster_busy)
+#define RASTER_WRITE_END() do { ++s_raster_gen; --s_raster_busy; } while (0)
+#else
 static DMA_ATTR __attribute__((aligned(64))) menu_raster_t s_menu_raster;
+#define RASTER_WRITE_BEGIN() ((void)0)
+#define RASTER_WRITE_END() ((void)0)
+#endif
 /* The two-field scatter chain needs 1,499 (NTSC, 18 KiB) or 1,811 (PAL,
  * 21.7 KiB) descriptors, only while the standalone menu owns TX. GDMA follows
  * each descriptor's next pointer, so the chain need not be contiguous: it is
@@ -320,6 +342,27 @@ static TaskHandle_t s_sfw_task_handle;
 #define IDLE_RASTER_ACTIVE() (s_idle.active)
 #else
 #define IDLE_RASTER_ACTIVE() false
+#endif
+
+#ifdef C5VRX4_EXPERIMENT
+/* The reservation record must stay referenced or --gc-sections can drop it,
+ * and static RAM must end below it (also asserted at link time). */
+bool video_raster_region_ok(void)
+{
+    extern char _bss_end;
+    const volatile soc_reserved_region_t *region = &reserved_region_c5vrx4_menu_raster;
+    return region->start == MENU_RASTER_ADDR && region->end == MENU_RASTER_END &&
+           (uintptr_t)&_bss_end <= MENU_RASTER_ADDR &&
+           !heap_caps_check_integrity_addr(MENU_RASTER_ADDR, false) &&
+           !heap_caps_check_integrity_addr(MENU_RASTER_END - 1u, false);
+}
+
+bool video_raster_idle(uint32_t *gen)
+{
+    if (s_menu_active || IDLE_RASTER_ACTIVE() || s_raster_busy) return false;
+    *gen = s_raster_gen;
+    return true;
+}
 #endif
 static volatile bool s_menu_boot_btn_enabled = true;
 static volatile int s_menu_cursor;
@@ -5450,7 +5493,17 @@ static esp_err_t menu_reserve_nodes(unsigned nodes)
 
 static void menu_render_menu(void);
 
+static esp_err_t menu_init_buffers_body(void);
+
 static esp_err_t menu_init_buffers(void)
+{
+    RASTER_WRITE_BEGIN();
+    esp_err_t err = menu_init_buffers_body();
+    RASTER_WRITE_END();
+    return err;
+}
+
+static esp_err_t menu_init_buffers_body(void)
 {
     menu_raster_init(&s_menu_raster, s_video_std);
 
@@ -5867,7 +5920,16 @@ static void menu_render_idle(void)
 }
 #endif
 
+static void menu_render_menu_body(void);
+
 static void menu_render_menu(void)
+{
+    RASTER_WRITE_BEGIN();
+    menu_render_menu_body();
+    RASTER_WRITE_END();
+}
+
+static void menu_render_menu_body(void)
 {
 #ifdef C5VRX4_EXPERIMENT
     if (s_idle.active) { menu_render_idle(); return; }
@@ -8428,6 +8490,7 @@ static void console_diag_task(void *arg)
                     continue;
                 }
                 if (c5vrx4_console(c)) continue;
+                if (snr_meter_console(c)) continue;
                 if (c == '`') rf_reboot_to_download(); /* flashing, never returns */
 #endif
                 if (s_gain_sweep.active &&
@@ -8922,6 +8985,11 @@ static void console_diag_task(void *arg)
                     printf("  '_':         Toggle the no-carrier idle raster (clean black PAL/NTSC for HDZero), reboot\n");
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");
+#ifdef C5VRX4_EXPERIMENT
+                    printf("  '7':         10-bit SNR meter: one reading (in-band/edge power, DC, clips, gain, PSD row)\n");
+                    printf("  '8':         SNR meter floor at the current gain (VTX OFF), stored in NVS\n");
+                    printf("  '9':         Toggle 5 Hz SNR_ROW lines for range walks (median-3 + EMA filtered)\n");
+#endif
                     printf("  '`':         Reboot into USB download mode for flashing (tools/enter_download.py)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
@@ -8940,6 +9008,9 @@ static void console_diag_task(void *arg)
             }
         }
         lab_gain_sweep_tick();
+#ifdef C5VRX4_EXPERIMENT
+        snr_meter_tick();
+#endif
         /* Heartbeat (USB lockup diagnosis, 2026-10-06): if this stops while
          * "HB predemod" goes on, the console task is starved or stuck. */
         static int64_t hb_us;

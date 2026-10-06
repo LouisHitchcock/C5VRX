@@ -16,3 +16,8 @@ target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/sync_flywheel.c")
 target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/lanes.c")
 
 target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/cvbs_level.c" "${PROJECT_DIR}/cvbs_level_hw.c")
+
+target_sources(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/snr_meter.c")
+# The menu raster is reserved at the RF dump bank; static RAM must end below it.
+target_link_options(${COMPONENT_LIB} INTERFACE "-T${PROJECT_DIR}/c5vrx4_raster_memory.ld")
+set_property(TARGET ${COMPONENT_LIB} APPEND PROPERTY LINK_DEPENDS "${PROJECT_DIR}/c5vrx4_raster_memory.ld")

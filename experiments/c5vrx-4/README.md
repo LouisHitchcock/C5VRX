@@ -104,6 +104,14 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
   RADIUS_BOOST.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
   and filter width. See PREDEMOD_LAB.md.
+- 10-bit SNR meter (`7` reading, `8` floor with VTX off, `9` 5 Hz rows): the
+  dump writer that already feeds MODEM_DIAG gets the SRAM port for ~40 us,
+  and the CPU measures in-band power, DC, clipping and the gain index on the
+  full 10-bit I/Q. With a floor stored for the gain in use it reports SNR in
+  dB, the yardstick for range A/B tests. The menu / idle raster moved to a
+  reserved region at the dump bank (same RAM, ~100 KB smaller image) and is
+  lent to the writer only while live video owns TX. Hardware-pending. See
+  SNR_METER.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
   They identify candidate channels; a confident scan is not range proof.
 
