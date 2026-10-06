@@ -37,6 +37,7 @@ static bool s_conceal;      /* line repair on in run_ring */
 static const struct scene_s *s_window_scene;
 static bool s_no_window;
 static unsigned s_stall_every, s_stall_len;   /* skip sfw_run calls: CPU stalls */
+static bool s_self_gate;    /* the flywheel's own fade detector decides */
 static double urand(void) { s_seed = s_seed * 1103515245u + 12345u; return ((s_seed >> 8) & 0xFFFFFF) / 16777216.0; }
 static double grand(void)
 {
@@ -130,6 +131,7 @@ static uint8_t *run_ring(const uint8_t *in, uint64_t n, sync_flywheel_t *f, cons
     uint8_t *ring = calloc(RING, 1), *out = malloc(n);
     sfw_ring_t r = {ring, RING, phase, mask, clear, 0};
     sfw_init(f);
+    f->self_gate = s_self_gate;
     uint64_t rx = 0, tx = 0, evals = 0, lines0 = 0;
     while (tx < n) {
         uint64_t rx_to = rx + DSCR;
@@ -275,6 +277,23 @@ static void scenario(bool pal)
     s_stall_every = s_stall_len = 0;
     s_no_window = false;
     free(out);
+    /* Review 2026-10-06 counter-example: noise-free Q4 at radius 4 and 5
+     * with full 4.667 MHz deviation read coherence 66-72 and opened the old
+     * coherence gate. The self-gating detector must stay closed: 0 fade
+     * detections, 0 bytes written. */
+    for (int radius = 4; radius <= 5; ++radius) {
+        scene_t quiet = clean;
+        quiet.amp = radius; quiet.noise = 0.0;
+        uint8_t *qin = generate(&quiet, n);
+        s_self_gate = true;
+        uint8_t *qout = run_ring(qin, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
+        s_self_gate = false;
+        printf("%s noise-free radius %d, self-gated: fade_detections=%u fade_pm=%u locked=%d\n",
+               name, radius, f.fade_detections, f.fade_pm, sfw_locked(&f));
+        assert(sfw_locked(&f) && f.fade_detections == 0u && memcmp(qin, qout, n) == 0);
+        free(qout);
+        free(qin);
+    }
     /* Line repair on a clean signal: not one byte changes. */
     s_conceal = true;
     out = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
@@ -309,17 +328,24 @@ static void scenario(bool pal)
     }
     printf("%s fades: repaired=%u slots=%u v_coasted=%u vsyncs=%u bytes_changed=%u evals/line=%.1f\n",
            name, f.repaired, f.slots_repaired, f.v_coasted, f.vsyncs, changed, epl);
-    /* The same fades with the window open only around them (V5 observer). */
-    s_window_scene = &fade;
-    uint8_t *gated = run_ring(in, n, &f, c5v4_phase_static, false, 0, NULL, 4000);
-    s_window_scene = NULL;
+    /* Integral: raw IQ -> the flywheel's own fade detector -> repair. The
+     * deep fade (pure noise) opens the window and every pulse through it is
+     * rebuilt; nothing is written before it or in the clean stretch after
+     * it. (Sync-only damage under a clean picture is not a fade and is
+     * deliberately left alone.) */
+    s_self_gate = true;
+    sync_flywheel_t g;
+    uint8_t *gated = run_ring(in, n, &g, c5v4_phase_static, false, 0, NULL, 4000);
+    s_self_gate = false;
     for (unsigned a = 0; a < 3u; ++a) {
-        verdict_t v = verify(&truth, gated, n, 4 * F, 9 * F, a);
-        printf("%s fades, gated window align=%u: output ok %u/%u (missing %u, bad width %u, max edge %u)\n",
+        verdict_t v = verify(&truth, gated, n, (uint64_t)(4.25 * F), (uint64_t)(4.9 * F), a);
+        printf("%s deep fade, self-gated align=%u: output ok %u/%u (missing %u, bad width %u, max edge %u)\n",
                name, a, v.ok, v.checked, v.missing, v.bad_width, v.max_edge);
         assert(v.missing == 0 && v.bad_width == 0 && v.max_edge <= 15u);
     }
-    for (uint64_t k = 0; k < (uint64_t)(4.2 * F); ++k) assert(gated[k] == in[k]);  /* before the fades */
+    printf("%s deep fade, self-gated: fade_detections=%u fade_pm=%u\n", name, g.fade_detections, g.fade_pm);
+    for (uint64_t k = 0; k < (uint64_t)(4.25 * F); ++k) assert(gated[k] == in[k]);  /* before the fade */
+    for (uint64_t k = (uint64_t)(5.1 * F); k < (uint64_t)(5.9 * F); ++k) assert(gated[k] == in[k]);  /* clean after */
     free(gated);
     assert(f.repaired > 200u && f.slots_repaired > 10u && f.v_coasted >= 1u);
     /* Repairs stay inside sync and vertical-interval samples. */

@@ -60,7 +60,7 @@ def main():
     assert "s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */" in (ROOT / "main/rf.c").read_text()
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
     assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
-    assert "sfw_run(&s_sfw, &ring, ceiling, floor, now < s_sfw_fade_until_us, s_sfw_budget)" in video
+    assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video and "s_sfw.self_gate = true;" in video
     assert '"sync_fw", true' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, 200)" in video and "sync_flywheel_task, \"sync_fw\", 3072, NULL, 4," in video
     assert "sync_flywheel.c" in (ROOT / "component.cmake").read_text()
     # Line repair: opt-in, needs the flywheel, selectable in SETUP, source bound set.

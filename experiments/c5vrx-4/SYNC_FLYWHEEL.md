@@ -163,11 +163,20 @@ off until the redesign below.
 
 The flywheel no longer decides on its own when to write:
 
-- **Fade window.** The V5 observer (every 200 us, newest descriptor) opens
-  it when the carrier coherence drops below 75 (clean ~99, noise ~10) and
-  holds it 30 ms. Only inside it are syncs rebuilt and dropout lines
-  repaired. Outside it nothing is written: a clean picture is untouched by
-  construction, not by a detector being right.
+- **Fade window, detected by the flywheel itself.** Each run samples up to
+  32 spans of the new raw data: valid FM video makes 75 ns endpoint steps
+  between sync - 12 and white + 12 bins (white = 7/3 of the sync depth above
+  blanking); receiver noise lands outside ~40 % of the time. At >= 15 % the
+  stretch, widened by one line on each side, is a fade; only lines inside
+  it may be written. Independent of the gain owner (native AGC too), no
+  hold after recovery, no shared deadline field. The first version used
+  V5's coherence < 75 (held 30 ms): review 2026-10-06 showed noise-free Q4
+  at radius 4-5 with full 4.667 MHz deviation reads coherence 66-72, so
+  valid video opened it. Integral host test: raw IQ -> detector ->
+  flywheel; noise-free radius 4 and 5 give 0 detections and 0 bytes
+  written; the deep fade is repaired; nothing is written before it or in
+  the clean stretch after it. Sync-only damage under a clean picture is
+  not a fade and is left alone.
 - **Stable lock first.** No write until 64 clean lines after a (re)lock, so
   a fresh lock at a wrong phase can never write.
 - **Maintenance tracking.** Outside a window a stable lock measures one line

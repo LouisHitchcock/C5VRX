@@ -213,6 +213,45 @@ static bool conceal(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_
     return true;
 }
 
+/* ---- fade detection --------------------------------------------------- */
+/* Valid FM video (sync to white, with CFO margin) makes 75 ns endpoint
+ * steps between sync - 12 and white + 12 bins; receiver noise lands outside
+ * ~40 % of the time. Coherence was the wrong test: noise-free Q4 at radius
+ * 4-5 with full deviation reads coherence 66-72 (review 2026-10-06). The
+ * new data since the last scan is sampled at up to 32 spans; a faded stretch
+ * is widened by a line on each side and lines outside it never get write
+ * permission. */
+static void fade_scan(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end)
+{
+    if (!f->levels || avail_end < 16u) return;
+    uint64_t a = f->fade_scan, b = avail_end - 8u;
+    if (a + 8192u < b) a = b - 8192u;
+    if (a < 8u) a = 8u;
+    f->fade_scan = avail_end;
+    if (b < a + 96u) return;
+    int sync = f->sync_q4 / 16, blank = f->blank_q4 / 16, depth = blank - sync;
+    int lo = sync - 12, hi = blank + depth * 7 / 3 + 12;
+    unsigned n = 32u, bad = 0;
+    uint64_t stride = (b - a) / n;
+    for (unsigned i = 0; i < n; ++i) {
+        int d = step3(r, a + 3u + i * stride);
+        bad += d < lo || d > hi;
+    }
+    s_evals += n;
+    f->fade_pm = (uint16_t)(bad * 1000u / n);
+    if (f->fade_pm < SFW_FADE_PM) return;
+    uint64_t line = (uint64_t)(f->period_q8 > 0 ? f->period_q8 : (int32_t)SFW_PAL_LINE_Q8) >> 8;
+    if (f->fade_to + line < a || f->fade_to == 0) f->fade_from = a > line ? a - line : 0;
+    f->fade_to = b + line;
+    ++f->fade_detections;
+}
+
+static inline bool in_fade(const sync_flywheel_t *f, uint64_t base_q8)
+{
+    uint64_t s = base_q8 >> 8, line = (uint64_t)f->period_q8 >> 8;
+    return f->fade_to && s + line >= f->fade_from && s <= f->fade_to;
+}
+
 /* A grid line that is not scored (vertical interval, skipped, repair off)
  * can never be a source, and breaks the previous-line chain. */
 static inline void unscored(sync_flywheel_t *f, uint32_t line)
@@ -523,6 +562,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     build_cells(r);
     s_evals = 0;
     f->evals = 0;
+    if (f->self_gate && f->state == SFW_TRACK) fade_scan(f, r, avail_end);
     if (f->state == SFW_ACQUIRE) {
         acquire(f, r, avail_end, budget_evals);
         f->evals = s_evals;
@@ -531,7 +571,8 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     unsigned processed = 0;
     while (f->state == SFW_TRACK && s_evals < budget_evals) {
         bool locked = sfw_locked(f);
-        bool repair = allow_repair && locked && f->levels && f->stable;
+        bool window = allow_repair && (!f->self_gate || in_fade(f, f->next_q8));
+        bool repair = window && locked && f->levels && f->stable;
         uint64_t h2q = half_q8(f);
         /* Arm the coming vertical interval 4 lines ahead, on the line grid. */
         if (f->v_valid && !f->v_armed) {
@@ -593,7 +634,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         /* Outside a fade window a stable lock is only maintained: one line
          * in SFW_SAMPLE is measured (the period is crystal-stable). The
          * vertical interval is always followed. */
-        if (!allow_repair && f->stable && f->v_valid && !f->v_armed &&
+        if (!window && f->stable && f->v_valid && !f->v_armed &&
             (f->grid_line % SFW_SAMPLE) != 0u) {
             unscored(f, f->grid_line);
             advance(f, base + (uint64_t)(int64_t)f->period_q8);

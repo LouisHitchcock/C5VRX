@@ -60,6 +60,7 @@ typedef struct {
 #define SFW_CONCEAL_RUN 6u      /* consecutive repaired lines at most */
 #define SFW_SAMPLE      8u      /* outside a fade: measure 1 line in 8 */
 #define SFW_STABLE      64u     /* clean lines after a (re)lock before any write */
+#define SFW_FADE_PM     150u    /* implausible-step share that opens the window */
 
 typedef enum { SFW_ACQUIRE = 0, SFW_TRACK = 1 } sfw_state_t;
 
@@ -108,6 +109,14 @@ typedef struct {
     uint8_t conceal_run;
     /* Fade-gated repair (2026-10-06): writes only from a stable lock. */
     bool stable;
+    /* Self-gating (review 2026-10-06): the fade window is detected here on
+     * the raw ring - the share of endpoint steps no valid FM video can make -
+     * independent of the gain owner, per line, without a hold after
+     * recovery. Off = allow_repair alone decides (host scenarios). */
+    bool self_gate;
+    uint64_t fade_from, fade_to, fade_scan;
+    uint32_t fade_detections;
+    uint16_t fade_pm;           /* implausible steps in the last scan, per mille */
     /* counters */
     uint32_t lines, clean, repaired, missed, slots_repaired, vsyncs, v_coasted, v_parity,
              acquisitions, relocks, skipped_lines, fast_lines, skipped_floor, rebuilt,

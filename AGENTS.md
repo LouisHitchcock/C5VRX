@@ -451,9 +451,10 @@ requirements by themselves**.
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
     observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
-  Since 2026-10-06 it is fade-gated and on by default: it writes only inside
-  the V5 observer's fade window (coherence < 75, held 30 ms) and only from a
-  stable lock, measures one line in eight otherwise, and keeps its phase
+  Since 2026-10-06 it is fade-gated and on by default: it writes only on
+  lines its own raw-ring detector marks as faded (>= 15 % of endpoint steps
+  outside the valid sync..white range; a coherence gate opened on valid
+  video) and only from a stable lock, measures one line in eight otherwise, and keeps its phase
   across CPU stalls (the always-writing version re-acquired at new phases
   and put black streaks into a clean picture). `w`, NVS `sync_fw` or the
   menu SETUP page opts out; goggle behaviour remains hardware-pending.

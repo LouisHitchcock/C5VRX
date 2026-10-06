@@ -310,13 +310,12 @@ static volatile bool s_menu_active;
 static idle_raster_t s_idle;
 static unsigned s_idle_failures;
 static TaskHandle_t s_sfw_task_handle;
-/* Fade window for the sync flywheel (2026-10-06): the V5 observer opens it
- * when the carrier coherence collapses; only inside it does the flywheel
- * write. A clean picture is never touched. */
-#define SFW_FADE_COHERENCE 75
-#define SFW_FADE_HOLD_US   30000
-static volatile int64_t s_sfw_fade_until_us;
-static volatile uint32_t s_sfw_fade_opens;
+/* The flywheel's fade window is detected by the flywheel itself on the raw
+ * ring (sync_flywheel.c fade_scan): independent of the gain owner (native
+ * AGC included), per line, no hold after recovery, no shared deadline
+ * field. The first version took it from V5's coherence < 75, which noise-
+ * free Q4 at radius 4-5 with full deviation already reads (review
+ * 2026-10-06). */
 #define IDLE_RASTER_ACTIVE() (s_idle.active)
 #else
 #define IDLE_RASTER_ACTIVE() false
@@ -1931,10 +1930,6 @@ static void direct_gain_v3_observer_task(void *arg)
         s_v3_origin_pm = observation.origin_pm;
         s_v3_clip_pm = observation.clip_pm;
         s_v3_coherence = observation.coherence;
-        if (observation.coherence < SFW_FADE_COHERENCE) {
-            if ((int64_t)observation.observed_us >= s_sfw_fade_until_us) ++s_sfw_fade_opens;
-            s_sfw_fade_until_us = (int64_t)observation.observed_us + SFW_FADE_HOLD_US;
-        }
         if (phy != phy_rx_lab_generation() || phy_rx_lab_busy()) continue;
         uint8_t target = direct_gain_v3_tick(&s_direct_gain_v3, &observation);
         s_direct_gain_v3.lane = c5vrx4_lane_target(rf_get_iq_lanes(),
@@ -6840,6 +6835,10 @@ static void predemod_dg3_map_service(void)
      * slightly stale entry, which the next save replaces. */
     if (!direct_gain_v3_export_map(&s_direct_gain_v3, &blob)) return;
     if (s_dg3_saved_valid && !memcmp(&blob, &s_dg3_saved, sizeof(blob))) return;
+    /* Context identity (review 2026-10-06): a map is a measurement of this
+     * channel and IQ lane; another context must not import it. */
+    blob.freq_mhz = rf_get_frequency_mhz();
+    blob.lane_mode = c5vrx4_fixed_lane();
     if (c5vrx4_blob_store("dg3_map", &blob, sizeof(blob))) {
         s_dg3_saved = blob;
         s_dg3_saved_valid = true;
@@ -7129,6 +7128,7 @@ static void sync_flywheel_task(void *arg)
     uint32_t last_rx_off = UINT32_MAX;
     int64_t last_us = 0;
     sfw_init(&s_sfw);
+    s_sfw.self_gate = true;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         /* Labs measure raw receiver noise and IQ: no synthetic pulses then. */
@@ -7151,6 +7151,7 @@ static void sync_flywheel_task(void *arg)
         int64_t now = esp_timer_get_time();
         if (last_rx_off == UINT32_MAX) {
             sfw_init(&s_sfw);
+            s_sfw.self_gate = true;
             rx_abs = (uint64_t)RAW_RING_BYTES * 4u + rx_off;
             ++s_sfw_rebases;
         } else {
@@ -7182,8 +7183,8 @@ static void sync_flywheel_task(void *arg)
             c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u,
         };
         int64_t t0 = esp_timer_get_time();
-        /* Writes only inside the V5 observer's fade window. */
-        (void)sfw_run(&s_sfw, &ring, ceiling, floor, now < s_sfw_fade_until_us, s_sfw_budget);
+        /* Writes only inside its own detected fade window (self_gate). */
+        (void)sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget);
         uint32_t spent = (uint32_t)(esp_timer_get_time() - t0);
         s_sfw_last_us = spent;
         if (spent > s_sfw_max_us) s_sfw_max_us = spent;
@@ -7210,7 +7211,7 @@ static void sync_flywheel_status_print(void)
            "relocks=%lu acq=%lu skipped=%lu floor_skips=%lu fast=%lu thr=%d sync_q4=%d blank_q4=%d "
            "period_q8=%ld noisy=%u last_us=%lu max_us=%lu budget=%lu ns_per_eval=%lu rebases=%lu "
            "line_repair=%u concealed=%lu conceal_no_source=%lu conceal_late=%lu "
-           "stable=%u fade_window=%u fade_opens=%lu jumps=%lu sampled=%lu "
+           "stable=%u fade_pm=%u fade_detections=%lu jumps=%lu sampled=%lu "
            "hardware_acceptance=pending\n",
            c5vrx4_sync_flywheel_enabled(), s_sfw_running, sfw_locked(f),
            std == 1 ? "PAL" : std == 2 ? "NTSC" : "none", (unsigned)f->state,
@@ -7224,7 +7225,7 @@ static void sync_flywheel_status_print(void)
            (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases,
            c5vrx4_line_repair_enabled(), (unsigned long)f->concealed,
            (unsigned long)f->conceal_no_source, (unsigned long)f->conceal_late,
-           f->stable, esp_timer_get_time() < s_sfw_fade_until_us, (unsigned long)s_sfw_fade_opens,
+           f->stable, (unsigned)f->fade_pm, (unsigned long)f->fade_detections,
            (unsigned long)f->jumps, (unsigned long)f->sampled);
 }
 
@@ -8723,7 +8724,9 @@ esp_err_t video_start(void)
     c5vrx4_options_snapshot();
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     s_dg3_saved_valid = c5vrx4_blob_load("dg3_map", &s_dg3_saved, sizeof(s_dg3_saved)) &&
-                        s_dg3_saved.version == DG3_MAP_VERSION;
+                        s_dg3_saved.version == DG3_MAP_VERSION &&
+                        s_dg3_saved.freq_mhz == rf_get_frequency_mhz() &&
+                        s_dg3_saved.lane_mode == c5vrx4_fixed_lane();
     printf("DG3_MAP loaded=%u\n", s_dg3_saved_valid);
 #endif
 #endif

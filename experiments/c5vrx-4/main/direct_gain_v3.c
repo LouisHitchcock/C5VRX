@@ -265,6 +265,7 @@ unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *b
     memset(blob, 0, sizeof(*blob));
     blob->version = DG3_MAP_VERSION;
     blob->max_index = v3->table.max_index;
+    blob->band5 = v3->table.band5;
     unsigned confident = 0;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
         if (!v3->confidence[g] || !v3->relative_power_q10[g]) continue;
@@ -280,7 +281,7 @@ unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *b
 bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
 {
     if (!v3 || !blob || blob->version != DG3_MAP_VERSION ||
-        blob->max_index != v3->table.max_index) return false;
+        blob->max_index != v3->table.max_index || blob->band5 != v3->table.band5) return false;
     const uint8_t anchor = v3->current_gain;
     if (!blob->confidence[anchor] || !blob->power_q10[anchor]) return false;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
