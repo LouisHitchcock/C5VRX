@@ -698,6 +698,7 @@ static const struct { uint32_t addr, mask, value, vendor; } s_agc_patches[] = {
     {0x600A702Cu, 1u << 7, 0u, 1u << 7},
 };
 static uint8_t s_agc_patch;
+static bool s_agc_patch_loaded;
 static void agc_patch_write(unsigned k, bool patched)
 {
     uint32_t v = patched ? s_agc_patches[k].value : s_agc_patches[k].vendor;
@@ -706,12 +707,17 @@ static void agc_patch_write(unsigned k, bool patched)
 void rf_apply_agc_patch(void)
 {
     if (!s_native_agc) return;
+    if (!s_agc_patch_loaded) {
+        s_agc_patch_loaded = true;
+        s_agc_patch = c5vrx4_native_patch_enabled() ? 1u : 0u;
+    }
     for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
         if (s_agc_patch & (1u << k)) agc_patch_write(k, true);
 }
 void rf_set_agc_patch(uint8_t mask)
 {
     if (!s_native_agc) return;
+    s_agc_patch_loaded = true;
     /* Bits leaving the set go back to the vendor value seen by the scan. */
     for (unsigned k = 0; k < sizeof(s_agc_patches) / sizeof(s_agc_patches[0]); ++k)
         if (s_agc_patch & ~mask & (1u << k)) agc_patch_write(k, false);

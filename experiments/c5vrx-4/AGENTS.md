@@ -15,7 +15,10 @@ output, transformed ring, concurrent RX/TX BitScrambler or boundary DSP resets.
 
 Fixed fine lanes {9,7,6,5} are default (Leon, 2026-10-04): never switch lanes
 at runtime. Fixed ultrafine and protected adaptive V5 lanes are Z comparisons.
-Native is opt-in and owns gain exclusively. Severe coarse or fixed-lane clipping
+Native is opt-in and owns gain exclusively. Under native the IQ tap is the
+coarse lane set for the whole session and the restart patch 71C4[25:23]=7
+is applied in every PHY restore (NVS native_patch, default on; board
+measurements 2026-10-06 in the native AGC lab commits). Severe coarse or fixed-lane clipping
 may cut active Direct Gain to its established G20 floor; fresh epochs and settling
 refusal still apply. Manual/native never use this automatic gain response.
 

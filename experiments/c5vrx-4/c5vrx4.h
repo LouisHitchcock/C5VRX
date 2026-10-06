@@ -32,7 +32,7 @@ enum {
     C5VRX4_OPT_FIXED_BW, C5VRX4_OPT_LANES,           /* RF page */
     C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_DC_RECENTER, C5VRX4_OPT_SPHASE,
     C5VRX4_OPT_IDLE_RASTER, C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW,
-    C5VRX4_OPT_LEVEL, C5VRX4_OPT_CVBS, C5VRX4_OPT_HISTORY,
+    C5VRX4_OPT_LEVEL, C5VRX4_OPT_CVBS, C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH,
     C5VRX4_OPT_COUNT
 };
 void c5vrx4_options_snapshot(void);
@@ -41,6 +41,8 @@ const char *c5vrx4_option_value(unsigned option);
 bool c5vrx4_option_pending(unsigned option);
 bool c5vrx4_option_cycle(unsigned option);
 bool c5vrx4_options_pending(void);
+/* Native AGC restart patch 71C4[25:23]=7 (NVS native_patch, default on). */
+bool c5vrx4_native_patch_enabled(void);
 
 bool c5vrx4_lane_window_ready(uint64_t now_us);
 uint8_t c5vrx4_lane_target(uint8_t current, uint8_t requested, const uint8_t *sample, size_t bytes, uint64_t now_us);

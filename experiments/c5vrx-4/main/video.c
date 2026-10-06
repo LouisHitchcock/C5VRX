@@ -5313,7 +5313,9 @@ static void menu_draw_shell(void)
     menu_ui_text(ch->name, 96, 0, UI_WHITE);
     snprintf(buf, sizeof(buf), "%uM", ch->freq_mhz);
     menu_ui_text(buf, 128, 0, UI_MUTED);
-    snprintf(buf, sizeof(buf), "G%u", s_current_gain);
+    /* Native gain is the vendor AGC's own; s_current_gain is not it. */
+    if (rf_native_agc_active()) snprintf(buf, sizeof(buf), "NAT");
+    else snprintf(buf, sizeof(buf), "G%u", s_current_gain);
     menu_ui_text(buf, 208, 0, UI_WHITE);
     menu_ui_text(agc_state_name(), 244, 0, UI_MUTED);
     menu_ui_signal_bars(320, 0, s_signal_strength);
@@ -5382,7 +5384,8 @@ static void menu_draw_channel_page(void)
     snprintf(buf, sizeof(buf), s_channel_scan_active ? "%u%%" : "S%u",
              s_channel_scan_active ? s_channel_scan_progress : (unsigned)s_signal_strength);
     menu_ui_text(buf, 264, 47, UI_WHITE);
-    snprintf(buf, sizeof(buf), "G%u", s_current_gain);
+    if (rf_native_agc_active()) snprintf(buf, sizeof(buf), "NATIVE");
+    else snprintf(buf, sizeof(buf), "G%u", s_current_gain);
     menu_ui_text_right(buf, 376, 47, UI_WHITE);
 }
 

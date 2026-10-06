@@ -99,7 +99,11 @@ const char *c5vrx4_lane_mode_name(void)
 
 uint8_t c5vrx4_fixed_lane(void)
 {
-    /* RF lane sets: 0 coarse {9,8,7,6}, 1 fine {9,7,6,5}, 2 ultrafine {9,6,5,4}. */
+    /* RF lane sets: 0 coarse {9,8,7,6}, 1 fine {9,7,6,5}, 2 ultrafine {9,6,5,4}.
+     * Native AGC settles for the full 10-bit ADC, beyond the fine +-256
+     * window (board 2026-10-06, with the restart patch: clip 148 pm fine,
+     * 21-27 pm coarse), so native boots on coarse; fixed for the session. */
+    if (rf_native_agc_active()) return 0u;
     static const uint8_t lanes[] = {1u, 2u, C5VRX4_LANE_ADAPTIVE};
     return lanes[c5vrx4_lane_mode()];
 }
@@ -113,6 +117,13 @@ static bool nvs_flag(const char *key, bool fallback)
         nvs_close(handle);
     }
     return value != 0;
+}
+
+static int8_t s_native_patch = -1;
+bool c5vrx4_native_patch_enabled(void)
+{
+    if (s_native_patch < 0) s_native_patch = nvs_flag("native_patch", true);
+    return s_native_patch;
 }
 
 static int8_t s_dc_recenter = -1, s_sphase_auto = -1;
@@ -373,6 +384,7 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_LEVEL]        = {"LEVEL SERVO",   "level_lab",    1, 2, s_off_on},
     [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
+    [C5VRX4_OPT_NATIVE_PATCH] = {"NATIVE PATCH",  "native_patch", 1, 2, s_off_on},
 };
 static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
 static bool s_option_snapshot;
