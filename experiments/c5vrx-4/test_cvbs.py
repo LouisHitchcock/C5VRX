@@ -78,7 +78,8 @@ def main():
     assert output_at(-4e6)==0
     # Invalid scope calibration fails instead of producing arbitrary firmware.
     original=gen.CALIBRATION
-    with tempfile.TemporaryDirectory() as tmp:
+    # Windows cannot delete the still-loaded monitor DLL at cleanup.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         temp=Path(tmp)
         gen.CALIBRATION=temp/'bad.json'
         gen.CALIBRATION.write_text('{"load_ohms":150,"volts_by_code":[]}')

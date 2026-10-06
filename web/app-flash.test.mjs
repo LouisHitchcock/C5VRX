@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 // Exercise the actual click handler with a mock loader: never touch USB hardware.
-const source = fs.readFileSync(process.env.APP_SOURCE_PATH || new URL('./app.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
+const source = fs.readFileSync(process.env.APP_SOURCE_PATH || new URL('./app.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
 function harness(sourceName, packageType = 'merged', confirmed = true) {
   const elements = new Map();
   const get = id => {
