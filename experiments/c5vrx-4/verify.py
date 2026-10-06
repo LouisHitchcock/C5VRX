@@ -80,6 +80,14 @@ def main():
     assert "RASTER_WRITE_BEGIN();\n    esp_err_t err = menu_init_buffers_body();" in video
     assert "RASTER_WRITE_BEGIN();\n    menu_render_menu_body();" in video
     assert "video_raster_idle(&gen_after) || gen_after != gen" in snr
+    # Per-gain DC pair re-held at once after every gain write and PHY restore,
+    # through the all-block hold; never while a search or lab owns the PHY.
+    rf_c = (ROOT / "main/rf.c").read_text()
+    assert "if (force && s_post_gain_hook) s_post_gain_hook(gain_idx);" in rf_c
+    assert "if (!s_native_agc && s_post_gain_hook) s_post_gain_hook(s_current_gain_val);" in rf_c
+    assert "rf_set_post_gain_hook(dco_post_gain);" in video
+    assert "phy_rx_lab_dco_hold_quiet(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1])" in video
+    assert "dco_hold_locked();" in (ROOT / "main/phy_rx_lab.c").read_text()
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

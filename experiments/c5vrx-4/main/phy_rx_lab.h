@@ -84,6 +84,9 @@ bool phy_rx_lab_gain_words(uint16_t w[3]);
  * debug mode after re-assert, 2 after release + gain replay. */
 void phy_rx_lab_gain_trace(uint16_t out[3][3], uint32_t *events);
 void phy_rx_lab_dco_load(int code_i, int code_q);
+/* Hold an explicit pair at once, silently (rf.c post-gain hook). Same
+ * all-block sequence as phy_rx_lab_dco_set(true); refuses while held. */
+esp_err_t phy_rx_lab_dco_hold_quiet(int code_i, int code_q);
 /* Outcome of one DC-DAC search, independent of any earlier result
  * (review 2026-10-07): measurement validity and rollback are separate. */
 typedef struct {
