@@ -7383,9 +7383,15 @@ static void analog_agc_task(void *arg)
         }
         if (fresh_sync) sync_age_ticks = 0;
         else if (sync_age_ticks < 100) ++sync_age_ticks;
+        /* The idle raster blanks video, so a fringe sync counts as a
+         * transmitter there (IDLE_RASTER_SYNC_Q), not only a clean one. */
+        static unsigned idle_sync_age = 100u;
+        const bool idle_sync = sync_quality >= IDLE_RASTER_SYNC_Q;
+        if (idle_sync) idle_sync_age = 0;
+        else if (idle_sync_age < 100u) ++idle_sync_age;
         bool recent_sync = sync_age_ticks < 20;
 #ifdef C5VRX4_EXPERIMENT
-        idle_raster_service(q_phase, fresh_sync, (unsigned)sync_age_ticks);
+        idle_raster_service(q_phase, idle_sync, idle_sync_age);
 #endif
 
         fusion_observation_t fusion_obs = fusion_make_observation(

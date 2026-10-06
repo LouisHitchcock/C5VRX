@@ -37,7 +37,7 @@ def main():
     assert "s_c5vrx4_mask_static_program" in video and '"agc_flag"' in pipeline
     # No-carrier idle raster: only from the control task, never during a menu
     # timeout, last stable standard persisted, '_' opt-out.
-    assert "idle_raster_service(q_phase, fresh_sync" in video and '"idle_raster"' in pipeline
+    assert "idle_raster_service(q_phase, idle_sync, idle_sync_age)" in video and "IDLE_RASTER_SYNC_Q" in video and '"idle_raster"' in pipeline
     assert "menu_was_active && !IDLE_RASTER_ACTIVE()" in video and '"last_std"' in pipeline
     # HDZero: level servo also under native AGC; masked snapshots decode Q3.
     level_task = video.split("static void cvbs_level_task", 1)[1].split("\n}\n", 1)[0]

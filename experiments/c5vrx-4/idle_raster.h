@@ -20,8 +20,16 @@
 #include <stdint.h>
 
 #define IDLE_RASTER_ENTER_TICKS 40u /* 2 s of 50-ms control ticks */
-#define IDLE_RASTER_QUIET_Q     25  /* carrier coherence below: receiver noise */
-#define IDLE_RASTER_CARRIER_Q   40  /* at or above: a carrier, return to live */
+/* Board 2026-10-06, VTX off: noise q 7..10, sync quality 0. The old exit at
+ * q >= 40 kept a fringe carrier (q 25..39, grainy but watchable) on the black
+ * raster: range lost to the raster, not the radio. Exit sits just above the
+ * noise now; the 2-window exit, 2 s entry and re-entry hold-off still stop
+ * toggling. */
+#define IDLE_RASTER_QUIET_Q     20  /* carrier coherence below: receiver noise */
+#define IDLE_RASTER_CARRIER_Q   22  /* at or above: a carrier, return to live */
+/* Any sync fragment at this quality means a transmitter (noise reads 0); the
+ * picture-grade threshold (70) is for the AGC, not for blanking video. */
+#define IDLE_RASTER_SYNC_Q      25
 #define IDLE_RASTER_SYNC_TICKS  40u /* no sync for at least 2 s before entry */
 /* Every TX owner switch is a timing break for the goggle decoder, so a
  * fringe carrier must not toggle the raster: leaving needs a sync or two
