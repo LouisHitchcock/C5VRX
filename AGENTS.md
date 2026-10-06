@@ -302,7 +302,8 @@ own revision.
   Both middle samples contribute to winding classification, not final video
   amplitude. Host exactness is bounded to decoded adjacent steps <=63 Phase8
   bins (<90 degrees); final DAC transfer uses a four-bin midpoint (up to two
-  bins error). Ambiguous opposite-quadrant paths go neutral; corrected outer
+  bins error). Ambiguous opposite-quadrant paths go neutral (mid grey since
+  2026-10-06: fewer sparkles at low C/N, host model); corrected outer
   trajectories saturate. The exhaustive 524,386,048-trajectory oracle is host
   evidence, not a measured range/FIFO/colour result. Read its
   `experiments/c5vrx-4/UNWRAP75.md`; it is not a file on this main snapshot.

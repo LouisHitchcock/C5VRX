@@ -193,10 +193,33 @@ Rejected while building it (host model, same file):
   ~1 % worse at the range edge. Only the seams are re-phased now.
 - Score >= 6 with no margin: at the range edge 224 lines were swapped for
   equally noisy older ones and the picture got 1.3 % worse.
-- The decoder side of the same request (class-3 trajectories held/greyed
-  instead of blanking; wider near-origin history prior): <= 0.4 dB and
-  <= 3 % fewer sparkles at C/N 3-12 dB in `postdetect_alias_model.py`. Not
-  worth a change; the span75 endpoint decoder is at its information limit.
+
+## Decoder: fewer sparkles at the range edge (2026-10-06)
+
+The decoder side of the same request, built after the operator pointed out
+that a free table change is worth even a few tenths of a dB
+(`generate_phase8.py`, no CPU or runtime cost):
+
+- **Ambiguous (class-3) trajectories** output mid grey (+38 bins, +2 MHz)
+  instead of blanking (black). They carry no usable delta; a constant near
+  the mean picture level is a smaller error. The optimum is flat over
+  25..50 bins. Sync detection is unaffected (blanking and grey are both
+  above the sync threshold).
+- **HISTORY near-origin prior** widened from radius^2 <= 2.6 / 8 bins
+  correction to 9 / 16 (HISTORY decode only; STATIC phases unchanged).
+
+Host model (post-detection model chain, 2^18 samples, Q4/I4 fine lane):
+
+| C/N | SNR before -> after | Sparkles (\|err\| > 25 % FS) |
+| --- | --- | --- |
+| 3 dB | 1.48 -> 1.90 dB | -6.2 % |
+| 5 dB | 3.71 -> 4.02 dB | -5.7 % |
+| 7 dB | 6.09 -> 6.22 dB | -2.8 % |
+| 9 dB | 8.19 -> 8.23 dB | -1.4 % |
+
+Tried and not taken: the class-3 endpoint delta clamped to the video range
+(+0.02 dB), and holding the previous value (not possible in the three-bundle
+TX program without a branch; the grey constant gets most of the gain).
 
 Hardware gates: goggle picture through hand-over-antenna dropouts with
 repair on/off; `!` status `concealed` / `conceal_no_source` /
