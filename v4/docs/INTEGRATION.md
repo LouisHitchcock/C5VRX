@@ -86,7 +86,7 @@ gain intentionally remains manual; select active Direct Gain for this test.
 
 ## Verification and acceptance
 
-`python3 verify.py` checks 21 C regressions (gain/range, epochs, protected lanes,
+`python3 tools/verify.py` checks 21 C regressions (gain/range, epochs, protected lanes,
 severe overload, menu, AFC and pinned/unpinned PHY lab lifecycle), 48 synthetic
 PAL/NTSC AFC cases, all 524,386,048 bounded unwrap trajectories, routing/ring
 state, source-driven Phase8/Golden/HC models and fixed/legacy CVBS transfer/noise
@@ -151,11 +151,16 @@ The isolated runtime is now specialized for the current C5VRX-4 programs and
 Direct Gain V5/native ownership. Historical C5VRX-3 controllers, boot probes,
 demodulators and manual research sweeps are removed from this copy. No donor
 revision is changed: the retained PHY/DSP implementation and generated current
-programs still derive from INTEGRATION_SOURCES.json. README.md records the new
-module ownership, removed controls and settings migration. C5VRX-3, workflows,
-website and historical evidence are outside this change.
+programs still derive from INTEGRATION_SOURCES.json. ../README.md records the new
+module ownership, removed controls and settings migration. The layout migration from PR #178 moves this target to `v4/`, with separate
+firmware, headers, programs, tools and docs. CI paths and firmware hashing follow
+the new location. C5VRX-3 runtime, website and historical evidence stay intact.
 
 The unused Fusion worker no longer allocates its 4-KiB stack or samples every
 6 ms. The 200-us V5 observer/sentinel and slow snapshot/AFC ownership guards
 remain. Board acceptance must cover live video, V5/native, channel retunes,
 first-boot calibration and standalone menu/idle transitions before merging.
+
+The layout work incorporates Louis Hitchcock's PR #178 (commit
+`30ec84f81ed3f56833318037103a0986a34085c5`), adapted to the simplified runtime.
+Its parent branch's separate receiver behaviour changes are not imported.

@@ -4,9 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'experiments/c5vrx-4/**'
-      - '!**/*.md'
-      - 'main/**'
+      - 'v4/**'
       - '!**/*.md'
       - 'tools/firmware_input_hash.py'
       - 'tools/c5vrx4_version.py'
@@ -18,9 +16,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
     paths:
-      - 'experiments/c5vrx-4/**'
-      - '!**/*.md'
-      - 'main/**'
+      - 'v4/**'
       - '!**/*.md'
       - 'tools/firmware_input_hash.py'
       - 'tools/c5vrx4_version.py'
@@ -76,11 +72,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Generate experimental program
-        run: python3 experiments/c5vrx-4/generate_pipeline.py
+      - name: Generate V4 program
+        run: python3 v4/tools/generate_phase8.py
       - name: Build isolated C5VRX-4 target
         shell: bash
-        working-directory: experiments/c5vrx-4
+        working-directory: v4
         run: |
           . "$IDF_PATH/export.sh"
           idf.py -DIDF_TARGET=esp32c5 -DC5VRX4_VERSION="${{ needs.version.outputs.version }}" build
@@ -89,10 +85,10 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           mkdir -p release
-          cp experiments/c5vrx-4/build/c5vrx4.bin release/
-          cp experiments/c5vrx-4/build/bootloader/bootloader.bin release/
-          cp experiments/c5vrx-4/build/partition_table/partition-table.bin release/
-          cp experiments/c5vrx-4/build/flasher_args.json release/
+          cp v4/build/c5vrx4.bin release/
+          cp v4/build/bootloader/bootloader.bin release/
+          cp v4/build/partition_table/partition-table.bin release/
+          cp v4/build/flasher_args.json release/
           esptool.py --chip esp32c5 merge_bin -o release/c5vrx4_merged.bin \
             --flash_mode dio --flash_size 8MB --flash_freq 80m \
             0x2000 release/bootloader.bin \

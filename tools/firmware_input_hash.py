@@ -10,13 +10,14 @@ ROOT = Path(__file__).resolve().parent.parent
 def firmware_input(path, generation):
     if path.endswith('.md'):
         return False
-    return (path.startswith(('main/', 'managed_components/'))
-            or path in ('CMakeLists.txt', 'partitions.csv', 'dependencies.lock',
-                        'tools/firmware_input_hash.py')
-            or path.startswith('sdkconfig')
-            or path == f'.github/workflows/{"build" if generation == "3" else "c5vrx4"}.yml'
-            or (generation == '4' and (path.startswith('experiments/c5vrx-4/')
-                                      or path == 'tools/c5vrx4_version.py')))
+    shared = (path.startswith(('managed_components/',))
+              or path in ('CMakeLists.txt', 'partitions.csv', 'dependencies.lock',
+                          'tools/firmware_input_hash.py')
+              or path.startswith('sdkconfig')
+              or path == f'.github/workflows/{"build" if generation == "3" else "c5vrx4"}.yml')
+    if generation == '3':
+        return shared or path.startswith('main/')
+    return shared or path.startswith('v4/') or path == 'tools/c5vrx4_version.py'
 
 def main():
     generation = sys.argv[1]

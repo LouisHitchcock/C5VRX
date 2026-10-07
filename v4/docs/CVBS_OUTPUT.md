@@ -128,7 +128,7 @@ DC/quantization distortion or genuine information loss. Do not normalize noise.
 
 ## Scope calibration
 
-Optionally provide `experiments/c5vrx-4/dac_calibration.json` before generating:
+Optionally provide `v4/dac_calibration.json` before generating:
 
     {"load_ohms": 75, "volts_by_code": [64 measured voltages in DAC-code order]}
 

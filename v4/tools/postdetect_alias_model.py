@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 from scipy import signal as sg
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import generate_phase8 as gen  # noqa: E402
 
 F80 = 80e6

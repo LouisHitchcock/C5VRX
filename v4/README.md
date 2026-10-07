@@ -8,13 +8,24 @@ https://twotoz.github.io/C5VRX/. Existing author notices and GPL-3.0-only apply.
 
 This directory contains its own runtime `main/`, configuration, partition table,
 tests and evidence. It does not compile the repository's C5VRX-3 `main/`.
-The integration PR changes only `experiments/c5vrx-4/`; merge requires the
+The active V4 project lives under `v4/`; merge requires the
 operator's explicit approval. Building and publishing a PR alpha is independent
-of merging. Current main's existing alpha workflow/flasher can build this project.
+of merging. The V4 alpha workflow and flasher build this project independently.
 
 ## Receiver contract
 
 ### Current code layout
+
+The standalone project is organized as follows:
+
+| Path | Contents |
+| --- | --- |
+| `main/` | Receiver tasks, RF control and IDF component |
+| `firmware/` | V4 pipeline, CVBS and lane implementation |
+| `firmware/include/` | V4 headers and generated tables |
+| `firmware/programs/` | Current generated BitScrambler programs |
+| `tools/` | Generators, host regressions and flash utilities |
+| `docs/` | Design, provenance, measurements and acceptance notes |
 
 The runtime is specialized for C5VRX-4. `main/video.c` only starts the receiver;
 the previous 8,765-line C5VRX-3/V4 implementation is split by ownership:
@@ -85,7 +96,7 @@ AGC, calibration and live video after the refactor.
   targets are 0.010/1.010 V: 0.300 V sync depth and 1.000 V sync-to-white
   under one 75-ohm load. Replaces HR100's undersized output; full amplitude
   leaves only small rail margin, not broad CFO tolerance. CVBS150 and legacy
-  remain M comparisons. See CVBS_OUTPUT.md for sources and physical limits.
+  remain M comparisons. See docs/CVBS_OUTPUT.md for sources and physical limits.
 - Slow sync supervision uses the same stride-3 Phase8/winding transfer estimate,
   instead of the old Phase5 shadow. Snapshot alignment remains approximate.
 - AFC V2 measures burst-confirmed sync and burst-free porch, with both endpoints
@@ -123,24 +134,24 @@ AGC, calibration and live video after the refactor.
   calibration (`*`, automatic at the first native carrier), rides on PARLIO
   data bit 0 (Q LSB) and the STATIC program holds the last DAC value through
   every walk, reseeding phase so the next clean span is exact. Native keeps
-  its sub-line reaction; `|` opts out. See NATIVE_AGC_MASK.md.
+  its sub-line reaction; `|` opts out. See docs/NATIVE_AGC_MASK.md.
 - No-carrier idle raster (default on, for HDZero/TP2825 goggles): after 2 s
   without any carrier or sync, the standalone BT.470 raster sends clean black
   video in the live/last stable standard instead of demodulated noise, so the
   goggles neither show green nor switch PAL/NTSC. The first carrier or sync
   returns to live video. The last stable standard is kept in NVS. `_` opts
-  out. See HDZERO.md.
+  out. See docs/HDZERO.md.
 - The sync-referenced level servo (`u`) now also runs under native AGC (and
   with the native acquisition mask, which decodes Q3 in every CPU snapshot),
   so VTX deviation and carrier offset are corrected in every gain mode. See
-  HDZERO.md for the HDZero cause analysis.
+  docs/HDZERO.md for the HDZero cause analysis.
 - V5 strong-signal radius boost (opt-in, `y`): on a strong, tight, rail-free
   carrier the healthy P50 band moves from 13..32 to 30..46 (IQ ring ~200
   instead of ~150 codes), so the 4-bit phase is finer. The first rail code,
   P95 or level jump returns to the normal band at once. `y` enables it. See
-  RADIUS_BOOST.md.
+  docs/RADIUS_BOOST.md.
 - Pre-demodulation labs (`!`, `@`, `#`, `$`) measure sampling phase, DC centring
-  and filter width. See PREDEMOD_LAB.md.
+  and filter width. See docs/PREDEMOD_LAB.md.
 - Main's analog-video scanner confidence and centred-RF tie-break are retained.
   They identify candidate channels; a confident scan is not range proof.
 
@@ -186,8 +197,8 @@ unknown libraries keep observation and refuse undocumented writes.
 ## Build and verification
 
 ```sh
-cd experiments/c5vrx-4
-python3 verify.py
+cd v4
+python3 tools/verify.py
 . "$IDF_PATH/export.sh"  # ESP-IDF v6.0.2
 idf.py -DIDF_TARGET=esp32c5 build
 ```
@@ -224,9 +235,9 @@ without the key, or a wedged board, still need manual download mode (hold
 BOOT, tap RESET). `tools/console_soak.py` measures USB console health (write
 timeouts, reply latency, heartbeat gaps).
 
-[INTEGRATION.md](INTEGRATION.md) records PR/issue disposition and acceptance.
-[INTEGRATION_SOURCES.json](INTEGRATION_SOURCES.json) pins donor revisions.
-[CVBS_OUTPUT.md](CVBS_OUTPUT.md) explains the loaded transfer and scope model.
+[docs/INTEGRATION.md](docs/INTEGRATION.md) records PR/issue disposition and acceptance.
+[docs/INTEGRATION_SOURCES.json](docs/INTEGRATION_SOURCES.json) pins donor revisions.
+[docs/CVBS_OUTPUT.md](docs/CVBS_OUTPUT.md) explains the loaded transfer and scope model.
 Earlier research files are donor records; this README defines current defaults.
 
 ## Evidence boundary
@@ -242,4 +253,4 @@ returns to 20 ms. RF settling and lane history are excluded; each DAC entry
 slews by at most 32 mV according to the loaded voltage table. Concurrent LUT arbitration and goggle
 acceptance remain physical gates. It corrects output gain/offset, not IQ DC.
 H/V regeneration/coasting and CPU raw-ring sync repair remain absent.
-See [CVBS_LEVEL.md](CVBS_LEVEL.md) for controls, evidence and limits.
+See [docs/CVBS_LEVEL.md](docs/CVBS_LEVEL.md) for controls, evidence and limits.
