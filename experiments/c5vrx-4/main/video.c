@@ -3024,12 +3024,19 @@ static void lab_predemod_status(void)
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     predemod_correction_print();
 #endif
+    /* Yield between blocks: the no-driver USB console busy-waits on a full
+     * FIFO, and a long dump at priority 1 starved IDLE (task WDT 2026-10-07). */
+    vTaskDelay(pdMS_TO_TICKS(5));
     phy_rx_lab_predemod_status();
+    vTaskDelay(pdMS_TO_TICKS(5));
     bw_status_print();
     agc_mask_status_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
     idle_raster_status_print();
     sync_flywheel_status_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
     gain_readback_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
 #if CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
     printf("RADIUS_BOOST enabled=%u active=%u entries=%lu exits=%lu streak=%u "
            "band_p50=30..46 normal_p50=13..32 gain=%u p50=%d p95=%d clip_pm=%d coherence=%d "

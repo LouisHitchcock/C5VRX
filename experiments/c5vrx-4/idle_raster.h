@@ -25,7 +25,7 @@
  * raster: range lost to the raster, not the radio. Exit sits just above the
  * noise now; the 2-window exit, 2 s entry and re-entry hold-off still stop
  * toggling. */
-#define IDLE_RASTER_QUIET_Q     20  /* carrier coherence below: receiver noise */
+#define IDLE_RASTER_QUIET_Q     28  /* carrier coherence below: receiver noise (2026-10-07: noise q 10..26 after the DC calibration) */
 /* Board 2026-10-07, after the automatic DC calibration: VTX-off noise reads
  * q 10..26, so an exit at 22 flickered the raster. A fringe carrier still
  * leaves at its first sync fragment (IDLE_RASTER_SYNC_Q). */
