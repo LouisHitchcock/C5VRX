@@ -6943,6 +6943,37 @@ static bool dco_capture_noise_like(void)
     return s_dco_env_ratio <= DCO_NOISE_RATIO_X100;
 }
 
+/* A DC search needs noise wide enough to dither the quantizer: with less
+ * than ~0.6 step of noise nearly every sample sits in two cells per axis,
+ * the mean saturates at +-500 mcells and the search flips between its
+ * bounds (board 2026-10-07: G60-G66 stored codes from -499 <-> +480
+ * iterations). Measurable = at least three cells per axis each hold >= 5 %
+ * of a fresh capture. Noise falls with gain, so the first unmeasurable gain
+ * ends the sweep for this boot. */
+static uint8_t s_dco_floor;            /* lowest measurable gain this boot (0 = unknown) */
+static uint32_t s_dco_unmeasurable;
+static bool dco_noise_measurable(void)
+{
+    uint8_t buf[RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+    unsigned hi_[16] = {0}, hq[16] = {0}, n = 0;
+    for (unsigned tries = 0; tries < 24u && n < 8u * sizeof(buf); ++tries) {
+        vTaskDelay(1);
+        if (!rx_probe_copy_completed(buf)) continue;
+        for (unsigned k = 0; k < sizeof(buf); ++k) {
+            ++hi_[predemod_i(buf[k]) & 15];
+            ++hq[predemod_q(buf[k]) & 15];
+        }
+        n += sizeof(buf);
+    }
+    if (n < 4u * sizeof(buf)) return false;
+    unsigned ci = 0, cq = 0;
+    for (unsigned c = 0; c < 16u; ++c) {
+        ci += hi_[c] * 20u >= n;
+        cq += hq[c] * 20u >= n;
+    }
+    return ci >= 3u && cq >= 3u;
+}
+
 static void predemod_dco_service(void)
 {
     if (!c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
@@ -6957,6 +6988,7 @@ static void predemod_dco_service(void)
         (void)phy_rx_lab_dco_release();
         phy_rx_lab_dco_invalidate();
         dco_table_select(freq, lo, hi);
+        s_dco_floor = 0;                /* re-learned on the new channel */
     }
     const int64_t now = esp_timer_get_time();
     /* Automatic calibration only in CONFIRMED quiet (operator 2026-10-07:
@@ -7005,9 +7037,10 @@ static void predemod_dco_service(void)
      * corrections, so the recal changes the gain per index. '~' keeps it as
      * a lab. */
     if (no_carrier) {
-        /* Next stale gain, maximum first. */
+        /* Next stale gain, maximum first, down to the measurable floor. */
         int target = -1;
-        for (int g = hi; g >= (int)lo; --g)
+        const int dco_low = s_dco_floor > lo ? s_dco_floor : lo;
+        for (int g = hi; g >= dco_low; --g)
             if (!s_dco_found_us[g] || now - s_dco_found_us[g] > DCO_RESEARCH_US) { target = g; break; }
         if (target >= 0) {
             analog_agc_mode_t saved;
@@ -7019,6 +7052,19 @@ static void predemod_dco_service(void)
             phy_rx_lab_dco_invalidate();
             rf_set_rx_gain(true, (uint8_t)target);
             vTaskDelay(pdMS_TO_TICKS(20));
+            if (!dco_noise_measurable()) {
+                /* This and every lower gain: no search, no stored codes. */
+                for (int g = target; g >= (int)lo; --g) s_dco_tab.e[g].valid = 0;
+                s_dco_floor = (uint8_t)(target + 1);
+                s_dco_dirty = true;
+                ++s_dco_unmeasurable;
+                phy_rx_lab_dco_invalidate();
+                rf_set_rx_gain(true, restore);
+                predemod_resume(saved);
+                printf("DCO_AUTO floor gain=%d unmeasurable (noise < quantizer step): searches G%d..G%u\n",
+                       target, target + 1, hi);
+                return;
+            }
             phy_rx_lab_dco_result_t res;
             esp_err_t result = phy_rx_lab_dco_search(lab_dco_measure, lab_dco_quiet, &res);
             /* Only this search's own measured codes enter the cache; the
@@ -7066,7 +7112,8 @@ static void predemod_dco_service(void)
             return;
         }
     }
-    if (g >= lo && g <= hi && s_dco_tab.e[g].valid && !s_dco_hold_banned[g] && !phy_rx_lab_dco_held() &&
+    if (g >= lo && g <= hi && g >= s_dco_floor && s_dco_tab.e[g].valid && !s_dco_hold_banned[g] &&
+        !phy_rx_lab_dco_held() &&
         s_direct_gain_v3.state != DG3_SETTLE) {
         phy_rx_lab_dco_load(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]);
         if (phy_rx_lab_dco_set(true) == ESP_OK) ++s_dco_holds;
