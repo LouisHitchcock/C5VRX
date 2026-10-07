@@ -66,7 +66,18 @@ trees, against `d3af38e`).
 | 3 | `phy_pbus_workmode()` G50 / unforced gain | **Fixed (re-force, no vendor write removed)**; the physical transition is still to be captured on the board |
 | 4 | DCO rollback missed the 5 GHz RF word (block 8) | **Fixed + readback**: all vendor blocks 0..10 are re-asserted with their live words (debug mode freezes every block on its test register; a live copy keeps the state, leaving them would not); read-only RF/BB/fine words (8/1, 0/2, 1/2) traced at hold enter / in debug / after release + replay; the RF word is compared with the vendor tuple's RF code every 250 ms (`GAIN_PBUS`, `rf_mismatches`) |
 | 5 | DCO cache without context | **Fixed**: blob v2 keyed on frequency, gain table range and band, lane policy, analog filter code/skirt and IQ-scale selector; per-gain residual as provenance; no boot epoch. Codes are absolute DC-DAC values, so a vendor recalibration does not invalidate them. Temperature not stored (no validated sensor path); stale entries are re-searched after 120 s of quiet |
-| 6 | IQ image rejection | **Read-only state + automatic exact-frequency IQ calibration**: `IQ_STATE` prints `phy_param[44]` (rxiq_opt branch), `phy_param[650]` (scale selector), `0x600A043C`, `0x600A0438`; the vendor RX DC/IQ calibration at the tuned frequency now runs automatically once per channel per boot in confirmed quiet (`~` by hand). **Open (bench)**: IRR with a known tone at +-1/4/8/12 MHz and a blocker |
+| 6 | IQ image rejection | **Read-only state + automatic exact-frequency IQ calibration**: `IQ_STATE` prints `phy_param[44]` (rxiq_opt branch), `phy_param[650]` (scale selector), `0x600A043C`, `0x600A0438`; the vendor RX DC/IQ calibration at the tuned frequency is **lab only** (`~`): run automatically it changed the gain per index and caused a fine grain on strong pictures (see below). **Open (bench)**: IRR with a known tone at +-1/4/8/12 MHz and a blocker |
+
+### Automatic exact-frequency recal removed (2026-10-07, A1 5865 MHz)
+
+User report: fine grain over the whole picture with a strong VTX, `main`
+clean. A/B on the board with the VTX on: after the quiet-gated
+`RX_RECAL_AUTO` the same gain index gave a far larger envelope (G54: P50 72,
+58 % clip; G62: P50 113, 100 % clip) than on `main` (G56: P50 13; G63:
+P50 23); a boot that skipped the recal settled at main's gains (G31-33, P50
+13-23, Q 99 %) and the picture was clean. `phy_set_rx_gain_table()`
+reinstalls the gain memory with the new corrections, so the recal changes
+the gain per index. The automatic run is removed; `~` remains a lab.
 
 ### Board results 2026-10-07 (VTX off, A1 5865 MHz)
 

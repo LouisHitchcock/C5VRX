@@ -6996,21 +6996,14 @@ static void predemod_dco_service(void)
     if (!no_carrier) s_quiet_since_us = 0;
     else if (!s_quiet_since_us) s_quiet_since_us = now;
     no_carrier = no_carrier && now - s_quiet_since_us >= CAL_QUIET_US;
-    /* The vendor's full RX DC/IQ calibration at the tuned frequency, once per
-     * channel per boot, ONLY in confirmed quiet. Its IQ loopback measures on
-     * the receive frequency - with the VTX on there it measured the carrier:
-     * board 2026-10-07, a boot with the VTX on left scale selector 2 and IQ
-     * coefficients 0xe2fe instead of 0 / 0xfd7c, and a fine grain on the
-     * strong picture. (The vendor's own boot calibration is safe because it
-     * measures at 5520/5855 MHz, away from the VTX.) */
-    if (no_carrier && rx_recal_supported() && s_rx_recal_freq != freq) {
-        rx_recal_now("RX_RECAL_AUTO");
-        if (s_rx_recal_freq == freq) {      /* ran: the DC context changed */
-            (void)phy_rx_lab_dco_release();
-            dco_table_select(freq, lo, hi);
-        }
-        return;
-    }
+    /* No automatic vendor RX recalibration at the tuned frequency. Board
+     * 2026-10-07, A/B with the VTX on: after the quiet-gated recal the same
+     * gain index gave a far larger envelope (G62: P50 113 / 100 % clip, main
+     * P50 23) and a fine grain over the whole strong picture; a boot that
+     * skipped it gave main's gains (G31-33, P50 13-23) and a clean picture.
+     * phy_set_rx_gain_table() reinstalls the gain memory with the fresh
+     * corrections, so the recal changes the gain per index. '~' keeps it as
+     * a lab. */
     if (no_carrier) {
         /* Next stale gain, maximum first. */
         int target = -1;
@@ -7084,9 +7077,9 @@ static void predemod_dco_service(void)
  * (rx_recal.c, ESPARGOS esp-sdr route verified on C5VRX's PHY pin). The
  * vendor calibrates 5 GHz DC only up to 5855 MHz and IQ at 5520 MHz; this
  * measures at the tuned channel instead. Lab only (external research,
- * 2026-10-07: candidate, no RF dB measured). DC is logged before/after. Runs
- * automatically once per channel per boot after CAL_QUIET_US of confirmed
- * quiet (predemod_dco_service); '~' runs it by hand. */
+ * 2026-10-07: candidate, no RF dB measured). DC is logged before/after.
+ * Lab only: run automatically it changed the gain per index and put a fine
+ * grain on strong pictures (board 2026-10-07, predemod_dco_service). */
 static void rx_recal_now(const char *tag)
 {
     if (!rx_recal_supported()) { printf("%s refused=unverified_PHY_binary\n", tag); return; }
