@@ -5163,12 +5163,16 @@ static void apply_rx_profile(rx_profile_t profile)
     case RX_PROFILE_DIRECT_GAIN_V1:
     case RX_PROFILE_ARC_V3_EXP:
     case RX_PROFILE_ARC_V5_AUTOTUNE_EXP:
-        /* Hardware-proven gain-first experiment. Keep the RF shape fixed so
-         * gain placement is the only moving actuator: BW40, offset 0. Q4
+        /* Hardware-proven gain-first experiment: BW40, offset 0. Q4
          * starvation may climb above the old G62 survival entry; overload may
-         * descend below it. Semantic sync is not a gain-up prerequisite. */
+         * descend below it. Semantic sync is not a gain-up prerequisite.
+         * Direct V5 starts in BW AUTO (still at BW40): its own range-edge
+         * gear needs AUTO. video_start() applies the profile after the
+         * settings, so forcing BW40 here switched that gear off on every boot
+         * (board 2026-10-07: "Restored settings ... BW=AUTO", then gear=manual).
+         * The older owners keep their fixed RF shape. */
         s_agc_mode = ANALOG_AGC_ACTIVE;
-        s_rf_bw_mode = RF_BW_MODE_BW40;
+        s_rf_bw_mode = profile == RX_PROFILE_DIRECT_GAIN ? RF_BW_MODE_AUTO : RF_BW_MODE_BW40;
         apply_rf_bandwidth(true);
         s_afc_mode = AFC_MODE_OFF;
         if (rf_get_frequency_offset_khz() != 0) apply_frequency_offset_khz_tracked(0);
@@ -8990,7 +8994,14 @@ esp_err_t video_start(void)
 #if defined(C5VRX4_EXPERIMENT) || CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
     s_output_mode = VIDEO_OUTPUT_6BIT_40;
 #endif
+    /* The profile sets its defaults; the operator's persisted DIGITAL BW
+     * choice (settings_load, AUTO unless chosen in the menu) wins. */
+    const rf_bw_mode_t boot_bw_mode = s_rf_bw_mode;
     apply_rx_profile(s_rx_profile);
+    if (s_rx_profile == RX_PROFILE_DIRECT_GAIN && boot_bw_mode != s_rf_bw_mode) {
+        s_rf_bw_mode = boot_bw_mode;
+        apply_rf_bandwidth(boot_bw_mode != RF_BW_MODE_BW20);
+    }
     if (rf_native_agc_active()) {
         rf_native_agc_state_t native;
         rf_get_native_agc_state(&native);
