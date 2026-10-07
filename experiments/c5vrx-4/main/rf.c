@@ -921,6 +921,15 @@ bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generati
         return false;
     }
     if (!phy_rx_lab_try_actuator(expected_generation)) return false;
+    /* Re-writing the gain already in force while the DC pair is held changes
+     * nothing, but the release below would leave debug mode (the vendor work
+     * mode forces G50 for ~2 us) and the hold would be re-entered: a short IQ
+     * glitch on every such write. V5 re-writes the same gain 50-100 times a
+     * second (board 2026-10-07); in flight that showed as rolling. Skip it. */
+    if (force && gain_idx == s_current_gain_val && phy_rx_lab_dco_held()) {
+        phy_rx_lab_end_actuator();
+        return true;
+    }
     /* A held edge DC correction keeps PBUS in debug mode, where a gain
      * write would not replay its table row: release it first. */
     (void)phy_rx_lab_dco_release();
