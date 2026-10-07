@@ -54,6 +54,31 @@ SINAD dB / clicks per 1000:
   the 2 spare map bits) halve the clicks near threshold but cost 3-5 dB at
   strong signal (they learn to shrink) - rejected.
 
+## Chosen design: HC50
+
+Further designs tested (`designs2.py`, `sweep.py`): trained MMSE maps with
+previous-output or confidence context, identity-inside/trained-outside
+maps, and an exact "hold previous output" bound. All lose to a plain clamp:
+at strong signal two noisy steps regularly land just outside the window, a
+clamp moves them to the edge, a hold/MMSE replaces them with a stale value.
+
+Sweep of the clamp margin (4..24 bins) and the HC edge offset (1..16):
+**hc edge 4, margin 16** is best or tied everywhere.
+
+| C/N | adj40 SINAD / clicks | **HC50** SINAD / clicks |
+|---|---|---|
+| 2 dB | 1.1 / 164 | **2.1 / 131** |
+| 4 dB | 2.7 / 87 | **4.1 / 54** |
+| 6 dB | 5.7 / 18 | **6.6 / 15** |
+| 8 dB | 8.7 / 2.5 | **9.2 / 2** |
+| 10 dB | 10.8 | **11.2** |
+| 14 dB | 14.7 | **14.9** |
+
+HC50 = span50 Phase8 (20 MS/s, no unwrap) + origin cells decoded 4 bins
+inside the quadrant edge nearest the previous phase's quadrant + map clamp
+16 bins outside the learned sync-to-white window. About 1 dB of threshold
+extension over the (infeasible) ideal adjacent detector.
+
 ## Open in this PR
 
 - [ ] Generator: span50 Phase8 program with CVBS150 scaling, STATIC/HISTORY/

@@ -83,6 +83,24 @@ def run_map(e, ctx_mode, conf, table):
     return table[ctx, e]
 
 
+def outer_only(table, margin):
+    """Identity inside the sync-to-white window (+margin), trained outside."""
+    t = table.copy()
+    e = np.arange(256) - 128
+    inside = (e >= LO - margin) & (e <= HI + margin)
+    t[:, inside] = e[inside][None, :].astype(float)
+    return t
+
+
+def run_hold(e_raw_signed, margin):
+    """Upper bound: out-of-window deltas repeat the previous output exactly."""
+    out = np.empty(len(e_raw_signed)); prev = (LO + HI) / 2
+    for k, v in enumerate(e_raw_signed):
+        prev = v if LO - margin <= v <= HI + margin else prev
+        out[k] = prev
+    return out
+
+
 def train(ctx_mode, hc, seed=101):
     sig, noise, clean, _ = make_stream(seed)
     sums = np.zeros((4, 256)); cnts = np.zeros((4, 256))
@@ -111,19 +129,27 @@ def train(ctx_mode, hc, seed=101):
     return table
 
 
-def output(raw, ctx_mode, hc, table):
+def output(raw, ctx_mode, hc, table, hold_margin=None):
     e, conf = deltas(raw, hc)
-    v = run_map(e, ctx_mode, conf, table)
+    if hold_margin is not None:
+        v = run_hold(e - 128, hold_margin)
+    else:
+        v = run_map(e, ctx_mode, conf, table)
     v = np.round((v - LO) / (HI - LO + 16) * 63)   # 64 DAC codes over the window
     y = np.repeat(v, 2)
     return D.goggle(np.pad(y, (0, len(raw) - len(y)))[:len(raw)])
 
 
 def main():
-    designs = [('mmse', 'none', False), ('mmse-conf', 'conf', False),
-               ('mmse-prev', 'prev', False), ('hc+mmse-prev', 'prev', True),
-               ('hc+mmse-conf', 'conf', True)]
-    tables = {name: train(mode, hc) for name, mode, hc in designs}
+    base = [('prev', 'prev', False), ('hcprev', 'prev', True), ('hcnone', 'none', True)]
+    trained = {name: train(mode, hc) for name, mode, hc in base}
+    designs = []
+    tables = {}
+    for m in (4, 8, 16):
+        for name, mode, hc in base:
+            key = f'{name}-outer{m}'
+            designs.append((key, mode, hc)); tables[key] = outer_only(trained[name], m)
+    holds = [('hold-exact8', 8, False), ('hc+hold-exact8', 8, True)]
     print('trained on seed 101; testing on the designs.py realization (seed 7)')
     noise = D.chan(D.white)[::2]
     noise /= np.sqrt(np.mean(np.abs(noise) ** 2))
@@ -135,6 +161,7 @@ def main():
         rows = [('span50', D.DESIGNS['span50'](raw)), ('hc0+clamp', D.DESIGNS['hc0+clamp'](raw)),
                 ('adj40', D.DESIGNS['adj40'](raw))]
         rows += [(name, output(raw, mode, hc, tables[name])) for name, mode, hc in designs]
+        rows += [(name, output(raw, None, hc, None, m)) for name, m, hc in holds]
         for name, y in rows:
             tot, bands, clicks = D.score(y)
             print(f'{name:20s} {cnr:3d}  {tot:6.1f}  ' + ' '.join(f'{x:5.1f}' for x in bands) +
