@@ -17,8 +17,9 @@ of merging. The V4 alpha workflow and flasher build this project independently.
 ### ELRS VRx backpack
 
 An ESP32-S3 running the [ExpressLRS Backpack](https://github.com/ExpressLRS/Backpack)
-HDZero VRx target sends the radio's VTX channel over one wire to GPIO2 (MTMS
-pad); the C5 retunes like a button channel change. ELRS L band is refused
+HDZero VRx target sends the radio's VTX channel over one wire to D10
+(GPIO10; IQ bit I[9] moved to the unconnected GPIO2 pad); the C5 retunes
+like a button channel change. ELRS L band is refused
 (different frequency plan). Menu SETUP `ELRS BACKPACK`, serial `U`. See
 [docs/ELRS_BACKPACK.md](docs/ELRS_BACKPACK.md).
 

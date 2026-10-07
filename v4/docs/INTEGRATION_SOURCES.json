@@ -4,7 +4,7 @@
     "release": "1.5.9",
     "license": "GPL-3.0",
     "paths": ["src/hdzero.cpp", "lib/MSP", "lib/CRC", "src/rx5808.h"],
-    "modifications": "C5 receiver for the HDZero VRx MSPv2 protocol on UART1 RX GPIO2; S3 SuperMini sender env with one-wire repeat mode in a local Backpack branch",
+    "modifications": "C5 receiver for the HDZero VRx MSPv2 protocol on UART1 RX GPIO10 (D10, IQ I[9] moved to GPIO2); S3 SuperMini sender env with one-wire repeat mode in a local Backpack branch",
     "evidence": "host parser/CRC/table tests; S3 bench received radio VTX; C5 wire test pending"
   },
   "base_main": "b8d32b90f479feff7fbb34e6ca01cc9ba2d0d697",

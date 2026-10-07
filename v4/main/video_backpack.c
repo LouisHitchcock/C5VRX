@@ -1,10 +1,10 @@
-/* ELRS VRx backpack receiver: HDZero-protocol MSP on UART1 RX = GPIO2
- * (XIAO C5 MTMS pad), 115200 8N1, from an ESP32-S3 running the ExpressLRS
+/* ELRS VRx backpack receiver: HDZero-protocol MSP on UART1 RX = GPIO10
+ * (XIAO C5 header D10), 115200 8N1, from an ESP32-S3 running the ExpressLRS
  * Backpack HDZero VRx target (https://github.com/ExpressLRS/Backpack).
- * GPIO2 is a strapping pin with no boot-mode, SDIO, ROM-print or JTAG role
- * (ESP32-C5 datasheet v1.5 section 3), so an idle-high UART line at reset
- * is safe. This task only decodes and posts the requested channel; the
- * analog_agc control task retunes, outside the sample-paced path. */
+ * GPIO10 is not a strapping pin; the IQ bit it carried moved to the
+ * unconnected GPIO2 pad (rf.c s_iq_pins). This task only decodes and posts
+ * the requested channel; the analog_agc control task retunes, outside the
+ * sample-paced path. */
 #include "video_internal.h"
 #include "c5vrx4.h"
 #include "elrs_backpack.h"
@@ -12,7 +12,7 @@
 #include "driver/gpio.h"
 
 #define BACKPACK_UART UART_NUM_1
-#define BACKPACK_RX_GPIO GPIO_NUM_2
+#define BACKPACK_RX_GPIO GPIO_NUM_10
 
 static int s_pending = -1;           /* C5 channel index, or -1 */
 static elrs_msp_t s_msp;
@@ -75,7 +75,7 @@ void video_backpack_start(void)
     if (err == ESP_OK) err = gpio_pullup_en(BACKPACK_RX_GPIO);
     if (err == ESP_OK && xTaskCreate(backpack_task, "elrs_bp", 3072, NULL, 1, NULL) != pdPASS)
         err = ESP_ERR_NO_MEM;
-    printf("[BACKPACK] ELRS backpack link UART1 RX=GPIO2 115200: %s\n", esp_err_to_name(err));
+    printf("[BACKPACK] ELRS backpack link UART1 RX=GPIO10 (D10) 115200: %s\n", esp_err_to_name(err));
 }
 
 void video_backpack_print(void)

@@ -50,7 +50,7 @@ bool c5vrx4_hw_dco_enabled(void);
  * never ran (boot bug), and switched on it was never shown to extend range;
  * operator 2026-10-07: range with it worse than main. Opt-in. */
 bool c5vrx4_edge_gear_enabled(void);
-/* ELRS VRx backpack link on GPIO2 (NVS elrs_bp, default on, menu SETUP). */
+/* ELRS VRx backpack link on D10/GPIO10 (NVS elrs_bp, default on, menu SETUP). */
 bool c5vrx4_elrs_backpack_enabled(void);
 /* Opaque NVS blob store (c5vrx4/<key>); returns false when absent/short. */
 bool c5vrx4_blob_load(const char *key, void *data, size_t size);

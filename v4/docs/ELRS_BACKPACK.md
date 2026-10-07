@@ -24,19 +24,24 @@ radio and listens continuously; the C5 only reads a UART.
 
 ```
 ESP32-S3 SuperMini            XIAO ESP32-C5
-  TX (GPIO43) ───────────────► MTMS pad (GPIO2), bottom side
+  TX (GPIO43) ───[1 kΩ]──────► D10 (GPIO10)
   GND         ──────────────── GND
-  5V          ──────────────── 5V (or one common 5 V supply)
+  5V          ──────────────── 5V (final install only; not with both on USB)
 ```
 
-GPIO2 is a strapping pin, but it has no boot-mode, SDIO, ROM-print or JTAG
-role (ESP32-C5 datasheet v1.5 section 3: boot mode is GPIO26/27/28, SDIO
-GPIO25/MTDI, ROM print GPIO27, JTAG source GPIO7), so the S3 holding it
-high at reset is safe. No other V4 code uses GPIO2 or UART1.
+D10 is free because IQ bit I[9] moved from GPIO10 to GPIO2 (the
+unconnected MTMS pad, beside the GPIO3/4/5 JTAG pads that already carry IQ).
+The IQ GPIOs are internal routes; the PARLIO bit order is unchanged, so the
+IQ data is identical but now leaves through a different pad: **compare the
+picture on the board against the previous build.** GPIO10 is not a strapping
+pin. GPIO2 as an IQ output is also safe at reset: it has no boot-mode, SDIO,
+ROM-print or JTAG strap role (ESP32-C5 datasheet v1.5 section 3). The DAC
+pins D4..D9 and the resistor network are unchanged. The 1 kΩ series resistor
+limits back-powering when only one board is powered.
 
 ## Protocol and behaviour
 
-- UART1 RX = GPIO2, 115200 8N1, pulled up. Frames: `$X<` + flags +
+- UART1 RX = GPIO10 (D10), 115200 8N1, pulled up. Frames: `$X<` + flags +
   function16 + size16 + payload + crc8_dvb_s2. Only
   `MSP_ELRS_BACKPACK_SET_CHANNEL_INDEX` (0x0301) is used; responses, bad CRC
   and payloads over 16 bytes are dropped and the parser resyncs.

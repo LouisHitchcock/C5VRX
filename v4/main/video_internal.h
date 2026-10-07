@@ -339,7 +339,7 @@ void idle_raster_status_print(void);
 void analog_agc_task(void *arg);
 void cvbs_capture_task(void *arg);
 void console_diag_task(void *arg);
-/* ELRS VRx backpack (video_backpack.c): UART1 RX on GPIO2, channel requests
+/* ELRS VRx backpack (video_backpack.c): UART1 RX on GPIO10 (D10), channel requests
  * posted for the analog_agc control task to apply. */
 void video_backpack_start(void);
 bool video_backpack_take(size_t *index);

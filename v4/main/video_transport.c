@@ -117,10 +117,10 @@ esp_err_t prepare_rx(void)
         .clk_out_gpio_num  = -1,
         .valid_gpio_num    = -1,
         /* GPIO order must match s_iq_pins[] in rf.c:
-         * Q[9:6] on GPIO 1,0,25,7 then I[9:6] on GPIO 10,5,3,4. */
+         * Q[9:6] on GPIO 1,0,25,7 then I[9:6] on GPIO 2,5,3,4. */
         .data_gpio_nums    = {
             GPIO_NUM_1, GPIO_NUM_0, GPIO_NUM_25, GPIO_NUM_7,
-            GPIO_NUM_10, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,
+            GPIO_NUM_2, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,
         },
         .flags = {
             .free_clk    = true,   /* RX clock is derived from PHY, not gated */

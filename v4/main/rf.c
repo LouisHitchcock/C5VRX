@@ -94,10 +94,14 @@ static volatile uint32_t s_native_agc_blocked_writes;
 
 /* MODEM_DIAG lane mapping: Q[9:6] on DIAG[6:9], I[9:6] on DIAG[16:19].
  * GPIO mapping correlated against physical ESP32-C5 hardware captures.
- * These GPIOs connect to the PARLIO RX data_gpio_nums[] array (same order). */
+ * These GPIOs connect to the PARLIO RX data_gpio_nums[] array (same order).
+ * The IQ GPIOs are internal routes only (nothing wired externally). I[9]
+ * moved from GPIO10 (header D10) to GPIO2 (MTMS pad, beside the other JTAG
+ * pads GPIO3/4/5 already used here) on 2026-10-07 to free D10 for the ELRS
+ * backpack UART; the PARLIO bit order is unchanged. */
 static const gpio_num_t s_iq_pins[8] = {
     GPIO_NUM_1, GPIO_NUM_0, GPIO_NUM_25, GPIO_NUM_7,   /* Q[9:6] */
-    GPIO_NUM_10, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,   /* I[9:6] */
+    GPIO_NUM_2, GPIO_NUM_5, GPIO_NUM_3, GPIO_NUM_4,    /* I[9:6] */
 };
 /* Range lanes: which ADC bits form the signed 4-bit I/Q nibble. Each set
  * keeps the sign (bit 9) and drops the next MSBs, so inside its window it is
