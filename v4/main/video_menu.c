@@ -56,12 +56,49 @@ enum {
     UI_WHITE = 60,
 };
 #include "menu_font.h"
+#include "heap_memory_layout.h"
+#include "snr_meter_hw.h"
 
 QueueHandle_t s_menu_commands;
 
 /* Timing and descriptors are immutable while running; only text pixels change.
- * This raster is never linked to the RF ring. */
-static DMA_ATTR __attribute__((aligned(64))) menu_raster_t s_menu_raster;
+ * This raster is never linked to the RF ring.
+ *
+ * The raster lives in a reserved region that starts at the RF dump bank
+ * (0x40830000, 64 KiB, the only address the dump writer fills), instead of
+ * static RAM that runs straight through that bank. Same RAM either way. While
+ * neither the menu nor the idle raster owns TX, nothing reads it and every
+ * entry rebuilds it (menu_init_buffers), so the SNR meter may lend its first
+ * 64 KiB to the dump writer for a reading (docs/SNR_METER.md). Every render
+ * or rebuild bumps s_raster_gen so a reading that overlapped one is
+ * discarded. */
+#define MENU_RASTER_ADDR  0x40830000u
+#define MENU_RASTER_END   (MENU_RASTER_ADDR + ((sizeof(menu_raster_t) + 63u) & ~63u))
+SOC_RESERVE_MEMORY_REGION(MENU_RASTER_ADDR, MENU_RASTER_END, c5vrx4_menu_raster);
+#define s_menu_raster (*(menu_raster_t *)(uintptr_t)MENU_RASTER_ADDR)
+static volatile uint32_t s_raster_busy;
+static volatile uint32_t s_raster_gen;
+#define RASTER_WRITE_BEGIN() (++s_raster_busy)
+#define RASTER_WRITE_END() do { ++s_raster_gen; --s_raster_busy; } while (0)
+
+/* The reservation record must stay referenced or --gc-sections can drop it,
+ * and static RAM must end below it (also asserted at link time). */
+bool video_raster_region_ok(void)
+{
+    extern char _bss_end;
+    const volatile soc_reserved_region_t *region = &reserved_region_c5vrx4_menu_raster;
+    return region->start == MENU_RASTER_ADDR && region->end == MENU_RASTER_END &&
+           (uintptr_t)&_bss_end <= MENU_RASTER_ADDR &&
+           !heap_caps_check_integrity_addr(MENU_RASTER_ADDR, false) &&
+           !heap_caps_check_integrity_addr(MENU_RASTER_END - 1u, false);
+}
+
+bool video_raster_idle(uint32_t *gen)
+{
+    if (s_menu_active || IDLE_RASTER_ACTIVE() || s_raster_busy) return false;
+    *gen = s_raster_gen;
+    return true;
+}
 
 /* The two-field scatter chain needs 1,499 (NTSC, 18 KiB) or 1,811 (PAL,
  * 21.7 KiB) descriptors, only while the standalone menu owns TX. GDMA follows
@@ -287,7 +324,17 @@ static esp_err_t menu_reserve_nodes(unsigned nodes)
     return ESP_OK;
 }
 
+static esp_err_t menu_init_buffers_body(void);
+
 static esp_err_t menu_init_buffers(void)
+{
+    RASTER_WRITE_BEGIN();
+    esp_err_t err = menu_init_buffers_body();
+    RASTER_WRITE_END();
+    return err;
+}
+
+static esp_err_t menu_init_buffers_body(void)
 {
     menu_raster_init(&s_menu_raster, s_video_std);
 
@@ -638,7 +685,16 @@ static void menu_render_idle(void)
     sync_dma_c2m(s_menu_raster.ui, sizeof(s_menu_raster.ui));
 }
 
+static void menu_render_menu_body(void);
+
 void menu_render_menu(void)
+{
+    RASTER_WRITE_BEGIN();
+    menu_render_menu_body();
+    RASTER_WRITE_END();
+}
+
+static void menu_render_menu_body(void)
 {
     if (s_idle.active) { menu_render_idle(); return; }
     memset(s_menu_raster.ui, UI_ROOT, sizeof(s_menu_raster.ui));

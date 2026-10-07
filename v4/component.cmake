@@ -20,3 +20,8 @@ target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/sync_flywheel.c"
 target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/lanes.c")
 
 target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/cvbs_level.c" "${C5VRX4_FIRMWARE_DIR}/cvbs_level_hw.c")
+
+target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/snr_meter.c")
+# The menu raster is reserved at the RF dump bank; static RAM must end below it.
+target_link_options(${COMPONENT_LIB} INTERFACE "-T${C5VRX4_FIRMWARE_DIR}/c5vrx4_raster_memory.ld")
+set_property(TARGET ${COMPONENT_LIB} APPEND PROPERTY LINK_DEPENDS "${C5VRX4_FIRMWARE_DIR}/c5vrx4_raster_memory.ld")

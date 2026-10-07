@@ -91,6 +91,19 @@ def main():
     assert "rf_set_post_gain_hook(dco_post_gain);" in video
     assert "!s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||" in video
     assert "dco_hold_locked();" in (ROOT / "main/phy_rx_lab.c").read_text()
+    # 10-bit SNR meter: built, wired to the console, never writes the dump
+    # engine registers (only the SRAM owner field, restored in the window).
+    component = (ROOT / "component.cmake").read_text()
+    assert "snr_meter.c" in component and "c5vrx4_raster_memory.ld" in component
+    assert "if (snr_meter_console(c)) continue;" in video and "snr_meter_tick();" in video
+    snr = (FIRMWARE / "snr_meter.c").read_text()
+    assert "REG32(DUMP_CTRL) =" not in snr and "REG32(HP_SRAM_USAGE) = usage;" in snr
+    # The dump bank is the idle menu raster: reserved at 0x40830000, static RAM
+    # below it (link assert), every render counted, readings checked against it.
+    assert "SOC_RESERVE_MEMORY_REGION(MENU_RASTER_ADDR, MENU_RASTER_END, c5vrx4_menu_raster);" in video
+    assert "RASTER_WRITE_BEGIN();\n    esp_err_t err = menu_init_buffers_body();" in video.replace("\r\n", "\n")
+    assert "RASTER_WRITE_BEGIN();\n    menu_render_menu_body();" in video.replace("\r\n", "\n")
+    assert "video_raster_idle(&gen_after) || gen_after != gen" in snr
 
     cases = [
         ("arc_phy", ["main/arc_phy.c"]),
@@ -108,6 +121,7 @@ def main():
         ("agc_witness", [f"-I{INCLUDE}"]),
         ("idle_raster", [f"-I{INCLUDE}"]),
         ("sync_flywheel", [f"-I{INCLUDE}", "-O2", "firmware/sync_flywheel.c", "-lm"]),
+        ("snr_meter", [f"-I{INCLUDE}", "-lm"]),
     ]
     # Windows hosts (MinGW): M_PI needs _USE_MATH_DEFINES under -std=c11, and
     # the gate and PHY-lab regressions map memory with POSIX mmap, so they run
