@@ -1,6 +1,6 @@
 # ELRS VRx backpack link
 
-Status: **host-tested, board build passes; C5 wiring test pending.**
+Status: **working end to end on the bench, 2026-10-07.**
 Operator request 2026-10-07: follow the radio's VTX channel like an ELRS
 VRx backpack.
 
@@ -69,4 +69,9 @@ limits back-powering when only one board is powered.
   `main/rf.c` names and frequencies.
 - S3 bench (2026-10-07): bound with the operator's phrase, received the
   radio's R3 at boot and a live R5 Send VTx, emitted
-  `SET_CHANNEL_INDEX 34`/`36`. C5 reception over the wire is not yet tested.
+  `SET_CHANNEL_INDEX 34`/`36`.
+- C5 bench (2026-10-07, app `871544c1a6d0fc95`, wired S3 TX -> D10 + GND):
+  a radio Send VTx R5 produced `[BACKPACK] Channel switched to R5
+  (5806 MHz)`; `U` then read frames=13 crc_errors=0 oversize=0. Before the
+  wiring test the C5 locked R3 at Q 55-95 %, G71-72 with I[9] on GPIO2; the
+  operator's picture comparison against the previous build is pending.
