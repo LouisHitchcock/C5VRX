@@ -6866,11 +6866,12 @@ static void predemod_dco_service(void)
     bool no_carrier = false;
     if (IDLE_RASTER_ACTIVE()) {
         no_carrier = true;
-    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
-               now - s_last_idle_sync_us > DCO_NO_SYNC_US && now - s_quiet_eval_us < 1000000LL) {
+    } else if (now - s_last_idle_sync_us > DCO_NO_SYNC_US && now - s_quiet_eval_us < 1000000LL) {
         no_carrier = s_quiet_last;      /* rate-limited carrier test result */
-    } else if (s_current_gain == hi && s_direct_gain_v3.state == DG3_HOLD &&
-               now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
+    } else if (now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
+        /* Independent of V5's state: board 2026-10-07, with the DC still
+         * uncorrected V5 hunted G82<->G83 on noise and never sat at the
+         * maximum in HOLD, so a gate on that never opened. */
         s_quiet_eval_us = now;
         /* No sync is not proof of no carrier: a weak FM carrier below sync
          * detection would bias the DC estimate (review 2026-10-07). Real
@@ -7368,9 +7369,9 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
  * Internal SRAM is not cached on the C5, so no cache maintenance. The work
  * per wake is budgeted from the learned cost per evaluation. */
 /* Maintenance (no fade) needs ~32 evaluations per run, a fade window ~200;
- * 128 at ~360 ns stays inside the 50 us target (external audit: a 256 floor
- * could take ~87 us). Short of budget it coasts lines without writing. */
-#define SFW_MIN_BUDGET 128u
+ * the floor of 64 (~23 us at ~360 ns) keeps inside the 50 us target (audit: 256
+ * took ~87 us). Short of budget it coasts lines without writing. */
+#define SFW_MIN_BUDGET 64u
 #define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 static sync_flywheel_t s_sfw;
 static volatile bool s_sfw_running;
@@ -7448,8 +7449,14 @@ static void sync_flywheel_task(void *arg)
          * took more than twice its target was preempted and says nothing
          * about the cost (board 2026-10-06: such runs drove the estimate to
          * 357 ns/eval, the budget to ~140 and acquisition never locked). */
-        if (s_sfw.evals >= 64u && spent <= 2u * SFW_TARGET_US) {
+        /* Every run counts again, but one sample can at most quadruple the
+         * estimate: board 2026-10-07, acquiring on receiver noise at
+         * priority 4, the runs were genuinely long, the "preempted" filter
+         * dropped them, the budget stayed high and IDLE starved (task WDT in
+         * gain_v3_obs). At priority 4 real preemption is rare. */
+        if (s_sfw.evals >= 64u) {
             uint32_t ns = spent * 1000u / s_sfw.evals;
+            if (ns > 4u * s_sfw_ns_per_eval) ns = 4u * s_sfw_ns_per_eval;
             s_sfw_ns_per_eval = (7u * s_sfw_ns_per_eval + ns) / 8u;
             if (!s_sfw_ns_per_eval) s_sfw_ns_per_eval = 1u;
         }
