@@ -48,12 +48,13 @@ static dg3_observation_t boost_window(direct_gain_v3_t *v3, double base, int spr
 }
 
 /* Run windows at 200 us; returns the number of gain writes. */
+/* One window per millisecond: the V5 observer cadence on the board. */
 static unsigned boost_run(direct_gain_v3_t *v3, double base, int spread, int clip,
                           int coherence, unsigned windows, uint64_t *t)
 {
     uint32_t w0 = v3->writes;
     for (unsigned w = 0; w < windows; ++w) {
-        dg3_observation_t o = boost_window(v3, base, spread, clip, coherence, *t += 200u);
+        dg3_observation_t o = boost_window(v3, base, spread, clip, coherence, *t += 1000u);
         uint8_t g = direct_gain_v3_tick(v3, &o);
         if (g != o.p50 && v3->state == DG3_SETTLE && v3->write_us == *t)
             direct_gain_v3_sync_applied(v3, g, *t);
@@ -377,7 +378,7 @@ int main(void)
         direct_gain_v3_reset(&v3, &table, 60u, 62u);
         boost_plant(&v3);
         direct_gain_v3_enable_boost(&v3, true);
-        assert(boost_run(&v3, 22.0, 4, 0, 90, 99u, &t) == 0u && !v3.boost);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 19u, &t) == 0u && !v3.boost);
         unsigned moves = boost_run(&v3, 22.0, 4, 0, 90, 400u, &t);
         int p50 = boost_p50(&v3, 22.0);
         printf("radius boost: entries=%u moves=%u gain=%u p50=%d\n",
@@ -395,8 +396,8 @@ int main(void)
         p50 = boost_p50(&v3, 22.0);
         assert(p50 >= 13 && p50 <= 32);
         /* Hold-off: no re-entry within 200 ms even on a clean ring. */
-        assert(boost_run(&v3, 22.0, 4, 0, 90, 900u, &t) == 0u && !v3.boost);
-        boost_run(&v3, 22.0, 4, 0, 90, 600u, &t);
+        assert(boost_run(&v3, 22.0, 4, 0, 90, 140u, &t) == 0u && !v3.boost);
+        boost_run(&v3, 22.0, 4, 0, 90, 60u, &t);
         assert(v3.boost && v3.boost_entries == 2u);
 
         /* A sudden level jump (fade recovery, +3 dB) exits through P50/P95. */

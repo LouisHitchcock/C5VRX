@@ -1695,10 +1695,17 @@ static void direct_gain_v3_sentinel_timer_cb(void *arg)
 #endif
     if (s_v3_sentinel_task_handle)
         xTaskNotifyGive(s_v3_sentinel_task_handle);
-    /* V5: the observer runs on the same 200 us cadence instead of the 1 ms
-     * RTOS tick; a new RX descriptor completes every ~102 us. */
-    if (s_v3_observer_task_handle)
-        xTaskNotifyGive(s_v3_observer_task_handle);
+    /* V5: the observer runs every fifth tick (1 ms). At 200 us its full
+     * window analysis plus the sentinel and flywheel wakes held CPU0 at
+     * 100 %: any extra load (a status dump, the boot SPHASE scan) starved
+     * IDLE into the task watchdog (board 2026-10-07). Overloads are still
+     * caught at 200 us by the sentinel, which wakes the observer directly. */
+    static unsigned observer_div;
+    if (++observer_div >= 5u) {
+        observer_div = 0;
+        if (s_v3_observer_task_handle)
+            xTaskNotifyGive(s_v3_observer_task_handle);
+    }
 }
 
 static void direct_gain_v3_sentinel_task(void *arg)
@@ -1851,18 +1858,7 @@ static void direct_gain_v3_observer_task(void *arg)
     uint32_t seen_profile = UINT32_MAX, seen_arc = UINT32_MAX, seen_phy = UINT32_MAX;
     bool was_active = false;
     int last_block_idx = -1;
-    int64_t last_block_us = esp_timer_get_time();
     for (;;) {
-        /* The notify wait never blocks while windows arrive faster than one
-         * is processed, and IDLE on this core then starves (board
-         * 2026-10-07: task watchdog with gain_v3_obs running, during a status
-         * dump). A real 1-tick block every 50 ms keeps IDLE fed; V5 loses
-         * ~2 % of its windows. */
-        int64_t loop_us = esp_timer_get_time();
-        if (loop_us - last_block_us >= 50000) {
-            vTaskDelay(1);
-            last_block_us = esp_timer_get_time();
-        }
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&

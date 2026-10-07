@@ -32,7 +32,7 @@ static bool s_lut_ready;
 #define DG3_REVERSAL_US     20000u
 #define DG3_REVERSALS_ARM   2u
 #define DG3_DAMP_US        200000u
-#define DG3_DAMPED_WINDOWS  8u   /* ~1.6 ms at the 200 us cadence */
+#define DG3_DAMPED_WINDOWS  2u   /* ~2 ms at the 1 ms observer cadence */
 /* Range lanes. A lane switch is an instant GPIO remap, but the newest
  * completed RX descriptor (~102 us) can still hold pre-switch samples, so
  * two descriptor periods are skipped before measuring. */
@@ -75,7 +75,7 @@ static bool s_lut_ready;
 #define DG3_BOOST_EXIT_P95      59
 #define DG3_BOOST_EXIT_CLIP_PM  20
 #define DG3_BOOST_EXIT_COH      60
-#define DG3_BOOST_ENTRY_WINDOWS 100u   /* ~20 ms at the 200 us cadence */
+#define DG3_BOOST_ENTRY_WINDOWS 20u    /* ~20 ms at the 1 ms observer cadence */
 #define DG3_BOOST_ENTRY_COH     75
 #define DG3_BOOST_ENTRY_SPREAD  8      /* P95 - P50: a tight ring */
 #define DG3_BOOST_ENTRY_P95     50     /* predicted P95 at the boost target */
