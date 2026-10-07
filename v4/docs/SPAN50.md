@@ -79,10 +79,36 @@ inside the quadrant edge nearest the previous phase's quadrant + map clamp
 16 bins outside the learned sync-to-white window. About 1 dB of threshold
 extension over the (infeasible) ideal adjacent detector.
 
+## What fits the 2-bundle loop (exact hardware model, `hw50.py`)
+
+The BitScrambler sets each bundle's LUT address in the previous bundle; the
+span50 loop already uses both bundles' address slots (raw decode address and
+the counter load). A second lookup per pair - a clamp/map table - does not
+fit; three bundles per pair fall back to 13.33 MS/s, span75's problem.
+
+The live span50 program uses only the pair endpoints and computes
+`(p_cur - p_prev) mod 256`: a full 2-pi click inside one span vanishes. That is
+why the field program already beats the ideal adjacent detector:
+
+| design (SINAD dB / clicks per 1000) | 2 dB | 4 dB | 6 dB | 8 dB | 14 dB |
+|---|---|---|---|---|---|
+| adj40 (ideal, infeasible) | 1.1 / 164 | 2.7 / 87 | 5.7 / 18 | 8.7 / 2 | 14.7 |
+| hw50 (field program) | 1.7 / 141 | 3.6 / 57 | 6.3 / 14 | 9.1 / 2 | 14.8 |
+| **hc50p6** | **1.8 / 134** | **3.8 / 51** | **6.4 / 13** | 9.1 / 2 | **14.9** |
+| hw50 x2 gain (more DAC levels) | 0.2 / 213 | 0.7 / 187 | 1.8 / 126 | 4.0 / 58 | 13.1 |
+
+**HC50 (built):** `tools/gen_hc50.py` -> `main/fm_hc50.bsasm`, the same two-bundle
+program with a new LUT only. Endpoints are rounded to Phase6 so the minus
+term's low two bits carry the decoded quadrant; the program already routes
+those bits to the bank select, so each decode sees the previous quadrant and
+origin cells decode 4 bins inside the quadrant edge facing it. Verified
+bit-exact in the repo's BitScrambler emulator (20,255 pairs, 0 mismatches).
+On the board in this PR's test state (all v4 programs = HC50).
+
 ## Open in this PR
 
-- [ ] Generator: span50 Phase8 program with CVBS150 scaling, STATIC/HISTORY/
-      mask variants, hc0 decoder and clamp window (from learned levels).
+- [ ] v4 generator: HC50 as the native program (CVBS level scaling, STATIC/
+      HISTORY/mask variants) instead of the swapped C5VRX-3-style program.
 - [ ] Sync flywheel / line repair on the span50 formula (off in the test).
 - [ ] Remove the temporary verify bypass in `CMakeLists.txt`.
 - [ ] Board test of the final program; range comparison.
