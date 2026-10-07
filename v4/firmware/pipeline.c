@@ -359,6 +359,7 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
+    return false;   /* SPAN50 TEST: flywheel mirrors the span75 formula */
     /* Default on, fade-gated (2026-10-06): it writes only inside the V5
      * observer's fade window and only from a stable lock, so a clean
      * picture is never touched (the always-writing version put black
