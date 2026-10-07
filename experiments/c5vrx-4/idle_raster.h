@@ -26,7 +26,10 @@
  * noise now; the 2-window exit, 2 s entry and re-entry hold-off still stop
  * toggling. */
 #define IDLE_RASTER_QUIET_Q     20  /* carrier coherence below: receiver noise */
-#define IDLE_RASTER_CARRIER_Q   22  /* at or above: a carrier, return to live */
+/* Board 2026-10-07, after the automatic DC calibration: VTX-off noise reads
+ * q 10..26, so an exit at 22 flickered the raster. A fringe carrier still
+ * leaves at its first sync fragment (IDLE_RASTER_SYNC_Q). */
+#define IDLE_RASTER_CARRIER_Q   30  /* at or above: a carrier, return to live */
 /* Any sync fragment at this quality means a transmitter (noise reads 0); the
  * picture-grade threshold (70) is for the AGC, not for blanking video. */
 #define IDLE_RASTER_SYNC_Q      25
