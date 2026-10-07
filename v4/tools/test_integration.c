@@ -7,15 +7,159 @@
 #include "c5vrx4.h"
 unsigned char phy_param[0x800];
 static uint8_t fixed = C5VRX4_LANE_ADAPTIVE;
+static bool reference_mode;
 static rf_iq_lane_stats_t lane_stats;
 uint8_t c5vrx4_fixed_lane(void) { return fixed; }
 bool c5vrx4_history_enabled(void) { return false; }
+bool c5vrx4_staged_gain_recovery(void) { return reference_mode; }
 uint8_t rf_get_iq_lanes(void) { return lane_stats.last_to; }
 void rf_get_iq_lane_stats(rf_iq_lane_stats_t *s) { *s = lane_stats; }
 #include "../lanes.c"
 
+static void test_post_drop_no_carrier(void)
+{
+    arc_gain_table_t table;
+    arc_gain_table_from_bytes(&table, NULL, 83);
+    direct_gain_v3_t v = {0};
+    fixed = C5VRX4_LANES_FINE;
+    direct_gain_v3_reset(&v, &table, 66, 62);
+    direct_gain_v3_enable_lanes(&v, 2);
+    dg3_observation_t rail = {.p50=113, .p95=113, .clip_pm=800,
+                              .coherence=60, .observed_us=100000};
+    assert(direct_gain_v3_tick(&v, &rail) == 20);
+    direct_gain_v3_sync_applied(&v, 20, rail.observed_us);
+    uint32_t writes = v.writes;
+    dg3_observation_t quiet = {.p50=1, .p95=3, .origin_pm=980,
+                               .coherence=0, .observed_us=100200};
+    /* Transient near-origin IQ after the RF-stage drop must not cancel
+     * settling by requesting maximum gain. */
+    assert(direct_gain_v3_tick(&v, &quiet) == 20);
+    assert(v.state == DG3_SETTLE && v.writes == writes);
+    quiet.observed_us = 100299;
+    assert(direct_gain_v3_tick(&v, &quiet) == 20);
+    /* A carrier returns once settled: retain G20, with no excursion to G83. */
+    dg3_observation_t good = {.p50=22, .p95=40, .coherence=99,
+                              .observed_us=100600};
+    assert(direct_gain_v3_tick(&v, &good) == 20);
+    assert(v.state == DG3_HOLD && v.writes == writes);
+    /* Real loss still listens at maximum after the guard. */
+    quiet.observed_us = 101000;
+    assert(direct_gain_v3_tick(&v, &quiet) == 83);
+
+    /* Previously measured longer settling must also protect recovery. */
+    direct_gain_v3_reset(&v, &table, 66, 62);
+    v.settle_us[DG3_RF] = 1000;
+    rail.observed_us = 200000;
+    assert(direct_gain_v3_tick(&v, &rail) == 20);
+    direct_gain_v3_sync_applied(&v, 20, rail.observed_us);
+    quiet.observed_us = 200600;
+    assert(direct_gain_v3_tick(&v, &quiet) == 20);
+    quiet.observed_us = 200750;
+    assert(direct_gain_v3_tick(&v, &quiet) == 83);
+    /* Overload on that upward write keeps its immediate safety response. */
+    rail.observed_us = 200800;
+    assert(direct_gain_v3_tick(&v, &rail) == 20);
+    fixed = C5VRX4_LANE_ADAPTIVE;
+}
+
+static void test_benchmark_lane_escape(void)
+{
+    /* Same starting gain and fine-lane overload, contrasting the two lane
+     * policies. This tests control decisions, not RF/video quality. */
+    arc_gain_table_t table;
+    arc_gain_table_from_bytes(&table, NULL, 83);
+    direct_gain_v3_t v = {0};
+    dg3_observation_t rail = {.p50=113, .p95=113, .clip_pm=800,
+                              .coherence=60, .observed_us=300000};
+    fixed = 1u;
+    direct_gain_v3_reset(&v, &table, 66, 62);
+    direct_gain_v3_enable_lanes(&v, 2);
+    assert(v.lane == 1u);
+    assert(direct_gain_v3_tick(&v, &rail) == 20);
+    assert(v.lane == 1u && v.writes == 1u);
+
+    fixed = C5VRX4_LANE_ADAPTIVE;
+    memset(&v, 0, sizeof(v));
+    direct_gain_v3_reset(&v, &table, 66, 62);
+    direct_gain_v3_enable_lanes(&v, 2);
+    v.lane = 1u; /* Already receiving on fine when overload arrives. */
+    assert(direct_gain_v3_tick(&v, &rail) == 66);
+    assert(v.lane == 0u && v.writes == 0u && v.fold_drops == 1u);
+    /* Pre-switch rail evidence must not trigger a gain collapse. */
+    rail.observed_us += 200;
+    assert(direct_gain_v3_tick(&v, &rail) == 66 && v.writes == 0u);
+    dg3_observation_t good = {.p50=22, .p95=40, .coherence=99,
+                              .observed_us=300600};
+    assert(direct_gain_v3_tick(&v, &good) == 66 && v.writes == 0u);
+    /* Genuine overload persisting on coarse still uses the safety floor. */
+    rail.observed_us = 301000;
+    assert(direct_gain_v3_tick(&v, &rail) == 20 && v.writes == 1u);
+}
+
+static void test_reference_overload_recovery(void)
+{
+    arc_gain_table_t table;
+    arc_gain_table_from_bytes(&table, NULL, 83);
+    direct_gain_v3_t v = {0};
+    reference_mode = true;
+    fixed = C5VRX4_LANE_ADAPTIVE;
+    direct_gain_v3_reset(&v, &table, 83, 62);
+    dg3_observation_t rail = {.p50=113, .p95=113, .clip_pm=800,
+                              .coherence=60, .observed_us=100000};
+    uint8_t lower = direct_gain_v3_tick(&v, &rail);
+    assert(lower > 20 && lower < 83); /* BB first, not survival floor. */
+    direct_gain_v3_sync_applied(&v, lower, rail.observed_us);
+    dg3_observation_t quiet = {.p50=1, .p95=3, .origin_pm=980,
+                               .coherence=0, .observed_us=100200};
+    assert(direct_gain_v3_tick(&v, &quiet) == lower); /* stale quiet */
+    quiet.observed_us = 101000;
+    uint8_t higher = direct_gain_v3_tick(&v, &quiet);
+    assert(higher > lower && higher < 83); /* recovery step, not max */
+    direct_gain_v3_sync_applied(&v, higher, quiet.observed_us);
+    rail.observed_us = 101100;
+    assert(direct_gain_v3_tick(&v, &rail) < higher); /* upward overload safety */
+
+    /* Settled gain-dependent plant: rail at >=66, starved below34, clean
+     * between. The old hard-floor/max loop cannot find its healthy band. */
+    memset(&v, 0, sizeof(v));
+    direct_gain_v3_reset(&v, &table, 83, 62);
+    uint64_t now = 200000;
+    for (unsigned n = 0; n < 100; ++n, now += 1000) {
+        dg3_observation_t o = v.current_gain >= 66 ? rail :
+                             v.current_gain < 34 ? quiet :
+                             (dg3_observation_t){.p50=22, .p95=40, .coherence=99};
+        o.observed_us = now;
+        uint8_t before = v.current_gain;
+        uint8_t target = direct_gain_v3_tick(&v, &o);
+        if (target != before) direct_gain_v3_sync_applied(&v, target, now);
+    }
+    assert(v.current_gain >= 34 && v.current_gain < 66 && v.state == DG3_HOLD);
+    assert(v.writes < 10 && v.verified > 0);
+
+    /* Persistent overload can still reach the floor, then true signal loss
+     * must recover all the way to table maximum; no low-gain trap. */
+    for (unsigned n = 0; n < 100 && v.current_gain != 20; ++n, now += 1000) {
+        rail.observed_us = now;
+        uint8_t before = v.current_gain;
+        uint8_t target = direct_gain_v3_tick(&v, &rail);
+        if (target != before) direct_gain_v3_sync_applied(&v, target, now);
+    }
+    assert(v.current_gain == 20);
+    for (unsigned n = 0; n < 100 && v.current_gain != 83; ++n, now += 1000) {
+        quiet.observed_us = now;
+        uint8_t before = v.current_gain;
+        uint8_t target = direct_gain_v3_tick(&v, &quiet);
+        if (target != before) direct_gain_v3_sync_applied(&v, target, now);
+    }
+    assert(v.current_gain == 83);
+    reference_mode = false;
+}
+
 int main(void)
 {
+    test_post_drop_no_carrier();
+    test_benchmark_lane_escape();
+    test_reference_overload_recovery();
     uint8_t fit[256], outside[256];
     memset(fit, 0x11, sizeof(fit)); memset(outside, 0x33, sizeof(outside));
     assert(c5vrx4_lane_target(0, 2, fit, sizeof(fit), 1000) == 0);

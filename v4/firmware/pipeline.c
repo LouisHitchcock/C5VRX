@@ -356,6 +356,11 @@ bool c5vrx4_radius_boost_enabled(void)
     return s_radius_boost;
 }
 
+bool c5vrx4_staged_gain_recovery(void)
+{
+    return true;   /* SPAN50 TEST: every v4 program is HC50 */
+}
+
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {

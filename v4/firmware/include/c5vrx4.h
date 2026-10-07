@@ -9,6 +9,11 @@ void c5vrx4_suspend(void);
 void c5vrx4_resume(void);
 bool c5vrx4_console(int key);
 bool c5vrx4_history_enabled(void);
+/* Direct Gain staged overload recovery (Louis's HR50 flight build 7D29A002,
+ * 2026-10-07): BB/RF emergency steps instead of the G20 floor, then physical
+ * upward steps from post-overload near-origin IQ instead of table maximum.
+ * On for every span50 program; v4/docs/STAGED_GAIN_SPAN50.md. */
+bool c5vrx4_staged_gain_recovery(void);
 /* IQ lane policy, NVS c5vrx4/lane_mode, Z cycles it with a reboot. Fixed
  * fine {9,7,6,5} is the default: the lanes never switch at runtime. Fixed
  * ultrafine and protected adaptive V5 lanes remain comparisons. */

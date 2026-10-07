@@ -663,6 +663,12 @@ static uint8_t start_write(direct_gain_v3_t *v3,
     return target;
 }
 
+static uint64_t minimum_settle_guard_us(const direct_gain_v3_t *v3)
+{
+    return v3->settle_us[v3->transition] > 400u ?
+        (uint64_t)v3->settle_us[v3->transition] * 3u / 4u : 300u;
+}
+
 uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
                             const dg3_observation_t *o)
 {
@@ -677,8 +683,10 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     bool saturated = o->clip_pm >= 100 || o->p95 >= 95;
     bool at_max = v3->current_gain == v3->table.max_index;
     bool fixed_lane = false;
+    bool reference_recovery = false;
 #ifdef C5VRX4_EXPERIMENT
     fixed_lane = c5vrx4_fixed_lane() != C5VRX4_LANE_ADAPTIVE;
+    reference_recovery = c5vrx4_staged_gain_recovery();
 #endif
     /* Fold guard. On a finer lane the rail codes are the last warning before
      * the window folds; a folded strong carrier reads as wide, incoherent
@@ -723,6 +731,11 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (!fixed_lane && carrier(o) && v3->lane > v3->lane_cap)
         return set_lane(v3, o, v3->lane_cap);
     if (no_carrier && lane_up_ok) {
+        if (reference_recovery && v3->overload_recovery &&
+            v3->state == DG3_SETTLE &&
+            (o->observed_us <= v3->write_us ||
+             o->observed_us - v3->write_us < minimum_settle_guard_us(v3)))
+            return v3->current_gain;
         /* Listen on the finest lane: a carrier below one coarse step becomes
          * visible there. A strong carrier appearing is caught by the fold
          * guard above. */
@@ -732,6 +745,22 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         return set_lane(v3, o, lane_limit);
     }
     if (no_carrier) {
+        /* Near-origin IQ during a gain transition is not yet evidence of
+         * carrier loss. In particular, an overload drop to G20 must finish
+         * its physical settling guard before quiet IQ can request G83.
+         * Real loss still returns to maximum once the guard has elapsed. */
+        if (v3->state == DG3_SETTLE &&
+            (o->observed_us <= v3->write_us ||
+             o->observed_us - v3->write_us < minimum_settle_guard_us(v3)))
+            return v3->current_gain;
+        /* A low quantized radius after overload is not proof that the RF
+         * carrier vanished. With staged gain recovery, walk back
+         * through physical tuples and remeasure, instead of G20 -> G83.
+         * True loss still reaches max; ordinary listening is unchanged. */
+        if (reference_recovery && v3->overload_recovery && !at_max) {
+            uint8_t next = adjacent_physical(v3, true);
+            return start_write(v3, o, &prior, next);
+        }
         /* No usable carrier: listen at the table's maximum gain, not at the
          * survival gain (first index of the highest RF stage, G62). A weak
          * carrier is quantizer-starved at G62 and reads as no carrier, so the
@@ -761,8 +790,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (v3->state == DG3_SETTLE) {
         /* The freshness guard grows from prior settle measurements. The
          * signal still has to pass the multi-window stability check below. */
-        uint64_t minimum_guard = v3->settle_us[v3->transition] > 400u ?
-            (uint64_t)v3->settle_us[v3->transition] * 3u / 4u : 300u;
+        uint64_t minimum_guard = minimum_settle_guard_us(v3);
         if (o->observed_us <= v3->write_us ||
             o->observed_us - v3->write_us < minimum_guard)
             return v3->current_gain;
@@ -813,7 +841,8 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
          * escape lane, so its severe overdrive or fold takes the same G20
          * floor; manual/native stay untouched.
          * The settle freshness check above still rejects stale post-drop IQ. */
-        if ((v3->lane == 0u || fixed_lane) && o->clip_pm >= 500u && o->p95 >= 95u) {
+        if (!reference_recovery && (v3->lane == 0u || fixed_lane) &&
+            o->clip_pm >= 500u && o->p95 >= 95u) {
             ++v3->overloads;
             v3->high_windows = v3->weak_windows = 0;
             v3->virtual_gain_q8 = 0;
@@ -823,6 +852,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         ++v3->overloads;
         v3->high_windows = v3->weak_windows = 0;
         v3->virtual_gain_q8 = 0;
+        if (reference_recovery) v3->overload_recovery = true;
         return start_write(v3, o, &prior, emergency_drop(v3));
     }
     /* Starved at maximum analog gain: the envelope sits in the few cells
@@ -849,6 +879,7 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
         }
     } else if (!v3->boost) v3->boost_ok_windows = 0;
     if (healthy_in(o, band)) {
+        v3->overload_recovery = false;
         v3->state = DG3_HOLD;
         v3->corrections = 0;
         v3->high_windows = v3->weak_windows = 0;
