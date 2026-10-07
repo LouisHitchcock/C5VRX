@@ -32,8 +32,8 @@ ESP32-S3 SuperMini            XIAO ESP32-C5
 D10 is free because IQ bit I[9] moved from GPIO10 to GPIO2 (the
 unconnected MTMS pad, beside the GPIO3/4/5 JTAG pads that already carry IQ).
 The IQ GPIOs are internal routes; the PARLIO bit order is unchanged, so the
-IQ data is identical but now leaves through a different pad: **compare the
-picture on the board against the previous build.** GPIO10 is not a strapping
+IQ data is identical but now leaves through a different pad (operator
+picture check passed 2026-10-07). GPIO10 is not a strapping
 pin. GPIO2 as an IQ output is also safe at reset: it has no boot-mode, SDIO,
 ROM-print or JTAG strap role (ESP32-C5 datasheet v1.5 section 3). The DAC
 pins D4..D9 and the resistor network are unchanged. The 1 kΩ series resistor
@@ -73,5 +73,6 @@ limits back-powering when only one board is powered.
 - C5 bench (2026-10-07, app `871544c1a6d0fc95`, wired S3 TX -> D10 + GND):
   a radio Send VTx R5 produced `[BACKPACK] Channel switched to R5
   (5806 MHz)`; `U` then read frames=13 crc_errors=0 oversize=0. Before the
-  wiring test the C5 locked R3 at Q 55-95 %, G71-72 with I[9] on GPIO2; the
-  operator's picture comparison against the previous build is pending.
+  wiring test the C5 locked R3 at Q 55-95 %, G71-72 with I[9] on GPIO2.
+  Operator (Louis), same day: picture with I[9] on GPIO2 "works fine"
+  (visual comparison, not a measured equivalence).
