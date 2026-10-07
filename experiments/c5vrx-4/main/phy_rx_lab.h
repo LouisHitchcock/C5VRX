@@ -76,6 +76,9 @@ void phy_rx_lab_dco_invalidate(void);
 /* Codes of the last search (false when none), and loading codes found
  * earlier for another gain row before phy_rx_lab_dco_set(true). */
 bool phy_rx_lab_dco_codes(int codes[2]);
+/* Drift tracking: move the HELD fine DC codes by (di, dq) steps; false when
+ * nothing is held. out receives the codes now applied. */
+bool phy_rx_lab_dco_nudge(int di, int dq, int out[2]);
 /* Read-only PBUS gain control words (review 2026-10-07; the vendor's
  * phy_pbus_set_rxgain() at 5 GHz): [0] RF code, block 8 bank 1; [1] BB,
  * block 0 bank 2; [2] fine, block 1 bank 2. False on an unverified PHY. */

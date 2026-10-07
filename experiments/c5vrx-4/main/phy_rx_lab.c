@@ -976,6 +976,26 @@ void phy_rx_lab_gain_trace(uint16_t out[3][3], uint32_t *events)
     if (events) *events = 0;
 #endif
 }
+bool phy_rx_lab_dco_nudge(int di, int dq, int out[2])
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)di; (void)dq; (void)out;
+    return false;
+#else
+    if (!s_dco_held || rf_native_agc_active()) return false;
+    transaction_take();
+    bool ok = s_dco_held;
+    if (ok) {
+        int i = s_dco_codes[0] + di, q = s_dco_codes[1] + dq;
+        s_dco_codes[0] = i < 0 ? 0 : i > 511 ? 511 : i;
+        s_dco_codes[1] = q < 0 ? 0 : q > 511 ? 511 : q;
+        dco_apply(s_dco_codes[0], s_dco_codes[1]);
+        if (out) { out[0] = s_dco_codes[0]; out[1] = s_dco_codes[1]; }
+    }
+    transaction_give();
+    return ok;
+#endif
+}
 bool phy_rx_lab_dco_codes(int codes[2])
 {
 #ifndef C5VRX_PHY_RX_LAB_PINNED

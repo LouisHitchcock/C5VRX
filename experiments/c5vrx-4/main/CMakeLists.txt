@@ -38,6 +38,7 @@ idf_component_register(
         hal
         esp_hw_support
         esp_driver_gptimer
+        esp_driver_tsens
 )
 
 # Proven default plus opt-in experimental demod/output paths.
