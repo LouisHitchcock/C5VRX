@@ -124,6 +124,23 @@ analog filter edge is ~+-10 MHz and steep: it is the anti-alias filter, and
 the 2:1 decimation costs 0.0-0.1 dB. Keep ANALOG BW at FIXED (+-10 MHz); a
 wider analog filter would make the 2:1 cost real.
 
+## In-band spurs per channel (board scan, VTX off)
+
+`spur_scan_board.py`: all 48 channels at maximum gain, noise PSD at the tap
+(0.625 MHz bins, DC bin excluded), largest in-band (+-9.5 MHz) bin over the
+median. 46 channels: 0.9-2.7 dB (noise scatter, no spur). Two channels carry
+the same narrow spur at **5920 MHz = 148 x 40 MHz** (crystal harmonic or the
+PLL's integer-boundary spur):
+
+| channel | spur offset | over noise (0.625 MHz bin) |
+|---|---|---|
+| R8 5917 MHz | +3.1 MHz | 9.4 dB |
+| E7 5925 MHz | -5.0 MHz | 8.9 dB |
+
+A CW interferer inside the FM channel raises the effective noise (~1 dB here)
+and beats with the video near the range edge. 5840 and 5880 MHz (146/147 x
+40 MHz) show nothing. Avoid R8 and E7 until mitigated.
+
 ## Open in this PR
 
 - [ ] v4 generator: HC50 as the native program (CVBS level scaling, STATIC/
