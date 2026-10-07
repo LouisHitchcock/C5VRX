@@ -1,9 +1,6 @@
 /* C5VRX by Twotoz and contributors: span75 transport and opt-in native gate. */
 #include "c5vrx4.h"
 #include "sdkconfig.h"
-#if !CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT
-#error "C5VRX-4 requires CONFIG_C5VRX_DIRECT_GAIN_V3_EXPERIMENT=y for Direct Gain V5"
-#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>

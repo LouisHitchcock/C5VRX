@@ -144,3 +144,18 @@ steps and measured nonmonotonic tables. The host gain-step regression recovers
 both offset and half-depth changes within 75 ms of valid settled evidence.
 Physical transition static, concurrent LUT timing and goggle acceptance still
 need bench evidence; no unknown PHY/DC actuator or CPU waveform path is enabled.
+
+## C5VRX-4 runtime simplification (2026-10-07)
+
+The isolated runtime is now specialized for the current C5VRX-4 programs and
+Direct Gain V5/native ownership. Historical C5VRX-3 controllers, boot probes,
+demodulators and manual research sweeps are removed from this copy. No donor
+revision is changed: the retained PHY/DSP implementation and generated current
+programs still derive from INTEGRATION_SOURCES.json. README.md records the new
+module ownership, removed controls and settings migration. C5VRX-3, workflows,
+website and historical evidence are outside this change.
+
+The unused Fusion worker no longer allocates its 4-KiB stack or samples every
+6 ms. The 200-us V5 observer/sentinel and slow snapshot/AFC ownership guards
+remain. Board acceptance must cover live video, V5/native, channel retunes,
+first-boot calibration and standalone menu/idle transitions before merging.

@@ -1,22 +1,24 @@
 idf_component_register(
     SRCS
         "main.c"
-        "bs_relative_worker_probe.c"
-        "bs_relative_middle_probe.c"
-        "phy_phase_tap_probe.c"
-        "bs_addctia_probe.c"
         "arc_phy.c"
-        "arc_v3_controller.c"
-        "arc_v5_autotune.c"
-        "rx_auto_lab.c"
         "rf.c"
         "phy_rx_lab.c"
-        "video.c"
-        "direct_gain.c"
-        "direct_gain_v2.c"
         "direct_gain_v3.c"
         "analog_video_detect.c"
         "menu_raster.c"
+        "video.c"
+        "video_calibration.c"
+        "video_console.c"
+        "video_control.c"
+        "video_diagnostics.c"
+        "video_gain.c"
+        "video_idle.c"
+        "video_lab.c"
+        "video_measure.c"
+        "video_menu.c"
+        "video_settings.c"
+        "video_transport.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -39,20 +41,7 @@ idf_component_register(
         esp_driver_gptimer
 )
 
-# Proven default plus opt-in experimental demod/output paths.
-target_bitscrambler_add_src("fm.bsasm")
-target_bitscrambler_add_src("fm_relative_golden.bsasm")
-target_bitscrambler_add_src("fm_phase5_360.bsasm")
-target_bitscrambler_add_src("bs_relative_worker_probe.bsasm")
-target_bitscrambler_add_src("bs_relative_middle_probe.bsasm")
-target_bitscrambler_add_src("fm_phase5_fsm_capture.bsasm")
-target_bitscrambler_add_src("fm4.bsasm")
-target_bitscrambler_add_src("bs_addctia_probe.bsasm")
-target_bitscrambler_add_src("fm_phase8_hr_live.bsasm")
-target_bitscrambler_add_src("fm_hc.bsasm")
-if(C5VRX4_EXPERIMENT)
-    include("${PROJECT_DIR}/component.cmake")
-endif()
+include("${PROJECT_DIR}/component.cmake")
 
 # Recovered MMIO overrides are valid only for this exact C5 archive. Unknown
 # library versions retain observation but refuse all lab writes/I2C helpers.

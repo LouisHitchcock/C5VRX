@@ -12,12 +12,10 @@
 
 #include "rf.h"
 #include "phy_rx_lab.h"
-#ifdef C5VRX4_EXPERIMENT
 #include "c5vrx4.h"
 #include "soc/gpio_struct.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#endif
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -54,11 +52,7 @@ static bool s_analog_bw40 = true;
  * Decided once per boot from NVS before PHY init: the vendor AGC cannot be
  * restored after phy_disable_agc()/phy_rfagc_disable(), so it is never
  * disabled instead. Only an explicit NVS value of 1 selects native AGC. */
-#ifdef C5VRX4_EXPERIMENT
 #define NATIVE_AGC_NVS_NAMESPACE "c5vrx4"
-#else
-#define NATIVE_AGC_NVS_NAMESPACE "c5vrx"
-#endif
 #define NATIVE_AGC_NVS_KEY       "native_agc"
 #define RX_AGC_CTRL_REG          0x600A7030u
 static bool s_native_agc;
@@ -123,7 +117,6 @@ static const uint8_t s_iq_lane_sets[RF_IQ_LANE_SETS][8] = {
 };
 static volatile uint8_t s_iq_lane_set;
 
-#ifdef C5VRX4_EXPERIMENT
 static portMUX_TYPE s_lane_route_lock = portMUX_INITIALIZER_UNLOCKED;
 static rf_iq_lane_stats_t s_lane_stats;
 
@@ -133,7 +126,6 @@ void rf_get_iq_lane_stats(rf_iq_lane_stats_t *stats)
     *stats = s_lane_stats;
     portEXIT_CRITICAL(&s_lane_route_lock);
 }
-#endif
 
 /* Internal vendor symbol -- globally exported by the pinned IDF 6.0.x
  * pp (protocol processing) library for ESP32-C5. */
@@ -207,7 +199,6 @@ void rf_set_iq_lanes(uint8_t set)
     if (fixed < RF_IQ_LANE_SETS) set = fixed;
     if (set >= RF_IQ_LANE_SETS) set = RF_IQ_LANE_SETS - 1u;
     if (set == s_iq_lane_set) return;
-#ifdef C5VRX4_EXPERIMENT
     /* Preserve output enable/inversion and both sign routes. Only the six
      * changed magnitude selectors are written, with Q/I paired per bit.
      * Six MMIO writes remain sequential: this is not an atomic handover. */
@@ -245,14 +236,6 @@ void rf_set_iq_lanes(uint8_t set)
     uint32_t duration = (uint32_t)(finished - started);
     if (duration > s_lane_stats.route_max_us) s_lane_stats.route_max_us = duration;
     portEXIT_CRITICAL(&s_lane_route_lock);
-#else
-    for (unsigned lane = 0u; lane < 8u; ++lane)
-        esp_rom_gpio_connect_out_signal(s_iq_pins[lane],
-                                        MODEM_DIAG0_IDX + s_iq_lane_sets[set][lane],
-                                        false, false);
-    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
-    s_iq_lane_set = set;
-#endif
 }
 
 uint8_t rf_get_iq_lanes(void)
@@ -260,7 +243,6 @@ uint8_t rf_get_iq_lanes(void)
     return s_iq_lane_set;
 }
 
-#ifdef C5VRX4_EXPERIMENT
 /* AGC witness calibration only: route eight raw MODEM_DIAG signals onto the
  * PARLIO lanes (data bit n = diag[n]), then restore the receive routes. Live
  * video is garbage meanwhile; nothing else may switch lanes in between. */
@@ -296,7 +278,6 @@ void rf_restore_iq_routes(void)
     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
     portEXIT_CRITICAL(&s_lane_route_lock);
 }
-#endif
 
 static void rf_enable_continuous_modem(void)
 {
@@ -648,12 +629,10 @@ esp_err_t rf_start(void)
     if ((err = route_modem_iq()) != ESP_OK) return err;
 
     phy_rx_lab_begin("boot");
-#ifdef C5VRX4_EXPERIMENT
     /* The RX filter capacitors still hold the per-chip calibration from
      * rf_init; keep those bytes (upper bits, regs 8..13, restore target).
      * The restore below then applies the stored fixed-BW code. */
     (void)phy_rx_lab_filter_capture_base();
-#endif
     analog_phy_restore_lock();
     if (s_native_agc) {
         phy_fft_scale_force(false, 0);
@@ -697,13 +676,10 @@ static void analog_phy_restore_lock(void)
     phy_wifi_fbw_sel(s_analog_bw40 ? 1u : 0u);
     if (s_native_agc) phy_force_rx_gain(false, 0);
     else phy_force_rx_gain(true, s_current_gain_val);
-#ifdef C5VRX4_EXPERIMENT
     rf_apply_fixed_bw();
     rf_apply_agc_patch();
-#endif
 }
 
-#ifdef C5VRX4_EXPERIMENT
 /* Fixed analog bandwidth: the stored measured RX0 capacitor code, re-applied
  * in every tuning/bandwidth transaction (and at boot). Not gain: it is applied
  * in native-AGC mode too. Before the first measurement nothing is written. */
@@ -783,7 +759,6 @@ void rf_set_fixed_bw_edge(bool edge)
     c5vrx4_resume();
 }
 bool rf_fixed_bw_edge_active(void) { return s_fixed_bw_edge; }
-#endif
 
 /* Read-only C5 PHY observations. Estimator/calibration routines are not called
  * while live because they reconfigure clocks and receive state. */
@@ -879,19 +854,13 @@ static bool plan_wifi5_center(uint16_t freq_mhz, uint8_t *channel, uint16_t *cen
 
 void rf_set_analog_bandwidth(bool bw40)
 {
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
-#endif
     phy_rx_lab_begin("bandwidth");
     s_analog_bw40 = bw40;
-#ifdef C5VRX4_EXPERIMENT
     s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */
-#endif
     analog_phy_restore_lock();
     phy_rx_lab_end();
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
-#endif
 }
 
 bool rf_get_analog_bandwidth(void)
@@ -1069,18 +1038,14 @@ void rf_set_frequency_offset_khz(int offset_khz)
 
     if (offset_khz == s_current_offset_khz) return;
 
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
-#endif
     phy_rx_lab_begin("offset");
     s_current_offset_khz = offset_khz;
     phy_chip_set_chan_offset(offset_khz);
     /* The pinned helper unconditionally enables BB AGC before returning. */
     analog_phy_restore_lock();
     phy_rx_lab_end();
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
-#endif
 }
 
 void rf_step_frequency_offset_khz(int delta_khz)
@@ -1149,17 +1114,13 @@ esp_err_t rf_set_channel(size_t index)
     if (index >= FPV_BAND_COUNT * 8u) return ESP_ERR_INVALID_ARG;
     if (!plan_wifi5_center(s_fpv_channels[index / 8u][index % 8u].freq_mhz,
                            NULL, NULL)) return rf_set_channel_impl(index);
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_suspend();
-#endif
     phy_rx_lab_begin("channel");
     esp_err_t err = rf_set_channel_impl(index);
     /* Even a failed public verification can follow an actual hardware tune. */
     if (err != ESP_OK) analog_phy_restore_lock();
     phy_rx_lab_end();
-#ifdef C5VRX4_EXPERIMENT
     c5vrx4_resume();
-#endif
     return err;
 }
 

@@ -14,6 +14,44 @@ of merging. Current main's existing alpha workflow/flasher can build this projec
 
 ## Receiver contract
 
+### Current code layout
+
+The runtime is specialized for C5VRX-4. `main/video.c` only starts the receiver;
+the previous 8,765-line C5VRX-3/V4 implementation is split by ownership:
+
+| Modules | Responsibility |
+| --- | --- |
+| `video_transport.c` | Raw DMA ring, PARLIO and current three-bundle programs |
+| `video_gain.c` | Direct Gain V5 observer, sentinel and gain/BW writes |
+| `video_control.c`, `video_settings.c` | Buttons, scanner, AFC, NVS and native ownership |
+| `video_menu.c`, `video_idle.c` | Standalone menu/idle TX and optional flywheel |
+| `video_measure.c`, `video_calibration.c` | Completed snapshots, CVBS, bandwidth/witness calibration |
+| `video_console.c`, `video_diagnostics.c`, `video_lab.c` | USB commands, fault evidence and retained PHY A/B labs |
+
+`video_internal.h` is the private task/transport contract; application code uses
+`video.h`. DMA/BitScrambler still own sample pacing. The scanner retains its IQ
+classification, semantic-video confidence and centred-RF tie-break.
+
+The isolated target no longer builds C5VRX-3 boot probes, Golden/Phase5/FM4/HC
+programs, Direct Gain V1/V2, ARC/Fusion/range gain controllers or their unused
+generators. Their original implementations remain in the root C5VRX-3 tree and
+Git history. The unused 6-ms Fusion task and 4,096-byte stack are gone.
+
+Only Direct Gain V5 and opt-in native AGC remain as gain owners. Old profile
+bytes migrate to V5 without changing the 14-byte v3/v4 settings layout. `N` and
+`X` toggle native AGC with a reboot; `D` resets V5 controls. Removed research keys:
+`g`, `F`, `G`, `U`, `S`, `R`, `I`, `Y`, `i`, `z`, and `1` through `6`.
+The lab-row output omits stale Fusion/FFT fields that are no longer measured.
+Existing boot-option opt-outs, automatic calibrations and PHY write guards stay.
+
+Host verification covers the current algorithms and generated programs, including
+the exhaustive 524,386,048-trajectory unwrap oracle. Removed-controller tests no
+longer run in this target; scanner classification tests remain. Firmware builds
+and host tests do not replace a board test of menu/idle handoffs, retuning, native
+AGC, calibration and live video after the refactor.
+
+### Live pipeline
+
 - MODEM_DIAG packed Q4/I4, positive-edge PARLIO RX at 40 MS/s, raw cyclic ring.
 - TX-only Phase8 endpoint decode plus middle-sample quadrant winding; exactly
   three bundles per three input/output bytes. Unique CVBS 13.333 MS/s,
