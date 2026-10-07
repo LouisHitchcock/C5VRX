@@ -561,6 +561,10 @@ static const char *menu_item_text(unsigned item, char *value, size_t n)
         }
     }
     if (item == SETUP_ITEM_AFC) {
+        if (c5vrx4_reference_demod()) {
+            snprintf(value, n, "OFF (REFERENCE)");
+            return "AFC";
+        }
         snprintf(value, n, "%s", afc_mode_name());
         return "AFC";
     }
@@ -634,12 +638,13 @@ bool menu_item_apply(unsigned item)
     }
     if (item == SETUP_ITEM_AFC) {
         if (s_afc_mode == AFC_MODE_AUTO) {
+            if (c5vrx4_reference_demod()) { s_afc_mode = AFC_MODE_OFF; return true; }
             s_afc_mode = AFC_MODE_HOLD;
         } else if (s_afc_mode == AFC_MODE_HOLD) {
             s_afc_mode = AFC_MODE_OFF;
             apply_frequency_offset_khz_tracked(0);
         } else {
-            s_afc_mode = AFC_MODE_AUTO;
+            s_afc_mode = c5vrx4_reference_demod() ? AFC_MODE_OFF : AFC_MODE_AUTO;
         }
         printf("[MENU: AFC] Mode -> %s\n", afc_mode_name());
         settings_save();

@@ -1,4 +1,19 @@
 {
+  "reference_gain_recovery_comparison": {
+    "canonical": "https://github.com/Twotoz/C5VRX",
+    "reference_revision": "69dfd683f534ec1663ecb2cf7645dea38ca05348",
+    "reference_path": "main/direct_gain_v3.c",
+    "modifications": "extends existing V4 physical emergency-drop/adjacent-tuple helpers; reference modes bypass hard G20 severe drop and step upward on post-overload near-origin IQ; Unwrap75 policy unchanged",
+    "evidence": "host regression failed before and passes after; physical range acceptance pending"
+  },
+  "reference_demodulator_donor": {
+    "repository": "https://github.com/zerowidth/C5VRX",
+    "revision": "69dfd683f534ec1663ecb2cf7645dea38ca05348",
+    "canonical": "https://github.com/Twotoz/C5VRX",
+    "paths": ["main/fm_phase8_hr_live.bsasm", "main/fm.bsasm"],
+    "modifications": "provenance comments only; opt-in V4 transport selection with span75-consumer exclusions",
+    "evidence": "source-driven endpoint pairs; hardware acceptance pending"
+  },
   "base_main": "b8d32b90f479feff7fbb34e6ca01cc9ba2d0d697",
   "runtime_donor": "f1d4167406c68b6fe1694b875697f36c76c0aa87",
   "afc_donor": "33a8c0b30807a0380e394d5e65954bc45dcb3dd5",

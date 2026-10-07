@@ -99,6 +99,10 @@ static analog_video_t scan_video_confidence(void)
 
 static void channel_auto_search(void)
 {
+    if (c5vrx4_reference_demod()) {
+        printf("[AUTO SEARCH] refused=reference_demod use_manual_channel\n");
+        return;
+    }
     const size_t original_channel = rf_get_channel_index();
     const uint8_t original_gain = s_current_gain;
     const size_t channel_count = rf_get_channel_count();
@@ -354,6 +358,7 @@ static void handle_button_long_click(void)
                    rf_bw_mode_name(), s_current_bw40 ? "BW40" : "BW20");
             break;
         case 3: /* AFC MODE */
+            if (c5vrx4_reference_demod()) { s_afc_mode = AFC_MODE_OFF; break; }
             if (s_afc_mode == AFC_MODE_AUTO) {
                 s_afc_mode = AFC_MODE_HOLD;
             } else if (s_afc_mode == AFC_MODE_HOLD) {
@@ -639,7 +644,7 @@ void analog_agc_task(void *arg)
             if (eligible && phy_rx_lab_try_actuator(afc_epoch.phy)) {
                 /* A gain/profile writer may have won ownership between the
                  * pre-check and this acquire. Re-check while excluding it. */
-                bool current = s_afc_mode == AFC_MODE_AUTO && !s_afc_video_locked &&
+                bool current = !c5vrx4_reference_demod() && s_afc_mode == AFC_MODE_AUTO && !s_afc_video_locked &&
                     rx_control_epoch_equal(afc_epoch, (rx_control_epoch_t){
                         s_profile_generation, phy_rx_lab_generation(), s_gain_transition_count});
                 if (afc2_ctrl_decide(&afc2_ctrl, current, &step)) {

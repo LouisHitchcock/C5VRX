@@ -91,6 +91,10 @@ static void video_standard_vote(video_standard_t standard, uint16_t period)
 
 static void cvbs_analyze_locked(const uint8_t *raw, size_t bytes, c5v4_cvbs_stats_t *stats)
 {
+    if (c5vrx4_reference_demod()) {
+        memset(stats, 0, sizeof(*stats)); /* No false stride-3 sync/voltage claims. */
+        return;
+    }
     xSemaphoreTake(s_cvbs_analyze_lock, portMAX_DELAY);
     c5v4_cvbs_analyze(raw, bytes, c5vrx4_history_enabled(), c5vrx4_cvbs_mode(), stats);
     xSemaphoreGive(s_cvbs_analyze_lock);

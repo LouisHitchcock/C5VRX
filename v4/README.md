@@ -14,6 +14,31 @@ of merging. The V4 alpha workflow and flasher build this project independently.
 
 ## Receiver contract
 
+The operator's 2026-10-07 standalone V3 picture benchmark and the isolated
+adaptive-lane comparison are recorded in [docs/V3_BENCHMARK.md](docs/V3_BENCHMARK.md).
+Louis reports matching V3 picture and flight range on the HR50 plus staged-gain
+candidate; Golden remains untested. This is operator-rated acceptance, not
+measured RF dB or a sample-continuity proof. See the recorded build hash.
+
+For that comparison only, serial `g` cycles Unwrap75 -> donor Phase8 HR50 ->
+OG Golden Phase5/50 -> Unwrap75, rebooting after each acknowledged change.
+Both reference programs are isolated copies of `main/fm_phase8_hr_live.bsasm`
+and `main/fm.bsasm` from zerowidth/C5VRX `69dfd683f534ec1663ecb2cf7645dea38ca05348`
+(original C5VRX by Twotoz and contributors). The only assembly additions are
+provenance comments; RF/gain and raw-ring transport remain V4. Reference modes
+retain the donor DAC mapping and use two bundles / unique20M `[D,D]` at TX40M.
+They disable span75 semantic sync, auto AFC, mask, flywheel/idle and LUT writers;
+use manual channel selection and operator picture ratings. Unwrap75 remains
+the default when the new `c5vrx4/ref_demod` key is absent or invalid. This does
+not establish that either reference equals V3 on hardware.
+
+The reference-mode gain comparison also uses staged overload recovery:
+reduce BB/RF gain through physical tuples, then recover post-overload
+near-origin IQ upward in physical steps instead of immediately requesting
+table maximum. Unwrap75's severe G20 protection is unchanged. This extends
+the existing C5VRX Direct Gain research, not a proven range improvement;
+see the benchmark evidence and host regression in `tools/test_integration.c`.
+
 ### Current code layout
 
 The standalone project is organized as follows:

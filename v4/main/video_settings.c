@@ -213,6 +213,7 @@ const char *output_mode_name(void) { return "6BIT@40"; }
 
 const char *demod_mode_name(void)
 {
+    if (c5vrx4_reference_demod()) return c5vrx4_demodulator_name();
     return c5vrx4_history_enabled() ? "C5V4 U8HC75" : "C5V4 U8S75";
 }
 

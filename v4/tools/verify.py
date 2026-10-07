@@ -146,7 +146,7 @@ def main():
         target = str(Path(td) / "unwrap")
         run([cc, "-O3", "-std=c11", "tools/unwrap_oracle.c", "-o", target])
         run([target])
-    for name in ("tools/test_unwrap.py", "tools/test_cvbs.py", "tools/test_agc_mask.py", "tools/test_flash_tools.py"):
+    for name in ("tools/test_unwrap.py", "tools/test_cvbs.py", "tools/test_agc_mask.py", "tools/test_flash_tools.py", "tools/test_reference_demod.py"):
         run([sys.executable, name])
     print(f"PASS: isolated C5VRX-4 integration, {len(cases) + (3 if posix else 1)} C regressions, exhaustive unwrap and source-driven DSP tests")
 

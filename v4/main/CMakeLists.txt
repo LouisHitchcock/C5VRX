@@ -47,6 +47,7 @@ idf_component_register(
         esp_driver_tsens
 )
 
+# Includes isolated Unwrap75 and operator-requested two-bundle reference programs.
 include("${PROJECT_DIR}/component.cmake")
 
 # Recovered MMIO overrides are valid only for this exact C5 archive. Unknown

@@ -36,6 +36,7 @@ esp_err_t video_start(void)
     if (!s_menu_commands) return ESP_ERR_NO_MEM;
 
     settings_load();
+    if (c5vrx4_reference_demod()) s_afc_mode = AFC_MODE_OFF;
     c5vrx4_options_snapshot();
     s_dg3_saved_valid = c5vrx4_blob_load("dg3_map", &s_dg3_saved, sizeof(s_dg3_saved)) &&
                         s_dg3_saved.version == DG3_MAP_VERSION &&
@@ -189,7 +190,12 @@ esp_err_t video_start(void)
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
     /* Print startup stamp (visible on serial monitor at boot). */
-    ESP_EARLY_LOGW(TAG, "C5VRX-4 UNWRAP/75: IQ40M -> %s -> DAC13.333M "
+    if (c5vrx4_reference_demod()) {
+        s_afc_mode = AFC_MODE_OFF;
+        ESP_EARLY_LOGW(TAG, "C5VRX-4 REFERENCE: %s IQ40M -> DAC20M [D,D]@40M; "
+                       "span75 observers/repair disabled; experimental",
+                       c5vrx4_demodulator_name());
+    } else ESP_EARLY_LOGW(TAG, "C5VRX-4 UNWRAP/75: IQ40M -> %s -> DAC13.333M "
                    "[D,D,D]@40M gain_owner=%s; descriptors RX=%d TX=%d; "
                    "experimental, no range claim",
                    c5vrx4_history_enabled() ? "Unwrap8 HISTORY" : "Unwrap8 STATIC",

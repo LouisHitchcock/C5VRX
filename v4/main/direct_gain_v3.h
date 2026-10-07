@@ -49,6 +49,9 @@ typedef struct {
     uint8_t stable_windows;
     uint64_t write_us;
     uint32_t writes, holds, verified, learned, overloads;
+    /* Reference-detector comparison: recover starvation after overload in
+     * physical steps, rather than immediately undoing the drop with max. */
+    bool overload_recovery;
     /* V5 anti-hunt: direction reversals of consecutive writes. */
     int8_t last_write_dir;
     uint8_t reversals;

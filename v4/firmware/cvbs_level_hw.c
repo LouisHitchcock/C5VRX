@@ -72,6 +72,8 @@ void c5v4_level_hw_prepare(void)
 {
     ready = lut_verified = false;
     decoder_dc[0] = decoder_dc[1] = 0; /* every program load is pristine */
+    /* The donor programs do not use the span75 LUT-bank layout. */
+    if (c5vrx4_reference_demod()) return;
     c5v4_level_init(&servo);
     if (bitscrambler_ll_get_lut_width(&BITSCRAMBLER, BITSCRAMBLER_DIR_TX) != 1) return;
     /* The headers disagree on whether host address units follow LUT width.
@@ -109,6 +111,7 @@ bool c5v4_level_hw_lut_verified(void)
  * servo; one sample may decode with a mixed table during the rewrite. */
 bool c5v4_decoder_recenter(int di, int dq)
 {
+    if (c5vrx4_reference_demod()) return false;
     uint16_t words[256];
     bool pristine = !di && !dq;
     for (unsigned raw = 0; raw < 256; ++raw)

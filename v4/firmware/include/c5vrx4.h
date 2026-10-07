@@ -8,6 +8,13 @@ void c5vrx4_start(void);
 void c5vrx4_suspend(void);
 void c5vrx4_resume(void);
 bool c5vrx4_console(int key);
+/* Isolated hardware comparisons, NVS ref_demod, g cycles with a reboot.
+ * Zero preserves Unwrap75 defaults. Reference programs retain donor DAC
+ * mapping; span75 observers/repair/LUT writers are unavailable in them. */
+enum { C5VRX4_DEMOD_UNWRAP75, C5VRX4_DEMOD_PHASE8_HR, C5VRX4_DEMOD_GOLDEN };
+unsigned c5vrx4_demodulator(void);
+const char *c5vrx4_demodulator_name(void);
+bool c5vrx4_reference_demod(void);
 bool c5vrx4_history_enabled(void);
 /* IQ lane policy, NVS c5vrx4/lane_mode, Z cycles it with a reboot. Fixed
  * fine {9,7,6,5} is the default: the lanes never switch at runtime. Fixed

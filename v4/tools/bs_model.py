@@ -28,7 +28,7 @@ def parse(text):
     return cfg, lut, blocks, labels
 
 
-def simulate(text, raw, count, *, initial=None, start=None, stats=None):
+def simulate(text, raw, count, *, initial=None, start=None, stats=None, wrap_rom=False):
     cfg, lut, blocks, labels = parse(text)
     out = a = b = look = pos = pc = 0
     if initial is not None: out, a, b, look = initial
@@ -103,5 +103,7 @@ def simulate(text, raw, count, *, initial=None, start=None, stats=None):
         result.extend((out>>(8*j))&255 for j in range(write//8))
         if len(result)>=count: return result[:count]
         pc=next_pc
-        if pc>=len(blocks): raise ValueError('fell off ROM')
+        if pc>=len(blocks):
+            if wrap_rom: pc=0  # C5 reference's fully populated eight-slot ROM.
+            else: raise ValueError('fell off ROM')
     raise ValueError('no progress')

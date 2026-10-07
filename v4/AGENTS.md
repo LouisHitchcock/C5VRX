@@ -1,5 +1,29 @@
 # Isolated C5VRX-4 integration ledger
 
+Operator-authorized reference gain comparison, 2026-10-07: HR50/Golden
+reference modes use staged overload reduction and physical-step recovery
+from post-overload near-origin IQ, rather than immediate G20/max swings.
+Unwrap75 retains its severe overload floor. Host evidence and Louis's positive
+HR50 flight acceptance are in docs/V3_BENCHMARK.md; no measured dB gain is proven.
+
+Operator-authorized benchmark comparisons, 2026-10-07: `g` selects isolated
+two-bundle Phase8 HR50 or Golden Phase5/50 reference paths (NVS ref_demod).
+Their unique20M [D,D] TX40M geometry is an explicit scoped exception to the
+three-bundle Unwrap75 contract below, not a default replacement. Span75
+sync estimates, AFC actuation, mask/repair/idle and LUT writers must stay
+disabled in reference modes. Preserve donor provenance and exact DAC mappings.
+
+Operator benchmark, 2026-10-07: `docs/V3_BENCHMARK.md` records the visibly
+better standalone V3 configuration and the requested V4 quality target.
+Use existing protected adaptive lanes as the first comparison, with Unwrap75
+unchanged, at matched R3 tuning. This is not a production-default change or
+physical acceptance. Preserve the known-good V3 rollback and evidence bounds.
+
+Local V5 follow-up, 2026-10-07: `docs/POST_DROP_SETTLING.md` records the
+PR181 post-overload no-carrier settling reproducer and scoped guard fix.
+The repeat flight retained gain swings and picture faults: physical picture
+acceptance failed. Keep the scoped host regression distinct from live benefit.
+
 Inherit the repository attribution, hardware and evidence instructions. This
 directory extends C5VRX by Twotoz and contributors; README.md and docs/INTEGRATION.md
 define its scoped defaults, donor lineage and pending physical acceptance.

@@ -37,6 +37,10 @@ void console_diag_task(void *arg)
                            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA_DESC_AHB | MALLOC_CAP_INTERNAL));
                 }
                 if (c == 'J') {
+                    if (c5vrx4_reference_demod()) {
+                        printf("C5V4_CVBS refused=reference_demod_no_span75_estimator\n");
+                        continue;
+                    }
                     if (__sync_bool_compare_and_swap(&s_cvbs_capture_running, 0u, 1u) &&
                         xTaskCreate(cvbs_capture_task, "cvbs_capture", 4096, NULL, 1, NULL) != pdPASS) {
                         __sync_lock_release(&s_cvbs_capture_running);

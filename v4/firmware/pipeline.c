@@ -30,8 +30,33 @@ static bool s_cvbs_loaded;
 static unsigned s_cvbs_mode;
 static bool s_level_loaded, s_level;
 
+unsigned c5vrx4_demodulator(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        nvs_handle_t h;
+        uint8_t value = C5VRX4_DEMOD_UNWRAP75;
+        if (nvs_open("c5vrx4", NVS_READONLY, &h) == ESP_OK) {
+            (void)nvs_get_u8(h, "ref_demod", &value);
+            nvs_close(h);
+        }
+        mode = value <= C5VRX4_DEMOD_GOLDEN ? value : C5VRX4_DEMOD_UNWRAP75;
+    }
+    return (unsigned)mode;
+}
+bool c5vrx4_reference_demod(void)
+{
+    return c5vrx4_demodulator() != C5VRX4_DEMOD_UNWRAP75;
+}
+const char *c5vrx4_demodulator_name(void)
+{
+    static const char *const names[] = {"unwrap75", "phase8_hr50", "golden_phase5_50"};
+    return names[c5vrx4_demodulator()];
+}
+
 bool c5vrx4_level_enabled(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     if (!s_level_loaded) {
         nvs_handle_t h; uint8_t enabled = 1;
         if (nvs_open("c5vrx4", NVS_READONLY, &h) == ESP_OK) {
@@ -163,6 +188,7 @@ bool c5vrx4_native_patch_enabled(void)
 static int8_t s_dc_recenter = -1, s_sphase_auto = -1;
 bool c5vrx4_dc_recenter_enabled(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     if (s_dc_recenter < 0) s_dc_recenter = nvs_flag("dc_recenter", true);
     return s_dc_recenter;
 }
@@ -331,6 +357,7 @@ bool c5vrx4_agc_mask_enabled(void)
 }
 bool c5vrx4_agc_mask_active(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     /* Latched per boot: program and lane route are chosen together at start,
      * so a calibration stored later only takes effect after a reboot. */
     static int8_t active = -1;
@@ -343,6 +370,7 @@ bool c5vrx4_agc_mask_active(void)
 static int8_t s_idle_raster = -1;
 bool c5vrx4_idle_raster_enabled(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     if (s_idle_raster < 0) s_idle_raster = nvs_flag("idle_raster", true);
     return s_idle_raster;
 }
@@ -359,6 +387,7 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     /* Default on, fade-gated (2026-10-06): it writes only inside the V5
      * observer's fade window and only from a stable lock, so a clean
      * picture is never touched (the always-writing version put black
@@ -513,6 +542,7 @@ static bool toggle_flag(const char *key, bool current, const char *name)
 
 bool c5vrx4_history_enabled(void)
 {
+    if (c5vrx4_reference_demod()) return false;
     if (!s_history_loaded) {
         nvs_handle_t handle;
         uint8_t enabled = 0;
@@ -616,6 +646,17 @@ void c5vrx4_resume(void)
 
 static void print_state(void)
 {
+    if (c5vrx4_reference_demod()) {
+        c5vrx4_lane_print();
+        printf("C5VRX4 pipeline=%s span_ns=50 phase_bits=%u bundles=2 "
+               "iq_bits=4+4 iq_hz=40000000 dac_hz=40000000 unique_hz=20000000 "
+               "transfer=donor_reference gain_owner=%s semantic_sync=unavailable "
+               "mask=0 flywheel=0 idle_raster=0 live_lut_writes=0\n",
+               c5vrx4_demodulator_name(),
+               c5vrx4_demodulator() == C5VRX4_DEMOD_GOLDEN ? 5u : 8u,
+               rf_native_agc_active() ? "native" : "direct_gain_v5");
+        return;
+    }
     c5vrx4_lane_print();
     portENTER_CRITICAL(&s_lock);
     bool running = s_running, open = s_open;
@@ -674,6 +715,25 @@ void c5vrx4_start(void)
 
 bool c5vrx4_console(int key)
 {
+    if (key == 'g') {
+        nvs_handle_t h;
+        unsigned next = (c5vrx4_demodulator() + 1u) % 3u;
+        esp_err_t err = nvs_open("c5vrx4", NVS_READWRITE, &h);
+        if (err == ESP_OK) {
+            err = nvs_set_u8(h, "ref_demod", (uint8_t)next);
+            if (err == ESP_OK) err = nvs_commit(h);
+            nvs_close(h);
+        }
+        printf("C5VRX4 ref_demod_next=%u err=%s action=%s\n", next,
+               esp_err_to_name(err), err == ESP_OK ? "reboot" : "unchanged");
+        if (err == ESP_OK) { fflush(stdout); vTaskDelay(pdMS_TO_TICKS(120)); esp_restart(); }
+        return true;
+    }
+    if (c5vrx4_reference_demod() &&
+        (key == 'f' || key == 'M' || key == 'h' || key == 'J')) {
+        printf("C5VRX4 reference command=%c refused=span75_consumer\n", key);
+        return true;
+    }
     if (key == 'u') {
         nvs_handle_t handle;
         bool enabled = !c5vrx4_level_enabled();
