@@ -67,3 +67,23 @@ trees, against `d3af38e`).
 | 4 | DCO rollback missed the 5 GHz RF word (block 8) | **Fixed + readback**: all vendor blocks 0..10 are re-asserted with their live words (debug mode freezes every block on its test register; a live copy keeps the state, leaving them would not); read-only RF/BB/fine words (8/1, 0/2, 1/2) traced at hold enter / in debug / after release + replay; the RF word is compared with the vendor tuple's RF code every 250 ms (`GAIN_PBUS`, `rf_mismatches`) |
 | 5 | DCO cache without context | **Fixed**: blob v2 keyed on frequency, gain table range and band, lane policy, analog filter code/skirt and IQ-scale selector; per-gain residual as provenance; no boot epoch. Codes are absolute DC-DAC values, so a vendor recalibration does not invalidate them. Temperature not stored (no validated sensor path); stale entries are re-searched after 120 s of quiet |
 | 6 | IQ image rejection | **Read-only state + automatic exact-frequency IQ calibration**: `IQ_STATE` prints `phy_param[44]` (rxiq_opt branch), `phy_param[650]` (scale selector), `0x600A043C`, `0x600A0438`; the vendor RX DC/IQ calibration at the tuned frequency now runs automatically once per channel per boot in confirmed quiet (`~` by hand). **Open (bench)**: IRR with a known tone at +-1/4/8/12 MHz and a blocker |
+
+### Board results 2026-10-07 (VTX off, A1 5865 MHz)
+
+- Exact-frequency RX recalibration (`RX_RECAL_AUTO`, ~49 ms, at every boot
+  and channel change): receiver DC 1532/946 -> -283/115 mcells (earlier
+  boots 2677/1720 -> 87/-479, 2073/1703 -> -533/739).
+- Then the per-gain DC-DAC search over G83..G54 in confirmed quiet: all 30
+  gains found codes; receiver DC at the table maximum 4/9 mcells.
+- Receiver noise no longer reads as a carrier (no `[CARRIER]` lines), the
+  idle raster enters and stays.
+- Gain readback: hardware index = V5 index (0 mismatches); the PBUS RF word
+  (block 8) reads 487, the RF code of the exact vendor tuple, and stays 487
+  at hold enter / in debug mode / after release.
+- `IQ_STATE`: rxiq_opt branch inactive (`phy_param[44]=0`), scale selector 0.
+- Range-edge gear now `edge` (the V5 profile had forced BW40 at every boot).
+- Fixed along the way: an idle-raster start that could reboot the receiver
+  (1 ms busy-wait under ESP_ERROR_CHECK), the raster flickering on
+  calibration transients, a status dump that starved IDLE.
+- Still to do with a transmitter: picture at range, gain behaviour, and the
+  sensitivity bench (P0 attenuator baseline).
