@@ -105,6 +105,25 @@ origin cells decode 4 bins inside the quadrant edge facing it. Verified
 bit-exact in the repo's BitScrambler emulator (20,255 pairs, 0 mismatches).
 On the board in this PR's test state (all v4 programs = HC50).
 
+## 80 -> 40 MS/s PARLIO 2:1 decimation (no fix needed)
+
+PARLIO takes every second sample of the 80 MS/s MODEM_DIAG bus, unfiltered.
+`decim.py` (fixed C/N0, so folded noise counts) compares it with an ideal
+20 MHz anti-alias filter before the 2:1, HC50 SINAD / clicks at 4 dB C/N:
+
+| analog channel | PARLIO 2:1 | ideal decimation |
+|---|---|---|
+| +-10 MHz | 3.8 / 51 | 3.8 / 52 |
+| +-20 MHz | 3.8 / 52 | 4.2 / 41 |
+| +-30 MHz | 3.7 / 53 | 6.4 / 14 |
+
+Board, VTX off, G83 (`tap_psd_board.py`, 160 x 64-sample segments), noise
+PSD at the tap relative to 0-4 MHz: 0.0 dB to 8 MHz, -0.6 at 8-10, -5.5 at
+10-12, -10.6 at 12-14, then the 4-bit quantization floor (-13..-15 dB). The
+analog filter edge is ~+-10 MHz and steep: it is the anti-alias filter, and
+the 2:1 decimation costs 0.0-0.1 dB. Keep ANALOG BW at FIXED (+-10 MHz); a
+wider analog filter would make the 2:1 cost real.
+
 ## Open in this PR
 
 - [ ] v4 generator: HC50 as the native program (CVBS level scaling, STATIC/
