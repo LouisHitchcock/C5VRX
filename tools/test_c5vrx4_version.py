@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from c5vrx4_version import published_version, resolve_version
+from firmware_input_hash import firmware_input
 
 
 TAG = 'c5vrx4-v4.0.0-alpha.3'
@@ -47,6 +48,29 @@ class PublishedVersionTests(unittest.TestCase):
 
     def test_unrelated_tags_do_not_affect_alpha_sequence(self):
         self.assertEqual(resolve_version(['v3.27.0', 'c5vrx4-pr-164', TAG])['tag'], NEXT)
+
+
+class FirmwareInputTests(unittest.TestCase):
+    def test_v4_relocation_covers_each_build_input(self):
+        for path in ('v4/main/video.c', 'v4/firmware/pipeline.c',
+                     'v4/firmware/include/c5vrx4.h',
+                     'v4/firmware/programs/c5vrx4_phase8_static.bsasm',
+                     'v4/tools/verify.py', 'v4/component.cmake',
+                     'v4/sdkconfig.defaults', '.github/workflows/c5vrx4.yml'):
+            with self.subTest(path=path):
+                self.assertTrue(firmware_input(path, '4'))
+
+    def test_generations_do_not_hash_each_others_sources(self):
+        self.assertTrue(firmware_input('main/video.c', '3'))
+        self.assertFalse(firmware_input('main/video.c', '4'))
+        self.assertFalse(firmware_input('v4/main/video.c', '3'))
+        self.assertFalse(firmware_input('experiments/c5vrx-4/main/video.c', '4'))
+
+    def test_documentation_and_website_do_not_change_firmware_hash(self):
+        for path in ('v4/README.md', 'v4/docs/DESIGN.md', 'web/app.js'):
+            for generation in ('3', '4'):
+                with self.subTest(path=path, generation=generation):
+                    self.assertFalse(firmware_input(path, generation))
 
 
 if __name__ == '__main__':

@@ -24,7 +24,7 @@ def main():
     if generation not in ('3', '4'):
         raise SystemExit('Expected generation 3 or 4')
     paths = subprocess.check_output(
-        ['git', '-c', f'safe.directory={ROOT}', 'ls-files', '-z'], cwd=ROOT
+        ['git', '-c', f'safe.directory={ROOT.as_posix()}', 'ls-files', '-z'], cwd=ROOT
     ).decode().split('\0')
     digest = hashlib.sha256()
     for path in sorted(p for p in paths if firmware_input(p, generation)):
