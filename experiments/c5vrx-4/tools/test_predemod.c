@@ -232,6 +232,29 @@ int main(void)
             if (mode & 2) assert(r >= 120u); else assert(r <= 112u);
         }
     }
+    /* IQ imbalance: a clean rotating carrier with 1 dB gain error and 5 deg
+     * phase error reads back about that (IRR ~22.8 dB, the review's worked
+     * example); a balanced one reads g ~1.000, phi ~0, IRR high. */
+    {
+        static uint8_t buf[8192];
+        for (int mode = 0; mode < 2; ++mode) {
+            double g = mode ? pow(10.0, 1.0 / 20.0) : 1.0, phi = mode ? 5.0 * M_PI / 180.0 : 0.0, ph = 0;
+            for (unsigned k = 0; k < sizeof(buf); ++k) {
+                ph += 2 * M_PI * (1.5 + 2.0 * sin(k / 97.0)) / 40.0;
+                double I = 5.5 * cos(ph) - 0.5, Q = 5.5 * g * sin(ph + phi) - 0.5;
+                int i = (int)floor(I + 0.5), q = (int)floor(Q + 0.5);
+                i = i < -8 ? -8 : i > 7 ? 7 : i;
+                q = q < -8 ? -8 : q > 7 ? 7 : q;
+                buf[k] = (uint8_t)(((i & 15) << 4) | (q & 15));
+            }
+            predemod_iq_imbalance_t r = predemod_iq_imbalance(buf, sizeof(buf));
+            printf("iq imbalance %s: g=%d/1000 phi=%d/10 deg irr=%d/10 dB\n", mode ? "1 dB/5 deg" : "balanced",
+                   r.gain_x1000, r.phase_x10, r.irr_db_x10);
+            if (mode) assert(r.gain_x1000 > 1080 && r.gain_x1000 < 1160 && r.phase_x10 > 35 && r.phase_x10 < 65 &&
+                             r.irr_db_x10 > 200 && r.irr_db_x10 < 260);
+            else assert(r.gain_x1000 > 980 && r.gain_x1000 < 1020 && abs(r.phase_x10) < 10 && r.irr_db_x10 > 330);
+        }
+    }
     puts("PASS: glitch metric, DC centre, DC-cal point, relative filter code, DCO solver, exact Phase8 recentring, DC decision, FFT, noise-width estimate, BW choice and esp-sdr curve/mode fit");
     return 0;
 }

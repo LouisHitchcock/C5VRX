@@ -77,6 +77,38 @@ static inline unsigned predemod_envelope_ratio_x100(const uint8_t *s, size_t n)
     return ratio > 9999.0 ? 9999u : (unsigned)(ratio + 0.5);
 }
 
+/* IQ imbalance of a strong rotating carrier (an FM signal sweeps the whole
+ * circle): after removing the DC, E[I^2], E[Q^2] and E[IQ] give the
+ * amplitude ratio g = sqrt(E[Q^2]/E[I^2]) and the phase error
+ * phi = asin(E[IQ] / sqrt(E[I^2] E[Q^2])); image rejection
+ * IRR = 10 log10((1 + g^2 + 2 g cos phi) / (1 + g^2 - 2 g cos phi)).
+ * Meaningful only with a carrier well above the noise. Results x1000 (g),
+ * x10 (degrees, dB). */
+typedef struct { int gain_x1000, phase_x10, irr_db_x10; } predemod_iq_imbalance_t;
+static inline predemod_iq_imbalance_t predemod_iq_imbalance(const uint8_t *s, size_t n)
+{
+    predemod_iq_imbalance_t r = {1000, 0, 999};
+    if (n < 64u) return r;
+    double mi = 0, mq = 0;
+    for (size_t k = 0; k < n; ++k) { mi += 2 * predemod_i(s[k]) + 1; mq += 2 * predemod_q(s[k]) + 1; }
+    mi /= (double)n; mq /= (double)n;
+    double ii = 0, qq = 0, iq = 0;
+    for (size_t k = 0; k < n; ++k) {
+        double a = (2 * predemod_i(s[k]) + 1) - mi, b = (2 * predemod_q(s[k]) + 1) - mq;
+        ii += a * a; qq += b * b; iq += a * b;
+    }
+    if (ii <= 0.0 || qq <= 0.0) return r;
+    double g = sqrt(qq / ii), c = iq / sqrt(ii * qq);
+    if (c > 1.0) c = 1.0;
+    if (c < -1.0) c = -1.0;
+    double phi = asin(c), cs = cos(phi);
+    double num = 1 + g * g + 2 * g * cs, den = 1 + g * g - 2 * g * cs;
+    r.gain_x1000 = (int)(g * 1000.0 + 0.5);
+    r.phase_x10 = (int)(phi * 1800.0 / M_PI + (phi >= 0 ? 0.5 : -0.5));
+    r.irr_db_x10 = den > 0.0 ? (int)(100.0 * log10(num / den) + 0.5) : 999;
+    return r;
+}
+
 /* RX DC calibration point used by the pinned libphy for a 5 GHz channel.
  * phy_set_rx_gain_cal_dc() calibrates these seven frequencies when
  * phy_param[0x2a] != 0, otherwise only 2432 MHz (disassembly, IDF 6.0.2

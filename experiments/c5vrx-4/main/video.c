@@ -7232,6 +7232,21 @@ static void gain_readback_print(void)
     printf("IQ_STATE rxiq_opt_flag=%u scale_sel=%u scale_reg=0x%08lx coef_reg=0x%08lx\n",
            phy_param[44], phy_param[650], (unsigned long)REG_READ(0x600A043Cu),
            (unsigned long)REG_READ(0x600A0438u));
+    /* Measured on the live IQ: meaningful with a strong carrier (the FM
+     * signal sweeps the circle). An ellipse shows as fine grain on a strong
+     * picture. */
+    {
+        const size_t w = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
+        unsigned got = 0;
+        for (unsigned tries = 0; tries < 48u && got < 24u; ++tries) {
+            vTaskDelay(1);
+            if (rx_probe_copy_completed(s_dco_env_buf + got * w)) ++got;
+        }
+        predemod_iq_imbalance_t m = predemod_iq_imbalance(s_dco_env_buf, got * w);
+        printf("IQ_IMBALANCE windows=%u gain_ratio=%d.%03d phase_deg=%d.%d irr_db=%d.%d gain=%u p50=%d coherence=%d\n",
+               got, m.gain_x1000 / 1000, m.gain_x1000 % 1000, m.phase_x10 / 10, abs(m.phase_x10 % 10),
+               m.irr_db_x10 / 10, m.irr_db_x10 % 10, s_current_gain, s_v3_p50, s_v3_coherence);
+    }
 }
 
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
