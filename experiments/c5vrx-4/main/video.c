@@ -2951,7 +2951,11 @@ static bool predemod_collect(unsigned windows, predemod_window_t *out)
     int64_t si = 0, sq = 0;
     memset(out, 0, sizeof(*out));
     for (unsigned tries = 0; tries < windows * 3u && out->windows < windows; ++tries) {
-        vTaskDelay(1);
+        /* Two ticks: the window analysis below costs about one, so a 1-tick
+         * wait kept this task runnable nearly all the time and, with the V5
+         * observer, IDLE on CPU0 starved (board 2026-10-07: task watchdog
+         * here during the boot SPHASE scan). */
+        vTaskDelay(2);
         if (!rx_probe_copy_completed(sample)) continue;
         for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r)
             out->glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
