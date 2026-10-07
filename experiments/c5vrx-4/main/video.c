@@ -401,6 +401,11 @@ static portMUX_TYPE s_dc_mux = portMUX_INITIALIZER_UNLOCKED;
 static int64_t s_dc_sum_i, s_dc_sum_q;
 static uint32_t s_dc_windows, s_dc_epoch;
 static TaskHandle_t s_v3_observer_task_handle;
+#ifdef C5VRX4_EXPERIMENT
+static volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
+#endif
+/* Observer cost per processed window (us), for the CPU budget. */
+static volatile uint32_t s_obs_us_sum, s_obs_us_max, s_obs_windows;
 #if CONFIG_C5VRX_PHASE8_HR_LIVE_TEST
 /* History-conditioned demodulator (fm_hc.bsasm), chosen per boot from NVS
  * c5vrx/hc_demod = 1 ('P' toggles and reboots). Default Phase8 FULL. */
@@ -1695,17 +1700,12 @@ static void direct_gain_v3_sentinel_timer_cb(void *arg)
 #endif
     if (s_v3_sentinel_task_handle)
         xTaskNotifyGive(s_v3_sentinel_task_handle);
-    /* V5: the observer runs every fifth tick (1 ms). At 200 us its full
-     * window analysis plus the sentinel and flywheel wakes held CPU0 at
-     * 100 %: any extra load (a status dump, the boot SPHASE scan) starved
-     * IDLE into the task watchdog (board 2026-10-07). Overloads are still
-     * caught at 200 us by the sentinel, which wakes the observer directly. */
-    static unsigned observer_div;
-    if (++observer_div >= 5u) {
-        observer_div = 0;
-        if (s_v3_observer_task_handle)
-            xTaskNotifyGive(s_v3_observer_task_handle);
-    }
+    /* V5: the observer runs on the same 200 us cadence; a new RX
+     * descriptor completes every ~102 us. (A 1 kHz observer against the
+     * task watchdog cut range in flight on another board, PR #177 report;
+     * the CPU budget is measured instead: DG3_OBS obs_us_avg/max.) */
+    if (s_v3_observer_task_handle)
+        xTaskNotifyGive(s_v3_observer_task_handle);
 }
 
 static void direct_gain_v3_sentinel_task(void *arg)
@@ -1938,6 +1938,7 @@ static void direct_gain_v3_observer_task(void *arg)
          * check counts consecutive stable windows and must see new data. */
         if (block_idx == last_block_idx) continue;
         last_block_idx = block_idx;
+        const int64_t obs_t0 = esp_timer_get_time();
         dg3_observation_t observation = direct_gain_v3_measure(
             sample, sizeof(sample), c5vrx_phase8_gain_lut,
             (uint64_t)esp_timer_get_time());
@@ -1958,6 +1959,10 @@ static void direct_gain_v3_observer_task(void *arg)
          * task watchdog fired with gain_v3_obs on the CPU and the console
          * (USB input) starved; this work fed nothing anymore. */
         direct_gain_v5_bw_gear(&observation);
+        const uint32_t obs_us = (uint32_t)(esp_timer_get_time() - obs_t0);
+        s_obs_us_sum += obs_us;
+        if (obs_us > s_obs_us_max) s_obs_us_max = obs_us;
+        ++s_obs_windows;
     }
 }
 #endif
@@ -2287,7 +2292,8 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            "dc_i_mstep=%d dc_q_mstep=%d bw40=%u bw_switches=%lu "
            "lane_changes=%lu fold_drops=%lu "
            "virtual_q8=%ld writes=%lu holds=%lu verified=%lu learned=%lu "
-           "settle_fine_us=%u settle_bb_us=%u settle_rf_us=%u\n",
+           "settle_fine_us=%u settle_bb_us=%u settle_rf_us=%u obs_windows=%lu obs_us_avg=%lu obs_us_max=%lu "
+           "sfw_us_last=%lu sfw_us_max=%lu\n",
            s_v3_p50, s_v3_p90, s_v3_p95, s_v3_origin_pm, s_v3_clip_pm,
            s_v3_coherence,
            (unsigned)s_direct_gain_v3.state, s_current_gain,
@@ -2305,7 +2311,16 @@ static void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            (unsigned long)s_direct_gain_v3.learned,
            s_direct_gain_v3.settle_us[DG3_FINE],
            s_direct_gain_v3.settle_us[DG3_BB],
-           s_direct_gain_v3.settle_us[DG3_RF]);
+           s_direct_gain_v3.settle_us[DG3_RF],
+           (unsigned long)s_obs_windows,
+           (unsigned long)(s_obs_windows ? s_obs_us_sum / s_obs_windows : 0u),
+           (unsigned long)s_obs_us_max,
+#ifdef C5VRX4_EXPERIMENT
+           (unsigned long)s_sfw_last_us, (unsigned long)s_sfw_max_us);
+#else
+           0ul, 0ul);
+#endif
+    s_obs_us_sum = 0; s_obs_us_max = 0; s_obs_windows = 0;
 #endif
 }
 
@@ -6864,7 +6879,7 @@ typedef struct {
     int8_t filter_code, filter_skirt;
     dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
 } dco_table_blob_t;
-#define DCO_TABLE_VERSION 3u
+#define DCO_TABLE_VERSION 4u /* v4: junk codes below the measurable floor dropped */
 static RTC_FAST_ATTR dco_table_blob_t s_dco_tab;
 static RTC_FAST_ATTR int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
@@ -7137,7 +7152,7 @@ static void dco_post_gain(uint8_t g)
     if (s_dco_ab_off || !c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
         s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE ||
         s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) return;
-    if (g < s_dco_tab.lo || g > s_dco_tab.hi || !s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||
+    if (g < s_dco_tab.lo || g > s_dco_tab.hi || g < s_dco_floor || !s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||
         s_dco_tab.freq != rf_get_frequency_mhz()) return;
     const int64_t t0 = esp_timer_get_time();
     if (phy_rx_lab_dco_hold_quiet(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]) == ESP_OK)
@@ -7753,7 +7768,6 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
 #define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 static sync_flywheel_t s_sfw;
 static volatile bool s_sfw_running;
-static volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
 static volatile uint32_t s_sfw_budget = 600u, s_sfw_ns_per_eval = 150u;
 
 static void sync_flywheel_task(void *arg)
