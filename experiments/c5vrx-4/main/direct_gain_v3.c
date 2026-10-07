@@ -33,6 +33,13 @@ static bool s_lut_ready;
 #define DG3_REVERSALS_ARM   2u
 #define DG3_DAMP_US        200000u
 #define DG3_DAMPED_WINDOWS  8u   /* ~1.6 ms at the 200 us cadence */
+/* A moderate excursion (inside the clip/rail/starved limits) must persist
+ * this long before a write. Two 200 us windows made V5 write 30-100 times a
+ * second on a steady carrier (board and PR #177, 2026-10-07): ordinary FM
+ * envelope ripple crosses a band edge that often, and every write is a PHY
+ * transient (workmode G50 ~2 us, DC hold released) seen as rolling/static.
+ * 20 ms is a third of a field; severe excursions still act on one window. */
+#define DG3_MODERATE_US     20000u
 /* Range lanes. A lane switch is an instant GPIO remap, but the newest
  * completed RX descriptor (~102 us) can still hold pre-switch samples, so
  * two descriptor periods are skipped before measuring. */
@@ -869,10 +876,12 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (high) {
         v3->weak_windows = 0;
         v3->last_direction = 2;
+        if (!v3->high_windows) v3->excursion_since_us = o->observed_us;
         if (v3->high_windows < 255u) ++v3->high_windows;
     } else if (weak) {
         v3->high_windows = 0;
         v3->last_direction = 1;
+        if (!v3->weak_windows) v3->excursion_since_us = o->observed_us;
         if (v3->weak_windows < 255u) ++v3->weak_windows;
     } else {
         v3->high_windows = v3->weak_windows = 0;
@@ -894,6 +903,8 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_WEAK_WINDOWS : 2u;
     if ((high && v3->high_windows < need_high) ||
         (weak && v3->weak_windows < need_weak)) return v3->current_gain;
+    if (!severe && o->observed_us - v3->excursion_since_us < DG3_MODERATE_US)
+        return v3->current_gain;
     /* Lanes are the last gain stage in and the first one out, but only in
      * whole 6 dB steps: when dropping one lane would undershoot the band,
      * the analog gain trims down instead (continuous total gain). */
@@ -914,6 +925,8 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (target == v3->current_gain) return target;
     if (v3->state == DG3_VERIFY) ++v3->corrections;
     v3->high_windows = v3->weak_windows = 0;
+    if (severe) ++v3->writes_severe;
+    else ++v3->writes_moderate;
     return start_write(v3, o, &prior, target);
 }
 

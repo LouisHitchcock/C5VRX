@@ -87,14 +87,28 @@ int main(void)
     }
     assert(v3.writes == 0u && v3.state == DG3_HOLD);
 
-    /* A moderate excursion (P50 10, band 13..32) must hold for two windows
-     * before a write: single multipath dips no longer move the gain. */
+    /* A moderate excursion (P50 10, band 13..32) must persist for 20 ms
+     * before a write: envelope ripple across a band edge no longer moves
+     * the gain 30-100 times a second. */
     dg3_observation_t weak = obs(10, 17, 200, 0, 90, 199000u);
     uint8_t next = direct_gain_v3_tick(&v3, &weak);
     assert(next == 56u && v3.writes == 0u);
-    weak.observed_us += 200u;
+    for (unsigned k = 0; k < 98u; ++k) {          /* 19.6 ms of 200 us windows */
+        weak.observed_us += 200u;
+        next = direct_gain_v3_tick(&v3, &weak);
+        assert(next == 56u && v3.writes == 0u);
+    }
+    /* Ripple: one in-band window restarts the streak. */
+    dg3_observation_t inband = obs(20, 30, 0, 0, 90, weak.observed_us + 200u);
+    assert(direct_gain_v3_tick(&v3, &inband) == 56u);
+    weak.observed_us = inband.observed_us;
+    for (unsigned k = 0; k < 99u; ++k) {
+        weak.observed_us += 200u;
+        assert(direct_gain_v3_tick(&v3, &weak) == 56u && v3.writes == 0u);
+    }
+    weak.observed_us += 400u;                      /* streak now >= 20 ms */
     next = direct_gain_v3_tick(&v3, &weak);
-    assert(next != 56u && v3.writes == 1u);
+    assert(next != 56u && v3.writes == 1u && v3.writes_moderate == 1u);
     /* Learning needs a stable pre-write pair; run the move once more from a
      * stable weak history to exercise it. */
     direct_gain_v3_reset(&v3, &table, 56u, 62u);
@@ -106,14 +120,22 @@ int main(void)
     weak = obs(10, 17, 200, 0, 90, 199800u);
     v3.last_tracking = obs(10, 17, 200, 0, 90, 199500u);     /* stable weak prior */
     assert(direct_gain_v3_tick(&v3, &weak) == 56u);          /* first window holds */
-    weak.observed_us = 200000u;
-    next = direct_gain_v3_tick(&v3, &weak);
+    /* The moderate dip persists 20 ms (200 us windows) before the write. */
+    next = 56u;
+    while (next == 56u && weak.observed_us < 230000u) {
+        weak.observed_us += 200u;
+        v3.last_tracking = weak;
+        v3.last_tracking.observed_us -= 300u;               /* stable weak prior */
+        next = direct_gain_v3_tick(&v3, &weak);
+    }
+    const uint64_t moved_us = weak.observed_us;
+    assert(moved_us >= 219800u && moved_us <= 220200u);
     assert(next != 56u && v3.writes == 1u &&
            v3.tuple[next].rf_stage == v3.tuple[56].rf_stage &&
            v3.tuple[next].bb_code == v3.tuple[56].bb_code);
-    direct_gain_v3_sync_applied(&v3, next, 200000u);
+    direct_gain_v3_sync_applied(&v3, next, moved_us);
     /* One stable window after the physical settle guard verifies. */
-    dg3_observation_t settled = obs(17, 28, 30, 0, 91, 200600u);
+    dg3_observation_t settled = obs(17, 28, 30, 0, 91, moved_us + 600u);
     assert(direct_gain_v3_tick(&v3, &settled) == next);
     assert(v3.state == DG3_HOLD && v3.verified == 1u && v3.learned == 1u);
     /* ...and a steady carrier in band stays write-free. */

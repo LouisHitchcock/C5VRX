@@ -53,6 +53,9 @@ typedef struct {
     int8_t last_write_dir;
     uint8_t reversals;
     uint64_t dir_write_us, damp_until_us;
+    /* Start of the current out-of-band streak; writes by severity. */
+    uint64_t excursion_since_us;
+    uint32_t writes_moderate, writes_severe;
     uint32_t damp_events;
     /* Range lanes: finer IQ bit sets above the table's maximum analog gain.
      * Lane k scales the Q4 amplitude by exactly 2^k (power 4^k). Lanes are
