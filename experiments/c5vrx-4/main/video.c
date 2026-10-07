@@ -4160,7 +4160,9 @@ static void lab_observe_range(const char *stage)
 /* Controllers paused for the A/B (native keeps its own hardware AGC). */
 static bool range_lab_pause(const char *tag, analog_agc_mode_t *saved)
 {
-    if (s_gain_sweep.active || s_menu_active || s_pre_q4_probe_active || s_rssi_probe_active) {
+    /* RX-only labs: the no-carrier idle raster may keep TX. */
+    if (s_gain_sweep.active || (s_menu_active && !IDLE_RASTER_ACTIVE()) ||
+        s_pre_q4_probe_active || s_rssi_probe_active) {
         printf("%s refused=other_lab_or_menu\n", tag);
         return false;
     }
@@ -4188,6 +4190,48 @@ static void lab_run_sigrssi(void)
     s_agc_mode = saved;
     s_rssi_probe_active = false;
     printf("SIGRSSI done status=%d\n", (int)result);
+}
+
+/* sigRSSI ladder (key 'd'): is phy_get_sigrssi() referred to the antenna
+ * (gain-independent) and does it still see a strong carrier where the IQ
+ * envelope collapses? One verified sigRSSI A/B per forced gain, G83 down to
+ * G25, with the IQ envelope of the same gain beside it. Firmware gain only. */
+static void lab_run_sigrssi_ladder(void)
+{
+    static const uint8_t gains[] = {83, 76, 70, 62, 54, 47, 40, 34, 30, 25};
+    if (rf_native_agc_active()) { printf("SIGLADDER refused=native_owner\n"); return; }
+    analog_agc_mode_t saved;
+    if (!range_lab_pause("SIGLADDER", &saved)) return;
+    const uint8_t saved_gain = s_current_gain;
+    esp_err_t result = ESP_OK;
+    for (unsigned k = 0; k < sizeof(gains) && result == ESP_OK; ++k) {
+        lab_apply_vendor_gain(gains[k]);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        uint8_t sample[256];
+        control_metrics_t m = {0};
+        bool have = false;
+        for (unsigned t = 0; t < 20u && !have; ++t) {
+            vTaskDelay(1);
+            have = rx_probe_copy_completed(sample);
+        }
+        if (have) m = analyze_control_window(sample, sizeof(sample), 0);
+        int wide_dbm = -127;
+        bool wide = rf_try_get_wideband_rssi_dbm(&wide_dbm);
+        phy_rx_lab_rssi_stats_t st = {0};
+        result = phy_rx_lab_run_sigrssi_probe(lab_observe_range, &st);
+        if (result != ESP_OK) break;
+        printf("SIGLADDER freq=%u G=%u P50=%d Q=%d clip_pm=%d origin_pm=%d sig_p10=%d sig_p50=%d "
+               "sig_p90=%d sig_mean=%d.%d phy_rssi=%d phy_rssi_valid=%u\n",
+               rf_get_frequency_mhz(), gains[k], m.p_median, m.q_phase, m.clip_permille,
+               m.origin_permille, st.p10_dbm, st.p50_dbm, st.p90_dbm, st.mean_dbm_x10 / 10,
+               abs(st.mean_dbm_x10 % 10), wide_dbm, wide);
+    }
+    if (result == ESP_FAIL) { printf("SIGLADDER rollback_failed rebooting\n"); esp_restart(); }
+    lab_apply_vendor_gain(saved_gain);
+    ++s_profile_generation;
+    s_agc_mode = saved;
+    s_rssi_probe_active = false;
+    printf("SIGLADDER done status=%d restored_gain=%u\n", (int)result, saved_gain);
 }
 
 static void lab_run_phy_track(void)
@@ -8788,6 +8832,8 @@ static void console_diag_task(void *arg)
                     lab_run_11p_probe();
                 } else if (c == '\'') {
                     lab_run_sigrssi();
+                } else if (c == 'd') {
+                    lab_run_sigrssi_ladder();
                 } else if (c == '"') {
                     lab_run_phy_track();
                 } else if (c == '/') {
