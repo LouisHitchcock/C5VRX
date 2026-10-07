@@ -4218,7 +4218,7 @@ static void lab_run_sigrssi_ladder(void)
         int wide_dbm = -127;
         bool wide = rf_try_get_wideband_rssi_dbm(&wide_dbm);
         phy_rx_lab_rssi_stats_t st = {0};
-        result = phy_rx_lab_run_sigrssi_probe(lab_observe_range, &st);
+        result = phy_rx_lab_run_sigrssi_probe_forced(lab_observe_range, &st);
         if (result != ESP_OK) break;
         printf("SIGLADDER freq=%u G=%u P50=%d Q=%d clip_pm=%d origin_pm=%d sig_p10=%d sig_p50=%d "
                "sig_p90=%d sig_mean=%d.%d phy_rssi=%d phy_rssi_valid=%u\n",

@@ -46,6 +46,11 @@ typedef struct {
  * is held (native hold/pacing). ESP_FAIL: restore unverified, reboot. */
 esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
                                        phy_rx_lab_rssi_stats_t *stats);
+/* Same A/B under firmware forced gain, where the BB-AGC gate is held by the
+ * gain owner (not by a native hold): the gate word is saved and restored with
+ * the other ten. */
+esp_err_t phy_rx_lab_run_sigrssi_probe_forced(void (*observe)(const char *stage),
+                                              phy_rx_lab_rssi_stats_t *stats);
 /* Temperature tracking A/B: phy_param_track_tot(1,0) = TX-power tracking,
  * phy_i2c_correct and phy_cal_param_track (temperature-triggered RX DC/IQ and
  * gain-table recalibration, then phy_chip_set_chan on the stored frequency,

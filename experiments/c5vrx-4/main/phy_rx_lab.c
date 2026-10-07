@@ -454,16 +454,31 @@ static const uint16_t s_sigrssi_words[] = {
 #define SIGRSSI_WORDS (sizeof(s_sigrssi_words) / sizeof(s_sigrssi_words[0]))
 #define SIGRSSI_SAMPLES 1000u
 #endif
+static esp_err_t sigrssi_probe(void (*observe)(const char *stage),
+                               phy_rx_lab_rssi_stats_t *stats, bool gate_held_ok);
+
 esp_err_t phy_rx_lab_run_sigrssi_probe(void (*observe)(const char *stage),
                                        phy_rx_lab_rssi_stats_t *stats)
 {
+    return sigrssi_probe(observe, stats, false);
+}
+
+esp_err_t phy_rx_lab_run_sigrssi_probe_forced(void (*observe)(const char *stage),
+                                              phy_rx_lab_rssi_stats_t *stats)
+{
+    return sigrssi_probe(observe, stats, true);
+}
+
+static esp_err_t sigrssi_probe(void (*observe)(const char *stage),
+                               phy_rx_lab_rssi_stats_t *stats, bool gate_held_ok)
+{
 #ifndef C5VRX_PHY_RX_LAB_PINNED
-    (void)observe; (void)stats;
+    (void)observe; (void)stats; (void)gate_held_ok;
     printf("SIGRSSI refused=unverified_PHY_binary\n");
     return ESP_ERR_NOT_SUPPORTED;
 #else
     if (!observe || !stats) return ESP_ERR_INVALID_STATE;
-    if (REG(0x600A7030) & PHYBIT(29)) {
+    if (!gate_held_ok && (REG(0x600A7030) & PHYBIT(29))) {
         printf("SIGRSSI refused=bb_agc_gate_held\n");
         return ESP_ERR_INVALID_STATE;
     }

@@ -85,7 +85,7 @@ static void sig_observe(const char *stage)
 {
     assert(phy_rx_lab_busy()); ++sig_stages;
     bool on = !strcmp(stage,"SIGRSSI_ON");
-    assert(on == (sig_enables==1 && sig_stages==2));
+    assert(on == (sig_stages%3==2));
 }
 static void track_observe(const char *stage)
 {
@@ -475,6 +475,11 @@ int main(void)
     /* Refused while the BB-AGC gate is held (native hold / pacing). */
     REG(0x600A7030)|=PHYBIT(29);
     assert(phy_rx_lab_run_sigrssi_probe(sig_observe,&st)==ESP_ERR_INVALID_STATE && sig_enables==1);
+    /* Forced-gain variant: runs with the gate held and restores it too. */
+    uint32_t gate_word=REG(0x600A7030);
+    sig_stages=0;
+    assert(phy_rx_lab_run_sigrssi_probe_forced(sig_observe,&st)==ESP_OK && sig_enables==2 && sig_stages==3);
+    assert(REG(0x600A7030)==gate_word && !phy_rx_lab_busy());
     REG(0x600A7030)&=~PHYBIT(29);
     assert(phy_rx_lab_run_sigrssi_probe(NULL,&st)==ESP_ERR_INVALID_STATE);
     /* Temperature tracking lab: one call between two observations. */
