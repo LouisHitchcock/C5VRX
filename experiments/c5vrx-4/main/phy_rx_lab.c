@@ -680,6 +680,14 @@ static int dco_clamp(int value, int base)
  * 0..3 (review 2026-10-07: blocks 4..10 sat on stale test values while the
  * DC hold was active). */
 #define PBUS_BLOCKS 11u
+/* Only the gain/DC words the hold owns are re-asserted: BB (block 0), fine
+ * (1), DC (2, 3) and the 5 GHz RF code (8, phy_pbus_set_rxgain()). Board
+ * 2026-10-07: copying all eleven blocks' read-back into their test registers
+ * coincided with dead/railing IQ (origin 1000 / clip 750 per mille) and V5
+ * thrashing G20<->G83 - a read field is not proven to be the field the test
+ * register drives for blocks 4..7, 9, 10 (the review warned against an
+ * undirected copy). */
+static inline bool pbus_owned(unsigned b) { return b <= 3u || b == 8u; }
 
 extern void phy_force_rx_gain(bool enable, uint8_t gain_idx);
 /* phy_pbus_workmode() == phy_pbus_force_mode(0) in this binary: it clears
@@ -769,7 +777,7 @@ esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(cons
     if (!s_dco_held) s_dco_valid = false;
     phy_rx_lab_begin("DCO_AB");
     uint16_t live[PBUS_BLOCKS][2];
-    for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
         for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
     esp_err_t result = ESP_ERR_INVALID_RESPONSE;
     int before[2] = {0, 0};
@@ -782,7 +790,7 @@ esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(cons
         /* Debug mode stops the work-mode table replay; re-assert every live
          * word first so RF/BB gain and the other DC pair stay as they were. */
         phy_pbus_debugmode();
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         int base[2] = {live[2][1], live[3][1]}, cur[2] = {base[0], base[1]};
         int best[2] = {base[0], base[1]}, best_dc[2] = {before[0], before[1]};
@@ -841,12 +849,12 @@ esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(cons
     }
     /* Exact rollback: every saved word, then hand PBUS back to work mode. */
     if (debug) {
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         pbus_workmode_keep_gain();
     }
     bool restored = true;
-    for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
         for (unsigned k = 0; k < 2; ++k) {
             uint16_t now = phy_pbus_rd(b, k + 1);
             if (now != live[b][k]) {
@@ -886,10 +894,10 @@ esp_err_t phy_rx_lab_dco_set(bool on)
     if (on && !s_dco_held) {
         gain_trace(0u);
         uint16_t live[PBUS_BLOCKS][2];
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
             for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
         phy_pbus_debugmode();
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b)
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
             for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
         dco_apply(s_dco_codes[0], s_dco_codes[1]);
         s_dco_held = true;

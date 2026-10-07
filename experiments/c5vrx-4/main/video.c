@@ -6858,6 +6858,9 @@ static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
 /* Time-spread capture for the carrier test (24 windows, ~6 KB). */
 static uint8_t s_dco_env_buf[24u * RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
 static unsigned s_dco_env_ratio;
+static uint32_t s_dco_broken_iq, s_dco_hold_aborts;
+static unsigned s_dco_hold_bad_ticks;
+static uint8_t s_dco_hold_banned[ARC_VENDOR_GAIN_MAX + 1u];
 static bool dco_capture_noise_like(void)
 {
     const size_t w = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
@@ -6867,7 +6870,18 @@ static bool dco_capture_noise_like(void)
         if (rx_probe_copy_completed(s_dco_env_buf + got * w)) ++got;
     }
     if (got < 16u) return false;
-    s_dco_env_ratio = predemod_envelope_ratio_x100(s_dco_env_buf, got * w);
+    /* Quiet means receiver noise, not a broken capture: dead IQ (most
+     * samples in the origin cells) or railing IQ also has a flat envelope
+     * statistic (board 2026-10-07: DC searches started with the VTX on while
+     * the IQ was dead/railing). */
+    unsigned origin = 0, rail = 0, n = got * w;
+    for (unsigned k = 0; k < n; ++k) {
+        int i = predemod_i(s_dco_env_buf[k]), q = predemod_q(s_dco_env_buf[k]);
+        origin += (i == 0 || i == -1) && (q == 0 || q == -1);
+        rail += i == -8 || i == 7 || q == -8 || q == 7;
+    }
+    s_dco_env_ratio = predemod_envelope_ratio_x100(s_dco_env_buf, n);
+    if (origin * 2u > n || rail * 5u > n) { ++s_dco_broken_iq; return false; }
     return s_dco_env_ratio <= DCO_NOISE_RATIO_X100;
 }
 
@@ -6985,7 +6999,23 @@ static void predemod_dco_service(void)
         }
     }
     const uint8_t g = s_current_gain;
-    if (g >= lo && g <= hi && s_dco_tab.e[g].valid && !phy_rx_lab_dco_held() &&
+    /* Hold guard: the held DC codes must never coincide with dead or railing
+     * IQ. Three ticks of it with the hold active release the hold and keep
+     * this gain unheld for the rest of the boot. */
+    if (phy_rx_lab_dco_held()) {
+        bool broken = s_v3_origin_pm >= 900 || s_v3_clip_pm >= 500;
+        s_dco_hold_bad_ticks = broken ? s_dco_hold_bad_ticks + 1u : 0u;
+        if (s_dco_hold_bad_ticks >= 3u && g <= ARC_VENDOR_GAIN_MAX) {
+            (void)phy_rx_lab_dco_release();
+            s_dco_hold_banned[g] = 1u;
+            s_dco_hold_bad_ticks = 0;
+            ++s_dco_hold_aborts;
+            printf("DCO_HOLD abort gain=%u origin_pm=%d clip_pm=%d (hold disabled for this gain)\n",
+                   g, s_v3_origin_pm, s_v3_clip_pm);
+            return;
+        }
+    }
+    if (g >= lo && g <= hi && s_dco_tab.e[g].valid && !s_dco_hold_banned[g] && !phy_rx_lab_dco_held() &&
         s_direct_gain_v3.state != DG3_SETTLE) {
         phy_rx_lab_dco_load(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]);
         if (phy_rx_lab_dco_set(true) == ESP_OK) ++s_dco_holds;
@@ -7475,13 +7505,15 @@ static void predemod_correction_print(void)
      * the request, not a correction (external audit, PR #174). */
     printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
            "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
-           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u quiet_s=%lld rx_recal_freq=%u rx_recal_runs=%lu "
+           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u hw_dco_broken_iq=%lu hw_dco_hold_aborts=%lu "
+           "quiet_s=%lld rx_recal_freq=%u rx_recal_runs=%lu "
            "temp_c=%.1f drift_avg_mcells=%d/%d drift_nudges=%lu "
            "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
            "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
            c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
            (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, (unsigned long)s_dco_carrier_refusals,
-           s_dco_env_ratio, s_quiet_since_us ? (esp_timer_get_time() - s_quiet_since_us) / 1000000 : 0LL,
+           s_dco_env_ratio, (unsigned long)s_dco_broken_iq, (unsigned long)s_dco_hold_aborts,
+           s_quiet_since_us ? (esp_timer_get_time() - s_quiet_since_us) / 1000000 : 0LL,
            s_rx_recal_freq, (unsigned long)s_rx_recal_runs, (double)s_temp_c, s_drift_avg[0], s_drift_avg[1],
            (unsigned long)s_drift_nudges, s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
