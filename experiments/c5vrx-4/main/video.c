@@ -6887,19 +6887,6 @@ static void predemod_dco_service(void)
         dco_table_select(freq, lo, hi);
     }
     const int64_t now = esp_timer_get_time();
-    /* The vendor's full RX DC/IQ calibration at the tuned frequency runs at
-     * once on every boot and channel change - exactly when the vendor runs
-     * its own (at 5855 MHz / 5520 MHz), whatever is being received. Board
-     * 2026-10-07: gating it on quiet deadlocked, because the uncorrected DC
-     * (2+ fine cells) itself made noise look like a carrier (q 55-64). */
-    if (rx_recal_supported() && s_rx_recal_freq != freq) {
-        rx_recal_now("RX_RECAL_AUTO");
-        if (s_rx_recal_freq == freq) {      /* ran: the DC context changed */
-            (void)phy_rx_lab_dco_release();
-            dco_table_select(freq, lo, hi);
-        }
-        return;
-    }
     /* Automatic calibration only in CONFIRMED quiet (operator 2026-10-07:
      * everything automatic, nothing odd between antenna swaps): the carrier
      * test below runs at most once a second, and calibration starts only
@@ -6911,9 +6898,10 @@ static void predemod_dco_service(void)
     } else if (now - s_last_idle_sync_us > DCO_NO_SYNC_US && now - s_quiet_eval_us < 1000000LL) {
         no_carrier = s_quiet_last;      /* rate-limited carrier test result */
     } else if (now - s_last_idle_sync_us > DCO_NO_SYNC_US) {
-        /* Independent of V5's state: board 2026-10-07, with the DC still
-         * uncorrected V5 hunted G82<->G83 on noise and never sat at the
-         * maximum in HOLD, so a gate on that never opened. */
+        /* Independent of V5's state and of the DC: with the DC uncorrected V5
+         * hunted G82<->G83 on noise, and the two-capture DC agreement then
+         * failed on the gain change (board 2026-10-07). The envelope test
+         * removes the capture's own DC and is the carrier test. */
         s_quiet_eval_us = now;
         /* No sync is not proof of no carrier: a weak FM carrier below sync
          * detection would bias the DC estimate (review 2026-10-07). Real
@@ -6926,7 +6914,8 @@ static void predemod_dco_service(void)
                 int di = a.dc_i - b.dc_i, dq = a.dc_q - b.dc_q;
                 int mag = (abs(a.dc_i) + abs(a.dc_q) + abs(b.dc_i) + abs(b.dc_q)) / 2;
                 int spread = abs(di) + abs(dq);
-                no_carrier = (spread <= 200 || spread * 4 <= mag) && dco_capture_noise_like();
+                (void)spread; (void)mag;
+                no_carrier = dco_capture_noise_like();
                 if (!no_carrier) ++s_dco_carrier_refusals;
             }
         }
@@ -6935,6 +6924,21 @@ static void predemod_dco_service(void)
     if (!no_carrier) s_quiet_since_us = 0;
     else if (!s_quiet_since_us) s_quiet_since_us = now;
     no_carrier = no_carrier && now - s_quiet_since_us >= CAL_QUIET_US;
+    /* The vendor's full RX DC/IQ calibration at the tuned frequency, once per
+     * channel per boot, ONLY in confirmed quiet. Its IQ loopback measures on
+     * the receive frequency - with the VTX on there it measured the carrier:
+     * board 2026-10-07, a boot with the VTX on left scale selector 2 and IQ
+     * coefficients 0xe2fe instead of 0 / 0xfd7c, and a fine grain on the
+     * strong picture. (The vendor's own boot calibration is safe because it
+     * measures at 5520/5855 MHz, away from the VTX.) */
+    if (no_carrier && rx_recal_supported() && s_rx_recal_freq != freq) {
+        rx_recal_now("RX_RECAL_AUTO");
+        if (s_rx_recal_freq == freq) {      /* ran: the DC context changed */
+            (void)phy_rx_lab_dco_release();
+            dco_table_select(freq, lo, hi);
+        }
+        return;
+    }
     if (no_carrier) {
         /* Next stale gain, maximum first. */
         int target = -1;
