@@ -6804,10 +6804,11 @@ typedef struct {
     uint16_t freq;
     uint8_t version, lo, hi;
     uint8_t band5, lane_mode, iq_scale_sel;
+    uint8_t recal;               /* measured on top of our exact-frequency recal */
     int8_t filter_code, filter_skirt;
     dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
 } dco_table_blob_t;
-#define DCO_TABLE_VERSION 2u
+#define DCO_TABLE_VERSION 3u
 static dco_table_blob_t s_dco_tab;
 static int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
@@ -6827,12 +6828,18 @@ static void dco_context(dco_table_blob_t *t, uint16_t freq, uint8_t lo, uint8_t 
     t->iq_scale_sel = phy_param[650];   /* phy_rxiq_scale_set() selector */
     t->filter_code = (int8_t)phy_rx_lab_filter_code();
     t->filter_skirt = (int8_t)phy_rx_lab_filter_skirt();
+    /* The hold forces only the fine DC DACs (PBUS bank 2); the vendor
+     * calibration also sets the coarse ones (bank 1). Codes measured after
+     * our recalibration do not fit the stock calibration (board 2026-10-07:
+     * NVS codes loaded before a recal left q at 55-64). */
+    t->recal = s_rx_recal_freq == freq;
 }
 static bool dco_same_context(const dco_table_blob_t *a, const dco_table_blob_t *b)
 {
     return a->version == b->version && a->freq == b->freq && a->lo == b->lo && a->hi == b->hi &&
            a->band5 == b->band5 && a->lane_mode == b->lane_mode && a->iq_scale_sel == b->iq_scale_sel &&
-           a->filter_code == b->filter_code && a->filter_skirt == b->filter_skirt;
+           a->filter_code == b->filter_code && a->filter_skirt == b->filter_skirt &&
+           a->recal == b->recal;
 }
 static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
 {
@@ -6879,6 +6886,19 @@ static void predemod_dco_service(void)
         dco_table_select(freq, lo, hi);
     }
     const int64_t now = esp_timer_get_time();
+    /* The vendor's full RX DC/IQ calibration at the tuned frequency runs at
+     * once on every boot and channel change - exactly when the vendor runs
+     * its own (at 5855 MHz / 5520 MHz), whatever is being received. Board
+     * 2026-10-07: gating it on quiet deadlocked, because the uncorrected DC
+     * (2+ fine cells) itself made noise look like a carrier (q 55-64). */
+    if (rx_recal_supported() && s_rx_recal_freq != freq) {
+        rx_recal_now("RX_RECAL_AUTO");
+        if (s_rx_recal_freq == freq) {      /* ran: the DC context changed */
+            (void)phy_rx_lab_dco_release();
+            dco_table_select(freq, lo, hi);
+        }
+        return;
+    }
     /* Automatic calibration only in CONFIRMED quiet (operator 2026-10-07:
      * everything automatic, nothing odd between antenna swaps): the carrier
      * test below runs at most once a second, and calibration starts only
@@ -6914,14 +6934,6 @@ static void predemod_dco_service(void)
     if (!no_carrier) s_quiet_since_us = 0;
     else if (!s_quiet_since_us) s_quiet_since_us = now;
     no_carrier = no_carrier && now - s_quiet_since_us >= CAL_QUIET_US;
-    /* First, once per channel per boot: the vendor's full RX DC/IQ
-     * calibration at the tuned frequency (rx_recal.c). The per-gain table
-     * holds absolute DC-DAC codes and stays valid. */
-    if (no_carrier && rx_recal_supported() && s_rx_recal_freq != freq) {
-        s_rx_recal_freq = freq;
-        rx_recal_now("RX_RECAL_AUTO");
-        return;
-    }
     if (no_carrier) {
         /* Next stale gain, maximum first. */
         int target = -1;
