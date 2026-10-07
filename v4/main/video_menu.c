@@ -114,7 +114,7 @@ static const char *const s_menu_nav[6] = {
  * decoder LUT, which is refused (random read-back while the engine runs);
  * they keep their stored value and stay console-only. */
 static const uint8_t s_setup_options[] = {
-    C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
+    C5VRX4_OPT_ELRS_BACKPACK, C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
     C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW, C5VRX4_OPT_CVBS,
     C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
     C5VRX4_OPT_LINE_FIX, C5VRX4_OPT_EDGE_GEAR,

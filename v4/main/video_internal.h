@@ -339,6 +339,11 @@ void idle_raster_status_print(void);
 void analog_agc_task(void *arg);
 void cvbs_capture_task(void *arg);
 void console_diag_task(void *arg);
+/* ELRS VRx backpack (video_backpack.c): UART1 RX on GPIO2, channel requests
+ * posted for the analog_agc control task to apply. */
+void video_backpack_start(void);
+bool video_backpack_take(size_t *index);
+void video_backpack_print(void);
 extern volatile hw_transport_counters_t s_hw_counters;
 extern lag_event_t s_lag_events[LAG_EVENT_LOG_SIZE];
 extern volatile uint32_t s_lag_event_head;

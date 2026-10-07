@@ -14,6 +14,14 @@ of merging. The V4 alpha workflow and flasher build this project independently.
 
 ## Receiver contract
 
+### ELRS VRx backpack
+
+An ESP32-S3 running the [ExpressLRS Backpack](https://github.com/ExpressLRS/Backpack)
+HDZero VRx target sends the radio's VTX channel over one wire to GPIO2 (MTMS
+pad); the C5 retunes like a button channel change. ELRS L band is refused
+(different frequency plan). Menu SETUP `ELRS BACKPACK`, serial `U`. See
+[docs/ELRS_BACKPACK.md](docs/ELRS_BACKPACK.md).
+
 ### Current code layout
 
 The standalone project is organized as follows:

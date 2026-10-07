@@ -6,6 +6,7 @@ static bool copy_recent_endpoints(uint8_t *dst, size_t n);
 static analog_video_t scan_video_confidence(void);
 static void channel_auto_search(void);
 static void handle_button_short_click(void);
+static void apply_backpack_channel(size_t index);
 static void open_recovery_menu(void);
 static void handle_button_long_click(void);
 #define SCAN_VIDEO_PAIRS 4092u
@@ -232,6 +233,25 @@ static void channel_auto_search(void)
            s_signal_strength);
 }
 
+static void apply_backpack_channel(size_t index)
+{
+    if (index == rf_get_channel_index()) return;
+    esp_err_t err = rf_set_channel(index);
+    if (err != ESP_OK) {
+        printf("[BACKPACK] Channel %u refused: %s\n", (unsigned)index, esp_err_to_name(err));
+        return;
+    }
+    s_cfo_khz = 0;
+    s_agc_state = AGC_STATE_SEARCH;
+    ++s_profile_generation;
+    video_standard_detector_reset();
+    settings_save();
+    const fpv_channel_t *ch = rf_get_current_channel();
+    if (IDLE_RASTER_ACTIVE()) menu_render_menu();
+    printf("[BACKPACK] Channel switched to %s (%u MHz) in %s\n",
+           ch->name, ch->freq_mhz, rf_get_band_name(rf_get_current_band()));
+}
+
 static void handle_button_short_click(void)
 {
     if (s_menu_active && !IDLE_RASTER_ACTIVE()) {
@@ -427,6 +447,11 @@ void analog_agc_task(void *arg)
                 handle_button_short_click();
             else if (s_menu_active && !IDLE_RASTER_ACTIVE()) handle_button_long_click();
         }
+
+        /* ELRS backpack: deferred while the standalone menu owns the screen. */
+        size_t backpack_channel;
+        if ((!s_menu_active || IDLE_RASTER_ACTIVE()) && video_backpack_take(&backpack_channel))
+            apply_backpack_channel(backpack_channel);
 
         if (boot_grace_ticks > 0) {
             boot_grace_ticks--;

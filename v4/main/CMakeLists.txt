@@ -24,6 +24,7 @@ idf_component_register(
         "video_menu.c"
         "video_settings.c"
         "video_transport.c"
+        "video_backpack.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -35,6 +36,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_bitscrambler
         esp_driver_usb_serial_jtag
+        esp_driver_uart
         vfs
         esp_rom
         esp_mm

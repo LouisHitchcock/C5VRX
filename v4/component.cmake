@@ -18,5 +18,6 @@ target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/cvbs_monitor.c")
 target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/sync_flywheel.c")
 
 target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/lanes.c")
+target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/elrs_backpack.c")
 
 target_sources(${COMPONENT_LIB} PRIVATE "${C5VRX4_FIRMWARE_DIR}/cvbs_level.c" "${C5VRX4_FIRMWARE_DIR}/cvbs_level_hw.c")

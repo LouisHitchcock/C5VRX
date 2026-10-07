@@ -45,6 +45,7 @@ void console_diag_task(void *arg)
                 }
                 if (c5vrx4_console(c)) continue;
                 if (c == '`') rf_reboot_to_download(); /* flashing, never returns */
+                if (c == 'U') { video_backpack_print(); continue; }
                 if (c == 0x14) { dco_ab_toggle(); continue; }
                 if (phy_rx_lab_profile_active() && c < 128 &&
                     !strchr("[]HpLl}q\r\n", c)) phy_rx_lab_stock();

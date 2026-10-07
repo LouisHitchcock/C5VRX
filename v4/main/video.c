@@ -150,6 +150,7 @@ esp_err_t video_start(void)
     /* Start interactive console for on-demand diagnostics (zero periodic CPU/bus traffic) */
     /* 6 KiB: the P8ENV printf takes ~90 arguments (3 KiB overflowed). */
     xTaskCreate(console_diag_task, "console_diag", 6144, NULL, 1, NULL);
+    video_backpack_start();
 
     /* Start dedicated Analog Video AGC engine (slow physical actuator). */
     /* The slow task now also calls the stride-3 diagnostic, whose workspace
