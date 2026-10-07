@@ -1813,7 +1813,7 @@ static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
     static uint64_t weak_since, strong_since, exit_us;
     const direct_gain_v3_t *v3 = &s_direct_gain_v3;
     const bool fixed = bw_fixed_calibrated();
-    if (s_rf_bw_mode != RF_BW_MODE_AUTO ||
+    if (s_rf_bw_mode != RF_BW_MODE_AUTO || !c5vrx4_edge_gear_enabled() ||
         (fixed && c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED)) {
         if (fixed && rf_fixed_bw_edge_active()) bw_set_edge(false);
         weak_since = strong_since = 0;
@@ -5747,7 +5747,7 @@ static const uint8_t s_setup_options[] = {
     C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
     C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW, C5VRX4_OPT_CVBS,
     C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
-    C5VRX4_OPT_LINE_FIX,
+    C5VRX4_OPT_LINE_FIX, C5VRX4_OPT_EDGE_GEAR,
 };
 #define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + sizeof(s_setup_options))
 
