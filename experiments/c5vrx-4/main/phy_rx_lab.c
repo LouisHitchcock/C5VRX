@@ -896,7 +896,48 @@ esp_err_t phy_rx_lab_dco_search(bool (*measure)(int dc[2]), void (*observe)(cons
  * and "off" returns to work mode; the caller then re-writes the gain. */
 #ifdef C5VRX_PHY_RX_LAB_PINNED
 static bool s_dco_held;
+
+/* Enter the hold: the owned PBUS words re-asserted in debug mode, plus the
+ * loaded pair. Caller owns the transaction. */
+static void dco_hold_locked(void)
+{
+    gain_trace(0u);
+    uint16_t live[PBUS_BLOCKS][2];
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
+        for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
+    phy_pbus_debugmode();
+    for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
+        for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+    dco_apply(s_dco_codes[0], s_dco_codes[1]);
+    s_dco_held = true;
+    gain_trace(1u);
+}
 #endif
+
+/* The same hold for an explicit pair, silent: rf.c's post-gain hook calls
+ * it right after a gain write, while PBUS is in work mode on the new row. */
+esp_err_t phy_rx_lab_dco_hold_quiet(int code_i, int code_q)
+{
+#ifndef C5VRX_PHY_RX_LAB_PINNED
+    (void)code_i; (void)code_q;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (code_i < 0 || code_i > 511 || code_q < 0 || code_q > 511 || rf_native_agc_active())
+        return ESP_ERR_INVALID_ARG;
+    transaction_take();
+    if (s_dco_held) {          /* not expected right after a gain write */
+        transaction_give();
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_dco_codes[0] = code_i;
+    s_dco_codes[1] = code_q;
+    s_dco_valid = true;
+    dco_hold_locked();
+    transaction_give();
+    return ESP_OK;
+#endif
+}
+
 esp_err_t phy_rx_lab_dco_set(bool on)
 {
 #ifndef C5VRX_PHY_RX_LAB_PINNED
@@ -907,16 +948,7 @@ esp_err_t phy_rx_lab_dco_set(bool on)
     if (rf_native_agc_active()) return ESP_ERR_INVALID_STATE;
     transaction_take();
     if (on && !s_dco_held) {
-        gain_trace(0u);
-        uint16_t live[PBUS_BLOCKS][2];
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
-            for (unsigned k = 0; k < 2; ++k) live[b][k] = phy_pbus_rd(b, k + 1);
-        phy_pbus_debugmode();
-        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
-            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
-        dco_apply(s_dco_codes[0], s_dco_codes[1]);
-        s_dco_held = true;
-        gain_trace(1u);
+        dco_hold_locked();
     } else if (!on && s_dco_held) {
         pbus_workmode_keep_gain();
         s_dco_held = false;
