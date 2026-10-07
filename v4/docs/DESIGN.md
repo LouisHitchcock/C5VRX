@@ -1,7 +1,7 @@
 # Integrated C5VRX-4 architecture
 
 Extends C5VRX by Twotoz and contributors. The authoritative integration contract
-is README.md; INTEGRATION_SOURCES.json records exact donor revisions.
+is README.md; docs/INTEGRATION_SOURCES.json records exact donor revisions.
 
 The sample path is MODEM_DIAG Q4/I4 → positive-edge PARLIO RX → raw cyclic ring
 → one TX BitScrambler → original 6-bit resistor DAC. IQ and physical DAC rates

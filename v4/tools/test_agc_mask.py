@@ -16,7 +16,7 @@ import random
 import generate_phase8 as gen
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("bs_model", HERE / "tools/bs_model.py")
+spec = importlib.util.spec_from_file_location("bs_model", HERE / "bs_model.py")
 bs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bs)
 

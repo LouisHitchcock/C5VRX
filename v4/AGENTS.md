@@ -1,13 +1,13 @@
 # Isolated C5VRX-4 integration ledger
 
 Inherit the repository attribution, hardware and evidence instructions. This
-directory extends C5VRX by Twotoz and contributors; README.md and INTEGRATION.md
+directory extends C5VRX by Twotoz and contributors; README.md and docs/INTEGRATION.md
 define its scoped defaults, donor lineage and pending physical acceptance.
 
 Only this directory may change for this integration. Do not edit shared main,
 root configuration, workflows or website to make the isolated build work.
 Its main/ snapshot is intentional isolation; C5VRX-3 remains untouched. Keep
-subsequent donor updates explicit in INTEGRATION_SOURCES.json.
+subsequent donor updates explicit in docs/INTEGRATION_SOURCES.json.
 
 Record source format, acquired rate, CPU/hardware ownership, raw ring, three
 bundles, unique 13.333M output and physical DAC40M separately. No CPU per-sample
@@ -48,24 +48,24 @@ all (first board, 2026-10-06: 19.4 MHz at every RX0 code), Leon decided the
 same day that the second stage may narrow the normal profile by at most 7 %
 of the delivered width for >= 0.3 dB lower noise bandwidth, and that the
 range-edge gear uses the second stage (>= 14 MHz, >= 0.3 dB). Leon asked on 2026-10-04 for the native AGC
-acquisition mask (NATIVE_AGC_MASK.md): native mode only, witness bit measured
+acquisition mask (docs/NATIVE_AGC_MASK.md): native mode only, witness bit measured
 on the board (never guessed), STATIC decode, six BitScrambler slots, three
 bundles per span on every path; keep the `|` opt-out, the per-boot latch, the
 pacing exclusion and the DC-recentring refusal (bank 3 is the hold plane). The
-no-carrier idle raster (HDZERO.md, 2026-10-04) only replaces demodulated
+no-carrier idle raster (docs/HDZERO.md, 2026-10-04) only replaces demodulated
 receiver noise: keep it out of any state with a carrier or sync, exit at the
 first one, keep V5 at its no-carrier maximum while it owns TX, and keep the `_`
 opt-out. It is not sync regeneration of a received picture. Leon asked on 2026-10-06 for line repair in
-the sync flywheel (SYNC_FLYWHEEL.md): `LINE REPAIR`, default on with the
+the sync flywheel (docs/SYNC_FLYWHEEL.md): `LINE REPAIR`, default on with the
 flywheel since the same day (operator), menu opt-out, needs the
 flywheel, copies only to bytes TX has not read and only from bytes RX has not
 overwritten, never in the vertical interval, at most 6 lines in a row; keep
 its dropout criterion (score >= 8, >= 7 worse than a clean source), which the
 host model needs so the uniformly weak range edge is not made worse. The V5
-radius boost (RADIUS_BOOST.md) only moves the healthy P50 band on a strong,
+radius boost (docs/RADIUS_BOOST.md) only moves the healthy P50 band on a strong,
 tight, rail-free ring; keep the immediate exit on rail codes/P95/jumps, the
 doubling hold-off, the normal-band constants and `y` as an opt-in. The
-level servo runs under native AGC too (HDZERO.md): keep its phase-domain
+level servo runs under native AGC too (docs/HDZERO.md): keep its phase-domain
 validity gates, and keep CPU snapshots on the Q3 mask decode while masking. Live LUT
 writers must stay rare (HDZero): keep the level servo's settled hold (24 mV /
 250 ms), DC recentring's 10 s gap and the idle raster's exit hysteresis and

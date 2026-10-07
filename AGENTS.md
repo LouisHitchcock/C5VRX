@@ -131,7 +131,7 @@ verdict predates the C5VRX-2 autonomous-writer and MODEM_DIAG hardware findings.
 | MODEM_DIAG via GPIO CPU snapshots | RF-dependent diagnostic bits compared with stopped Q10/I10 captures | Useful bounded source-mapping proof; asynchronous CPU polling is not sustainable source-synchronous capture | `docs/continuous-iq-findings.md`, `tools/phy_phase_tap_probe.md` |
 | MODEM_DIAG via PARLIO RX | Eight simultaneous routed bits; normal packed Q4/I4 at 40 MS/s | Bounded bit-exact capture and live NTSC demonstrated. The approximately 80-MS/s modem bus and 40-MS/s acquired stream are different rates | `docs/continuous-iq-findings.md`, `main/rf.c`, `main/video.c` |
 | Coarse / fine / ultrafine sign-preserving IQ slices | Per component ADC bits `{9,8,7,6}`, `{9,7,6,5}`, `{9,6,5,4}` | Still four captured bits per component, with finer steps and smaller unfurled windows. Folding is not ordinary amplitude clipping; finer lanes are not added RF gain | `main/rf.c`, `main/direct_gain.c`, `docs/range-max.md` |
-| Wider I5/Q5 or I6/Q6 and alternate phase taps | More simultaneous IQ information, source-side preprocessing or an already decoded phase bus | C5 PARLIO RX has eight data lines. A 16-bit setting cannot supply 10/12 lanes. Bit correlation does not prove simultaneous wider capture or a ready-made phase bus | `tools/phy_phase_tap_probe.md`, `experiments/c5vrx-4/RESEARCH.md` |
+| Wider I5/Q5 or I6/Q6 and alternate phase taps | More simultaneous IQ information, source-side preprocessing or an already decoded phase bus | C5 PARLIO RX has eight data lines. A 16-bit setting cannot supply 10/12 lanes. Bit correlation does not prove simultaneous wider capture or a ready-made phase bus | `tools/phy_phase_tap_probe.md`, `v4/docs/RESEARCH.md` |
 | Synthetic IQ, replay, frozen captures and loopback | Independent DSP/DAC/reference/oracle stimuli | Essential algorithm and transport diagnostics; they do not demonstrate live RF continuity or RF sensitivity | Legacy host tools, `docs/pr-derived-findings.md`, `tools/validate_build.py` |
 
 ### C5VRX-1: CPU, finite-capture and guarded-ring architectures
@@ -273,7 +273,7 @@ they do not constitute CPU replacement of the live hardware demodulator. Read
 
 ### C5VRX-4: three-bundle span75 and wider-pipeline research
 
-`experiments/c5vrx-4` is an isolated build, not the root application. The main
+`v4` is the active V4 build, separate from the frozen root V3 application. The
 snapshot contains the first Phase6 span75 implementation; later open branches
 must be read separately. Keep their gain and lane policies attached to their
 own revision.
@@ -290,12 +290,12 @@ own revision.
 - **Phase8 STATIC/HISTORY span75:** branch `feat/c5vrx4-phase8-history`, revision
   `e2dc83d4b2ab3ae62c50cf6fbf2b184941acd71b`, keeps three bundles / `[D,D,D]`,
   uses a 512x32 shared LUT and compares static phase decode with bounded
-  near-origin history. Read its `experiments/c5vrx-4/PHASE8_THREE_BUNDLE.md`.
+  near-origin history. Read its `v4/docs/PHASE8_THREE_BUNDLE.md`.
 - **Protected lane handover:** branch `feat/c5vrx4-lane-handover`, revision
   `fae4dbc514c6141d7a05a58e0cce6b2f066d733b`, adds overlap-window checks,
   one-step finer upgrades, immediate coarse recovery and persistent phase
   history. Six routing writes remain sequential; no lane tags prove seamless
-  per-sample switching. Read its `experiments/c5vrx-4/LANE_HANDOVER.md`.
+  per-sample switching. Read its `v4/docs/LANE_HANDOVER.md`.
 - **Unwrap75 (PR #145):** branch `feat/c5vrx4-unwrap75`, revision
   `7564c117e569a558c4dc24bfc7d40e1922724d88`, uses P/M1/M2/C sign trajectories
   plus full Phase8 endpoints, LUT16 parity/counter banking and three bundles.
@@ -306,12 +306,12 @@ own revision.
   2026-10-06: fewer sparkles at low C/N, host model); corrected outer
   trajectories saturate. The exhaustive 524,386,048-trajectory oracle is host
   evidence, not a measured range/FIFO/colour result. Read its
-  `experiments/c5vrx-4/UNWRAP75.md`; it is not a file on this main snapshot.
+  `v4/docs/UNWRAP75.md`; it is not a file on this main snapshot.
 - **Fixed ultrafine comparison:** branch `feat/c5vrx4-ultrafine-test`, revision
   `ab10140f438a7eb0bfa8d5dc051e15608836a5a9`, keeps Unwrap75 and fixes lane2
   `{9,6,5,4}` at every distance, deliberately without automatic coarse fallback.
   ADC-window folding and phase-endpoint winding are different failure modes.
-  Read its `experiments/c5vrx-4/ULTRAFINE_TEST.md`.
+  Read its `v4/docs/ULTRAFINE_TEST.md`.
 - **Sync flywheel (C5VRX-4, 2026-10-05):** extends the C5VRX-3
   `feat/sync-flywheel` idea (PLL line tracker, repair in the raw ring before
   the TX read).
@@ -331,7 +331,7 @@ own revision.
     its acquisition probes coarsely; default on again with line
     repair (operator, 2026-10-06), `w` or the menu opts out.
 - **Span75 post-detection aliasing (host model, 2026-10-05):**
-  `experiments/c5vrx-4/tools/postdetect_alias_model.py` runs the generated
+  `v4/tools/postdetect_alias_model.py` runs the generated
   Unwrap75 LUTs on simulated Q4/I4 bytes.
   - The 75 ns endpoint delta is resampled at 13.33 MS/s with no anti-alias
     filter. FM noise from 6.67–20 MHz folds into the video band: about
@@ -343,12 +343,12 @@ own revision.
   - A narrower pre-detection width also reduces the loss. The C5VRX-4 V5
     gear therefore uses a measured edge profile (`BW_EDGE`: ≥ 14 MHz, ≥ 0.5 dB
     lower noise bandwidth) at the range edge.
-  - Host evidence only; see `experiments/c5vrx-4/docs/range-max.md`.
+  - Host evidence only; see `v4/docs/range-max.md`.
 - **Wider IQ / complex filter / FM tracking / external DSP:** investigated C5-only
   tap/filter/lane options and a twelve-lane I6/Q6 external-processing route with
   DC/IQ correction, complex channel filtering, adjacent/tracking FM, matched
   de-emphasis, anti-alias filtering and calibrated DAC reconstruction. This is
-  a candidate architecture in `experiments/c5vrx-4/RESEARCH.md`, not implemented
+  a candidate architecture in `v4/docs/RESEARCH.md`, not implemented
   FPGA/CPLD hardware, a selected component, or a demonstrated sensitivity gain.
 
 For branch-only documents, use `git show <recorded revision>:<path>` or the
@@ -438,7 +438,7 @@ requirements by themselves**.
   docs/range-max.md for why it is not in main.)
   **Exception, C5VRX-4 only (operator decision 2026-10-05):** the goggles must
   never see a moment without valid PAL/NTSC sync, so the C5VRX-4 sync flywheel
-  (`experiments/c5vrx-4/SYNC_FLYWHEEL.md`) rebuilds missing or noisy H-sync
+  (`v4/docs/SYNC_FLYWHEEL.md`) rebuilds missing or noisy H-sync
   pulses (with part of the front porch) and vertical-interval slots in the raw
   ring ahead of the TX read, on a PLL line grid locked to the real VTX sync.
   It must keep these properties:
@@ -446,7 +446,7 @@ requirements by themselves**.
     line repair (operator request 2026-10-06, menu `LINE REPAIR`, default
     on, menu opts out): a dropout line is replaced by the line with the same subcarrier
     phase 2 (NTSC) / 4 (PAL) lines earlier, never at the range edge's
-    uniform noise (host evidence in `SYNC_FLYWHEEL.md`);
+    uniform noise (host evidence in `v4/docs/SYNC_FLYWHEEL.md`);
   - clean pulses are left untouched;
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control

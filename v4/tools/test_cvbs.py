@@ -9,7 +9,10 @@ import subprocess
 import tempfile
 import generate_phase8 as gen
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
+FIRMWARE = HERE / "firmware"
+INCLUDE = FIRMWARE / "include"
+PROGRAMS = FIRMWARE / "programs"
 FIELDS = [('pairs',ct.c_uint),('ambiguous_pm',ct.c_uint),('origin_pm',ct.c_uint),
           ('clip_pm',ct.c_uint),('mean_i_mcell',ct.c_int),('mean_q_mcell',ct.c_int),
           ('pulses',ct.c_uint),('repeated',ct.c_uint),('period_raw',ct.c_uint)]
@@ -49,7 +52,7 @@ def main():
                 if (i//256)&1: assert fixed[i]==other[i]
             body=gen.build(history).split('accumulate:',1)[1]
             assert body==gen.build(history,False,transfer).split('accumulate:',1)[1]
-            path=HERE/f'c5vrx4_phase8_{mode}{suffix}.bsasm'
+            path=PROGRAMS/f'c5vrx4_phase8_{mode}{suffix}.bsasm'
             assert path.read_text()==gen.build(history,False,transfer)
     # One Phase8 bin over 75 ns is 52.083 kHz: 1/128 V at 0.150 V/MHz.
     for transfer,blank,per_bin in (('std150',.31,1/128),('cvbs150',.3,1/128)):
@@ -95,11 +98,11 @@ def main():
         except ValueError as e: assert 'slew bound' in str(e)
         else: raise AssertionError('servo-stalling ladder gap accepted')
         assert max(b-a for a,b in zip(sorted(volts),sorted(volts)[1:]))<=gen.LEVEL_SLEW_VOLTS
-        assert f"C5V4_LEVEL_STEP_UV {round(gen.LEVEL_SLEW_VOLTS*1e6)}u" in (HERE/'cvbs_level.h').read_text()
+        assert f"C5V4_LEVEL_STEP_UV {round(gen.LEVEL_SLEW_VOLTS*1e6)}u" in (INCLUDE/'cvbs_level.h').read_text()
         gen.CALIBRATION=original
         lib=temp/'monitor.so'
         subprocess.run(['gcc','-std=c11','-O2','-Wall','-Wextra','-Werror','-shared','-fPIC',
-                        str(HERE/'cvbs_monitor.c'),'-o',str(lib)],check=True)
+                        str(FIRMWARE/'cvbs_monitor.c'),'-I',str(INCLUDE),'-o',str(lib)],check=True)
         analyze=ct.CDLL(str(lib)).c5v4_cvbs_analyze
         analyze.argtypes=[ct.c_void_p,ct.c_size_t,ct.c_bool,ct.c_uint,ct.POINTER(Stats)]
         def inspect(raw,history=False,transfer=0):

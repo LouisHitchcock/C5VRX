@@ -1,5 +1,4 @@
-idf_component_register(
-    SRCS
+set(C5VRX4_FIRMWARE_SOURCES
         "main.c"
         "bs_relative_worker_probe.c"
         "bs_relative_middle_probe.c"
@@ -18,6 +17,10 @@ idf_component_register(
         "direct_gain_v3.c"
         "analog_video_detect.c"
         "menu_raster.c"
+)
+
+idf_component_register(
+    SRCS ${C5VRX4_FIRMWARE_SOURCES}
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
@@ -52,9 +55,10 @@ target_bitscrambler_add_src("fm4.bsasm")
 target_bitscrambler_add_src("bs_addctia_probe.bsasm")
 target_bitscrambler_add_src("fm_phase8_hr_live.bsasm")
 target_bitscrambler_add_src("fm_hc.bsasm")
-if(C5VRX4_EXPERIMENT)
-    include("${PROJECT_DIR}/component.cmake")
-endif()
+
+# V4 is a standalone project. The root C5VRX-3 component is not a dependency
+# and must never be pulled into this target through shared-main conditionals.
+include("${PROJECT_DIR}/component.cmake")
 
 # Recovered MMIO overrides are valid only for this exact C5 archive. Unknown
 # library versions retain observation but refuse all lab writes/I2C helpers.

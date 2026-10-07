@@ -20,7 +20,11 @@
 
 ## Current firmware
 
-The `main` build defaults to the live adjacent Phase8 demodulator and
+The active development target is C5VRX-4 in [`v4/`](v4/). The root `main/`
+tree is the frozen C5VRX-3 reference baseline used for comparison and
+historical regression work.
+
+The frozen C5VRX-3 `main` build defaults to the live adjacent Phase8 demodulator and
 **Direct Gain V5** (Direct Gain V4 below plus a 200 us observer and anti-hunt damping), the default and recommended gain controller. Phase8 maps
 the full signed adjacent phase delta (-128 through +127) to the 6-bit DAC. A
 transition across the +/-180 degree phase boundary can still alias.
@@ -273,7 +277,9 @@ idf.py build
 ```
 
 #### Option C: Build with PlatformIO
-The optional `xiao_c5` environment builds C5VRX-3 from `main/`; C5VRX-4 continues to use its isolated ESP-IDF build. This build environment was contributed by [KonradIT](https://github.com/KonradIT) in [PR #44](https://github.com/Twotoz/C5VRX/pull/44).
+The optional `xiao_c5` environment builds the frozen C5VRX-3 baseline from
+`main/`. Active C5VRX-4 development uses the standalone ESP-IDF build in
+`v4/`. This build environment was contributed by [KonradIT](https://github.com/KonradIT) in [PR #44](https://github.com/Twotoz/C5VRX/pull/44).
 
 `platformio.ini` describes the ESP-IDF project, so a plain checkout builds without installing a
 toolchain first. The official `platformio/espressif32` platform supports neither the ESP32-C5 nor

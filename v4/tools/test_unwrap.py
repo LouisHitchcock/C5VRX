@@ -7,6 +7,8 @@ import re
 import struct
 import generate_phase8 as gen
 
+HERE = Path(__file__).resolve().parents[1]
+
 
 def expand(spec):
     if '..' not in spec:
@@ -53,7 +55,7 @@ def tests():
     for history in (False, True):
         phases, words = gen.decoder(history), gen.words_for(history)
         assert len(words) == 1024 and max(words) <= 65535
-        compiled = Path(__file__).resolve().parent / 'build/esp-idf/main' / (
+        compiled = HERE / 'build/esp-idf/main' / (
             'c5vrx4_phase8_history.bsbin' if history else
             'c5vrx4_phase8_static.bsbin')
         if compiled.exists():

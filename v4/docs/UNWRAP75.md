@@ -124,8 +124,8 @@ Run the exhaustive C oracle with a host compiler:
 ```sh
 gcc -O3 -Wall -Wextra -Werror unwrap_oracle.c -o /tmp/unwrap-oracle
 /tmp/unwrap-oracle
-python test_unwrap.py
-python generate_phase8.py
+python tools/test_unwrap.py
+python tools/generate_phase8.py
 idf.py -DIDF_TARGET=esp32c5 build
 ```
 

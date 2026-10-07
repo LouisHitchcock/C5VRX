@@ -214,7 +214,7 @@ quality, stability, attenuation and PAL/NTSC acceptance remain pending. Keep
 
 ## C5VRX-4 integration
 
-The isolated `experiments/c5vrx-4` target shares this entire PHY lab, RF restore
+The isolated `v4` target shares this entire PHY lab, RF restore
 policy and controller generation handling. Direct Gain V5 is now its default;
 `N` / RF-menu gain-owner changes persist only in namespace `c5vrx4` and reboot.
 The optional native pacing gate is inert under Direct Gain, including suspend,

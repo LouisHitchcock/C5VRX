@@ -86,7 +86,7 @@ gain intentionally remains manual; select active Direct Gain for this test.
 
 ## Verification and acceptance
 
-`python3 verify.py` checks 21 C regressions (gain/range, epochs, protected lanes,
+`python3 tools/verify.py` checks 21 C regressions (gain/range, epochs, protected lanes,
 severe overload, menu, AFC and pinned/unpinned PHY lab lifecycle), 48 synthetic
 PAL/NTSC AFC cases, all 524,386,048 bounded unwrap trajectories, routing/ring
 state, source-driven Phase8/Golden/HC models and fixed/legacy CVBS transfer/noise

@@ -5,7 +5,9 @@ import math
 import json
 from functools import lru_cache
 
-HERE = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+PROGRAMS = ROOT / "firmware" / "programs"
+INCLUDE = ROOT / "firmware" / "include"
 SPAN_S = 75e-9
 FREQUENCY_BOUND_HZ = 6e6
 RADII = (0.5, 0.75, 1.0, 1.5, 2.0, 2.5)
@@ -114,7 +116,7 @@ def transfer_delta(index):
 # Electrical transfer is independent of the phase/winding range.
 # Values describe the existing network under one 75-ohm AV load, not an
 # unloaded DAC or a double-terminated scope. Override with measured values.
-CALIBRATION = HERE / "dac_calibration.json"
+CALIBRATION = ROOT / "dac_calibration.json"
 LEVEL_SLEW_VOLTS = 0.032  # C5V4_LEVEL_STEP_UV in cvbs_level.h
 # Mode 0 (including existing default settings) now uses standard amplitude.
 # 0 STD150: 0.310 V blanking, 0.150 V/MHz -> 0.010 V nominal sync,
@@ -377,11 +379,11 @@ def generate():
     for history in (False, True):
         for transfer, suffix in (("std150", ""), ("legacy", "_legacy"), ("cvbs150", "_cvbs150")):
             name = ('history' if history else 'static') + suffix
-            path = HERE / f'c5vrx4_phase8_{name}.bsasm'
+            path = PROGRAMS / f'c5vrx4_phase8_{name}.bsasm'
             path.write_text(build(history, False, transfer), encoding='utf-8')
             print(f'Generated {path.name}: three bundles, trajectory unwrap, fixed CVBS scale')
     for transfer, suffix in (("std150", ""), ("legacy", "_legacy"), ("cvbs150", "_cvbs150")):
-        path = HERE / f'c5vrx4_phase8_static_mask{suffix}.bsasm'
+        path = PROGRAMS / f'c5vrx4_phase8_static_mask{suffix}.bsasm'
         path.write_text(build_mask(transfer), encoding='utf-8')
         print(f'Generated {path.name}: native AGC acquisition hold, six slots')
     voltage = voltages()
@@ -399,7 +401,9 @@ def generate():
     header += array('c5v4_dac_cvbs150_codes', dac_codes(False, "cvbs150"), 'uint8_t')
     header += array('c5v4_dac_uv', [round(v*1e6) for v in voltage], 'uint32_t')
     header += '#define C5V4_DAC_MEASURED ' + str(int(CALIBRATION.exists())) + '\n'
-    (HERE / 'cvbs_tables.h').write_text(header)
+    PROGRAMS.mkdir(parents=True, exist_ok=True)
+    INCLUDE.mkdir(parents=True, exist_ok=True)
+    (INCLUDE / 'cvbs_tables.h').write_text(header)
 
 
 if __name__ == '__main__':
