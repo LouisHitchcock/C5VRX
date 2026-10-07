@@ -311,6 +311,11 @@ static volatile bool s_menu_active;
 static idle_raster_t s_idle;
 static unsigned s_idle_failures;
 static TaskHandle_t s_sfw_task_handle;
+/* A calibration (vendor RX recal, DC-DAC search) perturbs the IQ for a
+ * moment; the idle raster must not read that as a transmitter (board
+ * 2026-10-07: "IDLE_RASTER exit reason=carrier q=31" right after a recal). */
+#define CAL_SETTLE_US 1500000LL
+static volatile int64_t s_cal_settle_until_us;
 /* The flywheel's fade window is detected by the flywheel itself on the raw
  * ring (sync_flywheel.c fade_scan): independent of the gain owner (native
  * AGC included), per line, no hold after recovery, no shared deadline
@@ -6113,9 +6118,18 @@ static void start_menu_tx(void)
     __asm__ __volatile__("fence rw, rw" ::: "memory");
     AHB_DMA.out_link_addr[s_tx_dma_ch].val = (uint32_t)menu_node(0);
     AHB_DMA.channel[s_tx_dma_ch].out.out_link.outlink_start_chn = 1;
-    int64_t deadline = esp_timer_get_time() + 1000;
+    /* Board 2026-10-07: a 1 ms busy-wait with ESP_ERROR_CHECK rebooted the
+     * receiver when the idle raster started while its task (priority 3,
+     * sharing time slices with the V5 observer, below the flywheel) lost one
+     * 1 ms slice. Wait up to 50 ms, yielding; if TX is still not ready, start
+     * anyway (PARLIO outputs the idle code until data arrives) - never abort. */
+    int64_t deadline = esp_timer_get_time() + 50000;
     while (!parlio_ll_tx_is_ready(&PARL_IO)) {
-        ESP_ERROR_CHECK(esp_timer_get_time() < deadline ? ESP_OK : ESP_ERR_TIMEOUT);
+        if (esp_timer_get_time() >= deadline) {
+            printf("MENU_TX not_ready_after_us=50000 action=start_anyway\n");
+            break;
+        }
+        taskYIELD();
     }
     parlio_ll_tx_start(&PARL_IO, true);
     parlio_ll_tx_enable_clock(&PARL_IO, true);
@@ -6930,6 +6944,7 @@ static void predemod_dco_service(void)
                 s_dco_dirty = true;
             }
             s_dco_found_us[target] = now;   /* also a failed search waits 120 s */
+            s_cal_settle_until_us = esp_timer_get_time() + CAL_SETTLE_US;
             phy_rx_lab_dco_invalidate();
             rf_set_rx_gain(true, restore);  /* work mode replays the row on a write */
             predemod_resume(saved);
@@ -6990,6 +7005,7 @@ static void rx_recal_now(const char *tag)
      * mode), independent of the vendor's own codes: it stays valid. */
     s_rx_recal_freq = mhz;
     predemod_resume(saved);
+    s_cal_settle_until_us = esp_timer_get_time() + CAL_SETTLE_US;
     printf("%s mhz=%u gain=%u took_us=%lld restore=%s dc_before_mcells=%d/%d dc_after_mcells=%d/%d "
            "valid=%u/%u runs=%lu hardware_acceptance=pending\n",
            tag, mhz, gain, took, esp_err_to_name(err), before[0], before[1], w.dc_i, w.dc_q, ok0, ok1,
@@ -7322,6 +7338,10 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
 #else
     const bool v5_max = false, settling = false, bw_waiting = false;
 #endif
+    /* During and right after a calibration the raster neither enters nor
+     * leaves on what the calibration itself did to the IQ. */
+    const bool cal_settle = esp_timer_get_time() < s_cal_settle_until_us || phy_rx_lab_busy();
+    if (cal_settle && s_idle.active) { q_phase = 0; fresh_sync = false; }
     idle_raster_obs_t o = {
         .enabled = c5vrx4_idle_raster_enabled() && MENU_RUNTIME_ENABLED,
         .owner_free = !s_menu_active && !s_rssi_probe_active && !s_gain_sweep.active &&
@@ -7329,7 +7349,7 @@ static void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_
                       !s_channel_scan_active && !bw_waiting && retry_ticks == 0u,
         /* No-carrier survival state: V5 table maximum, or native AGC. */
         .survival_gain = native || v5_max,
-        .settling = settling,
+        .settling = settling || cal_settle,
         .q_phase = q_phase,
         .fresh_sync = fresh_sync,
         .sync_age_ticks = sync_age_ticks,
