@@ -358,7 +358,7 @@ bool c5vrx4_radius_boost_enabled(void)
 
 bool c5vrx4_staged_gain_recovery(void)
 {
-    return true;   /* SPAN50 TEST: every v4 program is HC50 */
+    return true;   /* PR #183 test state (programs regenerate to span75) */
 }
 
 static int8_t s_sync_fw = -1;
