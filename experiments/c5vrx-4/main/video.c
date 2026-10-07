@@ -6825,8 +6825,8 @@ typedef struct {
     dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
 } dco_table_blob_t;
 #define DCO_TABLE_VERSION 3u
-static dco_table_blob_t s_dco_tab;
-static int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
+static RTC_FAST_ATTR dco_table_blob_t s_dco_tab;
+static RTC_FAST_ATTR int64_t s_dco_found_us[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
 static bool s_dco_dirty;
 static void lab_dco_quiet(const char *stage) { (void)stage; }
@@ -6871,7 +6871,10 @@ static void dco_table_select(uint16_t freq, uint8_t lo, uint8_t hi)
 }
 
 /* Time-spread capture for the carrier test (24 windows, ~6 KB). */
-static uint8_t s_dco_env_buf[24u * RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+/* CPU-only calibration state lives in LP RAM (RTC_FAST_ATTR): the menu needs
+ * 15 x 1536 B of DMA-capable SRAM, and these buffers had cut that to 17 KB
+ * (board 2026-10-07: "menu unavailable: ESP_ERR_NO_MEM"). */
+static RTC_FAST_ATTR uint8_t s_dco_env_buf[24u * RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
 static unsigned s_dco_env_ratio;
 static uint32_t s_dco_broken_iq, s_dco_hold_aborts;
 static unsigned s_dco_hold_bad_ticks;
@@ -7100,7 +7103,7 @@ static float s_temp_c = -100.0f;
 static int32_t s_drift_sum[2];
 static unsigned s_drift_n, s_drift_ticks, s_drift_over_s;
 static int s_drift_avg[2];
-static int s_drift_offset[ARC_VENDOR_GAIN_MAX + 1u][2];
+static RTC_FAST_ATTR int s_drift_offset[ARC_VENDOR_GAIN_MAX + 1u][2];
 static uint32_t s_drift_nudges;
 static int64_t s_drift_last_nudge_us, s_drift_last_log_us;
 static void predemod_dc_drift_service(void)
