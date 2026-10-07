@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 
 static inline int predemod_i(uint8_t b) { return (int8_t)(b & 0xf0u) >> 4; }
 static inline int predemod_q(uint8_t b) { return (int8_t)(uint8_t)(b << 4) >> 4; }
