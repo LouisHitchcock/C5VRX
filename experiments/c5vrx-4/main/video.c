@@ -7109,6 +7109,68 @@ static void predemod_dc_drift_service(void)
            codes[0], codes[1], s_drift_avg[0], s_drift_avg[1], (double)s_temp_c);
 }
 
+/* Flight recorder (2026-10-07): the receiver runs on 5 V from the goggles
+ * without USB, so once a minute it stores what it saw - uptime, chip
+ * temperature, gain, envelope P50/P95, coherence, idle raster, receiver DC
+ * and drift - in an NVS ring (c5vrx4/flightlog, last 16 minutes, one blob
+ * write per minute). Console '?' prints it after USB is reconnected. */
+#define FLOG_N 16u
+typedef struct {
+    uint32_t uptime_s;
+    int16_t temp_c10, dc_i, dc_q;
+    uint8_t gain, p50, p95, coherence, idle, boot;
+} flog_entry_t;
+typedef struct {
+    uint8_t version, next, boot;
+    flog_entry_t e[FLOG_N];
+} flog_blob_t;
+static flog_blob_t s_flog;
+static bool s_flog_loaded;
+static int64_t s_flog_last_us;
+static void flight_log_service(void)
+{
+    const int64_t now = esp_timer_get_time();
+    if (!s_flog_loaded) {
+        s_flog_loaded = true;
+        if (!c5vrx4_blob_load("flightlog", &s_flog, sizeof(s_flog)) || s_flog.version != 1u) {
+            memset(&s_flog, 0, sizeof(s_flog));
+            s_flog.version = 1u;
+        }
+        ++s_flog.boot;
+        s_flog_last_us = now;
+    }
+    if (now - s_flog_last_us < 60000000LL) return;
+    s_flog_last_us = now;
+    predemod_window_t w;
+    bool dc = predemod_collect(8, &w);
+    flog_entry_t *e = &s_flog.e[s_flog.next % FLOG_N];
+    *e = (flog_entry_t){
+        .uptime_s = (uint32_t)(now / 1000000),
+        .temp_c10 = (int16_t)(s_temp_c * 10.0f),
+        .dc_i = (int16_t)(dc ? w.dc_i : 0), .dc_q = (int16_t)(dc ? w.dc_q : 0),
+        .gain = s_current_gain, .p50 = (uint8_t)s_v3_p50, .p95 = (uint8_t)s_v3_p95,
+        .coherence = (uint8_t)s_v3_coherence, .idle = IDLE_RASTER_ACTIVE(), .boot = s_flog.boot,
+    };
+    s_flog.next = (uint8_t)((s_flog.next + 1u) % FLOG_N);
+    (void)c5vrx4_blob_store("flightlog", &s_flog, sizeof(s_flog));
+}
+static void flight_log_print(void)
+{
+    if (!s_flog_loaded && !c5vrx4_blob_load("flightlog", &s_flog, sizeof(s_flog))) {
+        printf("FLIGHTLOG empty\n");
+        return;
+    }
+    printf("FLIGHTLOG boot_now=%u (oldest first)\n", s_flog.boot);
+    for (unsigned k = 0; k < FLOG_N; ++k) {
+        const flog_entry_t *e = &s_flog.e[(s_flog.next + k) % FLOG_N];
+        if (!e->boot) continue;
+        printf("FLIGHTLOG boot=%u t_s=%lu temp_c=%.1f gain=%u p50=%u p95=%u coherence=%u idle=%u dc_mcells=%d/%d\n",
+               e->boot, (unsigned long)e->uptime_s, e->temp_c10 / 10.0, e->gain, e->p50, e->p95,
+               e->coherence, e->idle, e->dc_i, e->dc_q);
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
 /* Gain readback (external research 2026-10-07, eSpDR practice): compare the
  * gain the hardware is actually forced to (0x600A702C: index [31:24], force
  * bit 23 - phy_force_rx_gain's fields) with V5's own index, outside a
@@ -7373,6 +7435,7 @@ static void predemod_task(void *arg)
         predemod_dg3_map_service();
         predemod_gain_readback_service();
         predemod_dc_drift_service();
+        flight_log_service();
         static unsigned hb_ticks;
         if (++hb_ticks >= 20u) {
             hb_ticks = 0;
@@ -8666,6 +8729,8 @@ static void console_diag_task(void *arg)
                     lab_run_dfilt();
                 } else if (c == '~') {
                     lab_run_rx_recal();
+                } else if (c == '?') {
+                    flight_log_print();
                 } else if (c == ';') {
                     lab_run_bw20_wide();
                 } else if (c == '!') {
@@ -9038,6 +9103,7 @@ static void console_diag_task(void *arg)
                     printf("  '/':         Digital RX filter mode 0..15 + other ADC rate A/B: noise width, clicks, exact restore\n");
                     printf("  ';':         BW20 channel setup + analog filter wide (codes 0/8/16) vs BW40: width, noise BW, clicks\n");
                     printf("  '~':         Vendor RX DC/IQ calibration at the tuned frequency (ESPARGOS route, lab; DC before/after)\n");
+                    printf("  '?':         Flight recorder: last 16 minutes (temp, gain, P50/P95, coherence, idle, DC)\n");
                     printf("  '!':         Pre-demod status: lanes, glitch ppm, DC, DC-cal point, DCO words, filter caps\n");
                     printf("  '@':         Sampling-phase scan: RX clock slips + mid-transition glitch ppm, settles clean\n");
                     printf("  '#':         Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B (pinned PHY)\n");
