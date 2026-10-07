@@ -496,6 +496,31 @@ int main(void)
         assert(direct_gain_v3_tick(&v3, &starved) != 35u && v3.writes == 1u);
     }
 
+    /* Board 2026-10-07: at the top of an RF stage with nothing learned, a
+     * weak envelope must leave the stage (G24 is the last index of stage 2,
+     * G25 the first of stage 3); an overload drop at a stage start must
+     * reach the previous stage. */
+    {
+        direct_gain_v3_t s5;
+        memset(&s5, 0, sizeof(s5));
+        direct_gain_v3_reset(&s5, &table, 24u, 62u);
+        assert(s5.tuple[24].rf_stage == 2u && s5.tuple[25].rf_stage == 3u);
+        dg3_observation_t starved = obs(5, 7, 347, 0, 60, 7000000u);
+        uint8_t g = 24u;
+        for (unsigned k = 0; k < 4u && g == 24u; ++k) {
+            starved.observed_us += 200u;
+            g = direct_gain_v3_tick(&s5, &starved);
+        }
+        printf("stage top: G24 weak -> G%u\n", g);
+        assert(g > 24u);
+        memset(&s5, 0, sizeof(s5));
+        direct_gain_v3_reset(&s5, &table, 54u, 62u);           /* first of the top stage */
+        dg3_observation_t rail = obs(113, 113, 0, 800, 60, 8000000u);
+        g = direct_gain_v3_tick(&s5, &rail);
+        printf("stage start overload: G54 -> G%u\n", g);
+        assert(g < 54u && s5.tuple[g].rf_stage == 7u);
+    }
+
     puts("direct gain v3 core: OK");
     return 0;
 }

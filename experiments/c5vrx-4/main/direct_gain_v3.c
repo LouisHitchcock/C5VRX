@@ -357,16 +357,20 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
                 t->fine_code == boundary_fine) return (uint8_t)g;
         }
     }
-    /* A stage boundary is the last resort. Pick its weakest/strongest
-     * available tuple and verify before any further physical write. */
+    /* A stage boundary is the last resort: the adjacent stage's entry
+     * nearest in the vendor order - its first index going up, its last going
+     * down - verified before any further physical write. The old test asked
+     * for BB 1 / fine 5, true only in the former 2.4 GHz model: the exact
+     * 5 GHz table starts its stages at counters 12..15 (BB 7), so V5 could
+     * never leave the top of a stage (board 2026-10-07: stuck at G24, the
+     * last index of RF stage 2, with P50 5-7 and a fine grain). */
     int wanted_rf = (int)current->rf_stage + (up ? 1 : -1);
-    for (int distance = 0; distance < 6; ++distance) {
-        int boundary_fine = up ? 5 - distance : distance;
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
-            const arc_gain_tuple_t *t = &v3->tuple[g];
-            if ((int)t->rf_stage == wanted_rf && t->bb_code == 1u &&
-                t->fine_code == boundary_fine) return (uint8_t)g;
-        }
+    if (up) {
+        for (unsigned g = 20u; g <= v3->table.max_index; ++g)
+            if ((int)v3->tuple[g].rf_stage == wanted_rf) return (uint8_t)g;
+    } else {
+        for (int g = (int)v3->table.max_index; g >= 20; --g)
+            if ((int)v3->tuple[g].rf_stage == wanted_rf) return (uint8_t)g;
     }
     return best;
 }
@@ -377,22 +381,23 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
  * the next emergency drop takes the RF stage. */
 static uint8_t emergency_drop(const direct_gain_v3_t *v3)
 {
+    /* Targets are the weakest entry (first index in the vendor order) of the
+     * lower BB group in this stage, else of the previous RF stage. The old
+     * tests asked for fine 5 / BB 1, which the exact 5 GHz table does not
+     * have at every group and never has at a stage start (counters 12..15),
+     * so an overload drop fell through to single steps (2026-10-07). */
     const arc_gain_tuple_t *current = &v3->tuple[v3->current_gain];
     if (current->bb_code > 1u) {
         unsigned lower_bb = (current->bb_code - 1u) / 2u;
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
+        for (unsigned g = 20u; g < v3->current_gain; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (t->rf_stage == current->rf_stage &&
-                t->bb_code == lower_bb && t->fine_code == 5u)
+            if (t->rf_stage == current->rf_stage && t->bb_code == lower_bb)
                 return (uint8_t)g;
         }
     }
     if (current->rf_stage > 0u) {
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
-            const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (t->rf_stage + 1u == current->rf_stage &&
-                t->bb_code == 1u && t->fine_code == 5u) return (uint8_t)g;
-        }
+        for (unsigned g = 20u; g < v3->current_gain; ++g)
+            if (v3->tuple[g].rf_stage + 1u == current->rf_stage) return (uint8_t)g;
     }
     return adjacent_physical(v3, false);
 }
