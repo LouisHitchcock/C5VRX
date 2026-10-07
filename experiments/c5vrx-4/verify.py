@@ -69,6 +69,15 @@ def main():
     # Edge filter gear: opt-in (main never ran it), selectable in SETUP.
     assert '"edge_gear", false' in pipeline and "!c5vrx4_edge_gear_enabled() ||" in video
     assert "c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u" in video
+    # Per-gain DC pair re-held at once after every gain write and PHY restore,
+    # through the shared owned-word hold; banned gains skipped; never while a
+    # search or lab owns the PHY.
+    rf_c = (ROOT / "main/rf.c").read_text()
+    assert "if (force && s_post_gain_hook) s_post_gain_hook(gain_idx);" in rf_c
+    assert "if (!s_native_agc && s_post_gain_hook) s_post_gain_hook(s_current_gain_val);" in rf_c
+    assert "rf_set_post_gain_hook(dco_post_gain);" in video
+    assert "!s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||" in video
+    assert "dco_hold_locked();" in (ROOT / "main/phy_rx_lab.c").read_text()
 
     cases = [
         ("demod_quality", []), ("range_control", []), ("fusion_receiver", []),

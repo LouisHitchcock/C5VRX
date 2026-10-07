@@ -6919,6 +6919,7 @@ static unsigned s_dco_env_ratio;
 static uint32_t s_dco_broken_iq, s_dco_hold_aborts;
 static unsigned s_dco_hold_bad_ticks;
 static uint8_t s_dco_hold_banned[ARC_VENDOR_GAIN_MAX + 1u];
+static volatile bool s_dco_ab_off;   /* Ctrl-T RAM A/B switch (dco_ab_toggle) */
 static bool dco_capture_noise_like(void)
 {
     const size_t w = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
@@ -6976,7 +6977,7 @@ static bool dco_noise_measurable(void)
 
 static void predemod_dco_service(void)
 {
-    if (!c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
+    if (s_dco_ab_off || !c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
         s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE ||
         s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active ||
         phy_rx_lab_busy() || (s_menu_active && !IDLE_RASTER_ACTIVE())) return;
@@ -7118,6 +7119,50 @@ static void predemod_dco_service(void)
         phy_rx_lab_dco_load(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]);
         if (phy_rx_lab_dco_set(true) == ESP_OK) ++s_dco_holds;
     }
+}
+
+/* rf.c post-gain hook: re-hold the new gain's pair right after every gain
+ * write and PHY restore, instead of up to one 250 ms service tick later (and
+ * never during DG3_SETTLE). At the range edge V5 writes often, and the edge-BW
+ * gear's PHY restore drops the hold: board 2026-10-07, R8, VTX off, DC with
+ * the codes "held" from the tick only was a median of ~134 LSB, ~11 LSB with
+ * a hook. Same conditions as the service hold, banned gains included (the
+ * service's broken-IQ guard still releases and bans); never while a search
+ * or lab owns the PHY, so searches start from the vendor row. */
+static uint32_t s_dco_hook_calls, s_dco_hook_holds, s_dco_hook_us_max;
+static uint64_t s_dco_hook_us_total;
+static void dco_post_gain(uint8_t g)
+{
+    ++s_dco_hook_calls;
+    if (s_dco_ab_off || !c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
+        s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE ||
+        s_gain_sweep.active || s_rssi_probe_active || s_pre_q4_probe_active) return;
+    if (g < s_dco_tab.lo || g > s_dco_tab.hi || !s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||
+        s_dco_tab.freq != rf_get_frequency_mhz()) return;
+    const int64_t t0 = esp_timer_get_time();
+    if (phy_rx_lab_dco_hold_quiet(s_dco_tab.e[g].code[0], s_dco_tab.e[g].code[1]) == ESP_OK)
+        ++s_dco_hook_holds;
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+    s_dco_hook_us_total += us;
+    if (us > s_dco_hook_us_max) s_dco_hook_us_max = us;
+}
+
+static void dco_hook_print(const char *tag)
+{
+    printf("%s correction=%s gain_writes=%lu hook_holds=%lu hold_us_avg=%lu hold_us_max=%lu "
+           "service_holds=%lu gain=%u\n", tag, s_dco_ab_off ? "off" : "on",
+           (unsigned long)s_dco_hook_calls, (unsigned long)s_dco_hook_holds,
+           (unsigned long)(s_dco_hook_holds ? s_dco_hook_us_total / s_dco_hook_holds : 0u),
+           (unsigned long)s_dco_hook_us_max, (unsigned long)s_dco_holds, s_current_gain);
+}
+
+/* Ctrl-T (0x14): RAM A/B switch for the per-gain DC correction (no reboot). */
+static void dco_ab_toggle(void)
+{
+    s_dco_ab_off = !s_dco_ab_off;
+    if (s_dco_ab_off) (void)phy_rx_lab_dco_release();
+    rf_set_rx_gain(true, s_current_gain); /* vendor row, or re-held by the hook */
+    dco_hook_print("DCO_AB");
 }
 
 /* Lab '~': vendor RX DC/IQ calibration at the actual receive frequency
@@ -7562,6 +7607,7 @@ static void predemod_bw_autocal(void)
 static void predemod_task(void *arg)
 {
     (void)arg;
+    rf_set_post_gain_hook(dco_post_gain);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
         if (s_menu_bw_cal_request && !s_menu_active) {
@@ -7589,6 +7635,7 @@ static void predemod_task(void *arg)
             printf("HB predemod t_s=%lld dco_held=%u dco_valid=%u searches=%lu\n",
                    esp_timer_get_time() / 1000000, phy_rx_lab_dco_held(),
                    phy_rx_lab_dco_valid(), (unsigned long)s_dco_searches);
+            dco_hook_print("HB dco_hook");
         }
         predemod_sphase_autocheck();
         predemod_bw_autocal();
@@ -8771,6 +8818,7 @@ static void console_diag_task(void *arg)
                 }
                 if (c5vrx4_console(c)) continue;
                 if (c == '`') rf_reboot_to_download(); /* flashing, never returns */
+                if (c == 0x14) { dco_ab_toggle(); continue; }   /* Ctrl-T */
 #endif
                 if (s_gain_sweep.active &&
                     c != 'g' && c != 'l' && c != 'L' && c != '\r' && c != '\n') {
@@ -9270,6 +9318,7 @@ static void console_diag_task(void *arg)
                     printf("  'y':         Toggle the V5 strong-signal radius boost (opt-in; P50 30..46 on a strong steady ring), reboot\n");
                     printf("  'w':         Toggle the sync flywheel (default on: rebuilds missing/noisy H and V sync), reboot\n");
                     printf("  '`':         Reboot into USB download mode for flashing (tools/enter_download.py)\n");
+                    printf("  Ctrl-T:      Per-gain DC correction off/on (RAM A/B, no reboot)\n");
                     printf("  '['/']':     Next isolated 10s PHY lab profile / restore stock\n");
                     printf("  'p'/'r':     Machine-readable PHY/Q4 snapshot / reset lag counters\n");
                     printf("  't'/'q':     Vendor timer inventory / quiet unsolicited lock message\n");

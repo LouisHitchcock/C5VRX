@@ -144,6 +144,7 @@ static arc_gain_table_t s_arc_gain_table;
 static rf_phy_snapshot_t s_arc_receive_tuple;
 static uint32_t s_arc_generation;
 static uint8_t s_current_gain_val = 52u;
+static void (*volatile s_post_gain_hook)(uint8_t gain_idx);
 
 static void arc_capture_vendor_state(void);
 static void analog_phy_restore_lock(void);
@@ -701,6 +702,9 @@ static void analog_phy_restore_lock(void)
     rf_apply_fixed_bw();
     rf_apply_agc_patch();
 #endif
+    /* The restore wrote the gain directly: re-hold the per-gain DC pair at
+     * once (the V5 edge-BW gear restores at maximum gain). */
+    if (!s_native_agc && s_post_gain_hook) s_post_gain_hook(s_current_gain_val);
 }
 
 #ifdef C5VRX4_EXPERIMENT
@@ -917,13 +921,30 @@ bool rf_try_set_rx_gain(bool force, uint8_t gain_idx, uint32_t expected_generati
         return false;
     }
     if (!phy_rx_lab_try_actuator(expected_generation)) return false;
+    /* Re-writing the gain already in force while the DC pair is held changes
+     * nothing, but the release below would leave debug mode (the vendor work
+     * mode forces G50 for ~2 us) and the hold would be re-entered: a short IQ
+     * glitch on every such write. V5 re-writes the same gain 50-100 times a
+     * second (board 2026-10-07); in flight that showed as rolling. Skip it. */
+    if (force && gain_idx == s_current_gain_val && phy_rx_lab_dco_held()) {
+        phy_rx_lab_end_actuator();
+        return true;
+    }
     /* A held edge DC correction keeps PBUS in debug mode, where a gain
      * write would not replay its table row: release it first. */
     (void)phy_rx_lab_dco_release();
     phy_force_rx_gain(force, gain_idx);
     if (force) s_current_gain_val = gain_idx;
+    /* Re-hold the new gain's DC pair on the row just replayed, instead of
+     * waiting for the 250 ms DCO service tick (video.c). */
+    if (force && s_post_gain_hook) s_post_gain_hook(gain_idx);
     phy_rx_lab_end_actuator();
     return true;
+}
+
+void rf_set_post_gain_hook(void (*hook)(uint8_t gain_idx))
+{
+    s_post_gain_hook = hook;
 }
 
 uint32_t rf_get_rx_gain_reg(void)

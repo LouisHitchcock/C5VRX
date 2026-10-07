@@ -120,8 +120,7 @@ void c5vrx4_last_standard_store(uint8_t standard);
  * on a strong, tight, rail-free carrier the healthy P50 band moves from
  * 13..32 to 30..46 for finer phase quantization; the first rail code, P95
  * or level jump drops it. NVS radius_boost. */
-bool c5vrx4_radius_boost_enabled(void);
-/* Line repair inside the sync flywheel (default on, menu opts out, reboot;
+bool c5vrx4_radius_boost_enabled(void);/* Line repair inside the sync flywheel (default on, menu opts out, reboot;
  * SYNC_FLYWHEEL.md): a dropout line is replaced by the line with the same
  * subcarrier phase 2 (NTSC) / 4 (PAL) lines earlier. Needs the flywheel.
  * NVS line_fix. */
