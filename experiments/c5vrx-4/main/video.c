@@ -1851,7 +1851,18 @@ static void direct_gain_v3_observer_task(void *arg)
     uint32_t seen_profile = UINT32_MAX, seen_arc = UINT32_MAX, seen_phy = UINT32_MAX;
     bool was_active = false;
     int last_block_idx = -1;
+    int64_t last_block_us = esp_timer_get_time();
     for (;;) {
+        /* The notify wait never blocks while windows arrive faster than one
+         * is processed, and IDLE on this core then starves (board
+         * 2026-10-07: task watchdog with gain_v3_obs running, during a status
+         * dump). A real 1-tick block every 50 ms keeps IDLE fed; V5 loses
+         * ~2 % of its windows. */
+        int64_t loop_us = esp_timer_get_time();
+        if (loop_us - last_block_us >= 50000) {
+            vTaskDelay(1);
+            last_block_us = esp_timer_get_time();
+        }
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&
