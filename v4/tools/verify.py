@@ -63,11 +63,37 @@ def main():
     assert "s_fixed_bw_edge = false; /* any explicit bandwidth leaves the edge profile */" in (ROOT / "main/rf.c").read_text()
     assert "phy_rx_lab_filter_set_skirt((int)skirt)" in (ROOT / "main/rf.c").read_text()
     assert "lab_run_bw20_wide();" in video and "ESP_ERROR_CHECK(rf_set_vendor_bandwidth_lab(true));" in video
-    assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video
-    assert '"sync_fw", false' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, 200)" in video and "sync_flywheel_task, \"sync_fw\", 3072, NULL, 2," in video
+    assert "sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget)" in video and "s_sfw.self_gate = true;" in video
+    assert '"sync_fw", true' in pipeline and "esp_timer_start_periodic(s_v3_sentinel_timer, 200)" in video and "sync_flywheel_task, \"sync_fw\", 3072, NULL, 4," in video
     assert "sync_flywheel.c" in (ROOT / "component.cmake").read_text()
+    # Line repair: opt-in, needs the flywheel, selectable in SETUP, source bound set.
+    assert '"line_fix", true' in pipeline and "return s_line_fix && c5vrx4_sync_flywheel_enabled();" in pipeline
+    assert "    C5VRX4_OPT_LINE_FIX, C5VRX4_OPT_EDGE_GEAR,\n};" in video.replace("\r\n", "\n")
+    # Edge filter gear: opt-in (main never ran it), selectable in SETUP.
+    assert '"edge_gear", false' in pipeline and "!c5vrx4_edge_gear_enabled() ||" in video
+    assert "c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u" in video
+    # Retained labs own the PHY exclusively even after gain sweeps are removed.
+    gain_source = (ROOT / "main/video_gain.c").read_text()
+    for task in ("direct_gain_v3_sentinel_task", "direct_gain_v3_observer_task"):
+        body = gain_source.split(f"void {task}(void *arg)\n{{", 1)[1].split("\n}\n", 1)[0]
+        active = body.split("bool active =", 1)[1].split(";", 1)[0]
+        assert "!s_rssi_probe_active" in active and "!s_pre_q4_probe_active" in active
+    idle_source = (ROOT / "main/video_idle.c").read_text()
+    flywheel = idle_source.split("void sync_flywheel_task(void *arg)\n{", 1)[1].split("\n}\n", 1)[0]
+    active = flywheel.split("bool active =", 1)[1].split(";", 1)[0]
+    assert "!s_rssi_probe_active" in active and "!s_pre_q4_probe_active" in active
+    # Per-gain DC pair re-held at once after every gain write and PHY restore,
+    # through the shared owned-word hold; banned gains skipped; never while a
+    # search or lab owns the PHY.
+    rf_c = (ROOT / "main/rf.c").read_text()
+    assert "if (force && s_post_gain_hook) s_post_gain_hook(gain_idx);" in rf_c
+    assert "if (!s_native_agc && s_post_gain_hook) s_post_gain_hook(s_current_gain_val);" in rf_c
+    assert "rf_set_post_gain_hook(dco_post_gain);" in video
+    assert "!s_dco_tab.e[g].valid || s_dco_hold_banned[g] ||" in video
+    assert "dco_hold_locked();" in (ROOT / "main/phy_rx_lab.c").read_text()
 
     cases = [
+        ("arc_phy", ["main/arc_phy.c"]),
         ("demod_quality", []), ("fusion_receiver", []),
         ("menu_raster", ["main/menu_raster.c", "-lm"]),
         ("direct_gain_v3", ["main/direct_gain_v3.c", "main/arc_phy.c"]),

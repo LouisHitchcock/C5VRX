@@ -1,11 +1,12 @@
+#define SFW_MIN_BUDGET 64u
 /* C5VRX-4: idle responsibilities. */
 #include "video_internal.h"
+
 #define SFW_TARGET_US 50u /* per 200 us wake: at most 25 % CPU (was 30 per 100 us) */
 
 #define IDLE_STD_SYNC_WINDOWS 20u /* valid syncs before a standard is stored */
 
 #define IDLE_RETRY_TICKS     200u /* 10 s after the raster could not take TX */
-
 
 /* No-carrier idle raster: the standalone raster owns TX (s_menu_active) with
  * a black picture instead of the menu; see idle_raster.h. */
@@ -28,7 +29,7 @@ static sync_flywheel_t s_sfw;
 
 static volatile bool s_sfw_running;
 
-static volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
+volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
 
 static volatile uint32_t s_sfw_budget = 600u, s_sfw_ns_per_eval = 150u;
 
@@ -51,6 +52,10 @@ void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_ticks)
         s_direct_gain_v3.current_gain == table->max_index;
     const bool settling = !native && s_direct_gain_v3.state == DG3_SETTLE;
     const bool bw_waiting = bw_autocal_waiting();
+    /* During and right after a calibration the raster neither enters nor
+     * leaves on what the calibration itself did to the IQ. */
+    const bool cal_settle = esp_timer_get_time() < s_cal_settle_until_us || phy_rx_lab_busy();
+    if (cal_settle && s_idle.active) { q_phase = 0; fresh_sync = false; }
     idle_raster_obs_t o = {
         .enabled = c5vrx4_idle_raster_enabled() && MENU_RUNTIME_ENABLED,
         .owner_free = !s_menu_active && !s_rssi_probe_active &&
@@ -58,7 +63,7 @@ void idle_raster_service(int q_phase, bool fresh_sync, unsigned sync_age_ticks)
                       !s_channel_scan_active && !bw_waiting && retry_ticks == 0u,
         /* No-carrier survival state: V5 table maximum, or native AGC. */
         .survival_gain = native || v5_max,
-        .settling = settling,
+        .settling = settling || cal_settle,
         .q_phase = q_phase,
         .fresh_sync = fresh_sync,
         .sync_age_ticks = sync_age_ticks,
@@ -96,11 +101,12 @@ void sync_flywheel_task(void *arg)
     uint32_t last_rx_off = UINT32_MAX;
     int64_t last_us = 0;
     sfw_init(&s_sfw);
+    s_sfw.self_gate = true;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         /* Labs measure raw receiver noise and IQ: no synthetic pulses then. */
         bool active = c5vrx4_sync_flywheel_enabled() && !s_menu_active && !IDLE_RASTER_ACTIVE() &&
-                      !phy_rx_lab_busy() && !s_rssi_probe_active &&
+                      !phy_rx_lab_busy() && !s_rssi_probe_active && !s_pre_q4_probe_active &&
                       s_rx_dma_ch >= 0 && s_rx_dma_ch < 3 && s_tx_dma_ch >= 0 && s_tx_dma_ch < 3 &&
                       s_rx_dscr_count >= 2 && s_tx_dscr_count >= 2;
         s_sfw_running = active;
@@ -117,6 +123,7 @@ void sync_flywheel_task(void *arg)
         int64_t now = esp_timer_get_time();
         if (last_rx_off == UINT32_MAX) {
             sfw_init(&s_sfw);
+            s_sfw.self_gate = true;
             rx_abs = (uint64_t)RAW_RING_BYTES * 4u + rx_off;
             ++s_sfw_rebases;
         } else {
@@ -138,26 +145,38 @@ void sync_flywheel_task(void *arg)
         uint64_t ceiling = rx_abs - (newest ? newest : s_rx_dscr_nodes[ni].length);
         bool mask = c5vrx4_agc_mask_active();
         uint8_t flag = c5vrx4_agc_flag();
+        /* Line repair source bound: RX overwrites the ring one ring behind
+         * its write position; it may finish this descriptor and fill the
+         * next one while the flywheel runs. */
+        uint64_t reach = rx_abs + 2u * s_rx_dscr_nodes[ri].length + 512u;
         const sfw_ring_t ring = {
             s_raw_ring, RAW_RING_BYTES, c5v4_cvbs_phase_table(mask), mask,
             (uint8_t)((flag != C5VRX4_AGC_FLAG_UNKNOWN && (flag & 0x80u)) ? 1u : 0u),
+            c5vrx4_line_repair_enabled() && reach > RAW_RING_BYTES ? reach - RAW_RING_BYTES : 0u,
         };
         int64_t t0 = esp_timer_get_time();
+        /* Writes only inside its own detected fade window (self_gate). */
         (void)sfw_run(&s_sfw, &ring, ceiling, floor, true, s_sfw_budget);
         uint32_t spent = (uint32_t)(esp_timer_get_time() - t0);
         s_sfw_last_us = spent;
         if (spent > s_sfw_max_us) s_sfw_max_us = spent;
+        /* Wall time includes preemption (Wi-Fi, esp_timer): a run that
+         * took more than twice its target was preempted and says nothing
+         * about the cost (board 2026-10-06: such runs drove the estimate to
+         * 357 ns/eval, the budget to ~140 and acquisition never locked). */
+        /* Every run counts again, but one sample can at most quadruple the
+         * estimate: board 2026-10-07, acquiring on receiver noise at
+         * priority 4, the runs were genuinely long, the "preempted" filter
+         * dropped them, the budget stayed high and IDLE starved (task WDT in
+         * gain_v3_obs). At priority 4 real preemption is rare. */
         if (s_sfw.evals >= 64u) {
             uint32_t ns = spent * 1000u / s_sfw.evals;
-            /* Wall time includes preemption (priority 2, below V5): board
-             * 2026-10-06 one 101 ms run pinned the estimate at 202 us/eval
-             * and the budget at its floor. A sample may at most double it. */
-            if (ns > 2u * s_sfw_ns_per_eval) ns = 2u * s_sfw_ns_per_eval;
+            if (ns > 4u * s_sfw_ns_per_eval) ns = 4u * s_sfw_ns_per_eval;
             s_sfw_ns_per_eval = (7u * s_sfw_ns_per_eval + ns) / 8u;
             if (!s_sfw_ns_per_eval) s_sfw_ns_per_eval = 1u;
         }
         uint32_t budget = SFW_TARGET_US * 1000u / s_sfw_ns_per_eval;
-        s_sfw_budget = budget < 64u ? 64u : budget > 20000u ? 20000u : budget;
+        s_sfw_budget = budget < SFW_MIN_BUDGET ? SFW_MIN_BUDGET : budget > 20000u ? 20000u : budget;
     }
 }
 
@@ -169,6 +188,8 @@ void sync_flywheel_status_print(void)
            "repaired=%lu slots=%lu rebuilt=%lu missed=%lu vsyncs=%lu v_coasted=%lu parity=%lu "
            "relocks=%lu acq=%lu skipped=%lu floor_skips=%lu fast=%lu thr=%d sync_q4=%d blank_q4=%d "
            "period_q8=%ld noisy=%u last_us=%lu max_us=%lu budget=%lu ns_per_eval=%lu rebases=%lu "
+           "line_repair=%u concealed=%lu conceal_no_source=%lu conceal_late=%lu "
+           "stable=%u fade_pm=%u fade_detections=%lu jumps=%lu sampled=%lu "
            "hardware_acceptance=pending\n",
            c5vrx4_sync_flywheel_enabled(), s_sfw_running, sfw_locked(f),
            std == 1 ? "PAL" : std == 2 ? "NTSC" : "none", (unsigned)f->state,
@@ -179,7 +200,11 @@ void sync_flywheel_status_print(void)
            (unsigned long)f->skipped_floor, (unsigned long)f->fast_lines, f->thr, f->sync_q4,
            f->blank_q4, (long)f->period_q8, f->rebuild_lines ? 1u : 0u,
            (unsigned long)s_sfw_last_us, (unsigned long)s_sfw_max_us, (unsigned long)s_sfw_budget,
-           (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases);
+           (unsigned long)s_sfw_ns_per_eval, (unsigned long)s_sfw_rebases,
+           c5vrx4_line_repair_enabled(), (unsigned long)f->concealed,
+           (unsigned long)f->conceal_no_source, (unsigned long)f->conceal_late,
+           f->stable, (unsigned)f->fade_pm, (unsigned long)f->fade_detections,
+           (unsigned long)f->jumps, (unsigned long)f->sampled);
 }
 
 void idle_raster_status_print(void)

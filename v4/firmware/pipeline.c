@@ -146,6 +146,13 @@ bool c5vrx4_hw_dco_enabled(void)
     return s_hw_dco;
 }
 
+static int8_t s_edge_gear = -1;
+bool c5vrx4_edge_gear_enabled(void)
+{
+    if (s_edge_gear < 0) s_edge_gear = nvs_flag("edge_gear", false);
+    return s_edge_gear;
+}
+
 static int8_t s_native_patch = -1;
 bool c5vrx4_native_patch_enabled(void)
 {
@@ -352,11 +359,21 @@ bool c5vrx4_radius_boost_enabled(void)
 static int8_t s_sync_fw = -1;
 bool c5vrx4_sync_flywheel_enabled(void)
 {
-    /* Default off (operator, 2026-10-05): on hardware the 100 us wake starved
-     * IDLE and the USB console (task watchdog) and the menu stopped working.
-     * 'w' opts in until its CPU gate passes (SYNC_FLYWHEEL.md). */
-    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", false);
+    /* Default on, fade-gated (2026-10-06): it writes only inside the V5
+     * observer's fade window and only from a stable lock, so a clean
+     * picture is never touched (the always-writing version put black
+     * streaks into one). 'w' or the menu opts out (SYNC_FLYWHEEL.md). */
+    if (s_sync_fw < 0) s_sync_fw = nvs_flag("sync_fw", true);
     return s_sync_fw;
+}
+
+static int8_t s_line_fix = -1;
+bool c5vrx4_line_repair_enabled(void)
+{
+    /* Default on (operator, 2026-10-06, after the goggle check); it alters
+     * picture content, the menu opts out. Runs inside the flywheel. */
+    if (s_line_fix < 0) s_line_fix = nvs_flag("line_fix", true);
+    return s_line_fix && c5vrx4_sync_flywheel_enabled();
 }
 
 static int16_t s_last_std = -1;
@@ -407,12 +424,14 @@ static const c5vrx4_option_t s_options[C5VRX4_OPT_COUNT] = {
     [C5VRX4_OPT_SPHASE]       = {"SAMPLE PHASE",  "sphase_auto",  1, 2, s_off_on},
     [C5VRX4_OPT_IDLE_RASTER]  = {"IDLE RASTER",   "idle_raster",  1, 2, s_off_on},
     [C5VRX4_OPT_RADIUS_BOOST] = {"RADIUS BOOST",  "radius_boost", 0, 2, s_off_on},
-    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      0, 2, s_off_on},
+    [C5VRX4_OPT_SYNC_FW]      = {"SYNC FLYWHEEL", "sync_fw",      1, 2, s_off_on},
     [C5VRX4_OPT_LEVEL]        = {"LEVEL SERVO",   "level_lab",    1, 2, s_off_on},
     [C5VRX4_OPT_CVBS]         = {"CVBS SCALE",    "cvbs_legacy",  C5VRX4_CVBS_STD150, 3, s_cvbs_names},
     [C5VRX4_OPT_HISTORY]      = {"HISTORY DEMOD", "unwrap_hc",    0, 2, s_off_on},
     [C5VRX4_OPT_NATIVE_PATCH] = {"NATIVE PATCH",  "native_patch", 1, 2, s_off_on},
     [C5VRX4_OPT_HW_DCO]       = {"HW DC CORR",    "dco_auto",     1, 2, s_off_on},
+    [C5VRX4_OPT_LINE_FIX]     = {"LINE REPAIR",   "line_fix",     1, 2, s_off_on},
+    [C5VRX4_OPT_EDGE_GEAR]    = {"EDGE FILTER",   "edge_gear",    0, 2, s_off_on},
 };
 static uint8_t s_option_boot[C5VRX4_OPT_COUNT];
 static bool s_option_snapshot;

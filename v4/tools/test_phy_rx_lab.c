@@ -85,7 +85,7 @@ static void sig_observe(const char *stage)
 {
     assert(phy_rx_lab_busy()); ++sig_stages;
     bool on = !strcmp(stage,"SIGRSSI_ON");
-    assert(on == (sig_enables==1 && sig_stages==2));
+    assert(on == (sig_stages%3==2));
 }
 static void track_observe(const char *stage)
 {
@@ -120,21 +120,31 @@ static void native_observe(const char *stage,unsigned cycle)
     } else assert(!(REG(0x600A7030)&PHYBIT(29)));
     clock_us+=40000;
 }
-static unsigned pbus[4][3];
+static unsigned pbus[11][3];
 static bool pbus_debug, corrupt_workmode, fail_measure;
 uint16_t phy_pbus_rd(uint32_t block, uint32_t bank) { return (uint16_t)pbus[block][bank]; }
 void phy_pbus_force_test(uint32_t block, uint32_t bank, uint32_t value)
 {
-    assert(pbus_debug && block < 4 && bank >= 1 && bank <= 2 && value <= 511);
+    assert(pbus_debug && block < 11 && bank >= 1 && bank <= 2 && value <= 511);
     pbus[block][bank] = value;
 }
 void phy_pbus_debugmode(void) { pbus_debug = true; }
+/* Vendor work mode may leave the gain unforced; the lab re-forces it. */
+static unsigned forced_gain_writes;
+void phy_force_rx_gain(bool enable, uint8_t gain_idx)
+{
+    ++forced_gain_writes;
+    REG(0x600A702C) = (REG(0x600A702C) & 0x007FFFFFu) | ((uint32_t)gain_idx << 24) | (enable ? PHYBIT(23) : 0u);
+}
 void phy_pbus_workmode(void) { pbus_debug = false; if (corrupt_workmode) pbus[2][2] ^= 1u; }
 /* Linear DC model with cross-coupling: block 2 bank 2 mainly I, block 3 bank 2 mainly Q. */
+static unsigned measure_calls, fail_call;   /* fail exactly the Nth measurement */
 static bool dco_measure(int dc[2])
 {
     assert(phy_rx_lab_busy());
     if (fail_measure) return false;
+    ++measure_calls;
+    if (fail_call && measure_calls == fail_call) return false;
     int a = (int)pbus[2][2] - 200, b = (int)pbus[3][2] - 300;
     dc[0] = 1500 + 25 * a + 3 * b;
     dc[1] = -900 + 30 * b - 2 * a;
@@ -144,7 +154,7 @@ static unsigned dco_stages;
 static void dco_observe(const char *stage)
 {
     int dc[2];
-    if (fail_measure) { assert(!strcmp(stage, "RESTORED")); ++dco_stages; return; }
+    if (fail_measure || fail_call) { ++dco_stages; return; }
     assert(dco_measure(dc));
     if (!strcmp(stage, "CORRECTED")) assert(dc[0] * dc[0] + dc[1] * dc[1] <= 100 * 100 && pbus_debug);
     if (!strcmp(stage, "RESTORED")) assert(dc[0] == 1500 && dc[1] == -900 && !pbus_debug);
@@ -359,6 +369,33 @@ int main(void)
     assert(dco_stages == 2 && !phy_rx_lab_busy());
     corrupt_workmode = false; pbus[2][2] = 200;
 
+    /* Review 2026-10-07 acceptance: baseline, I-probe and Q-probe failing
+     * apart never yield codes, never use unmeasured values, and roll back;
+     * a rollback failure after an earlier valid result never reports the
+     * earlier codes as this search's result. */
+    for (unsigned fc = 1; fc <= 3; ++fc) {
+        phy_rx_lab_dco_result_t r;
+        measure_calls = 0; fail_call = fc; dco_stages = 0;
+        esp_err_t e = phy_rx_lab_dco_search(dco_measure, dco_observe, &r);
+        int codes[2];
+        printf("DCO fault at measurement %u: result=%d measured=%u rolled_back=%u\n", fc, (int)e, r.measured, r.rolled_back);
+        assert(!r.measured && r.rolled_back && e == ESP_ERR_INVALID_RESPONSE);
+        assert(!phy_rx_lab_dco_codes(codes) && !pbus_debug && !phy_rx_lab_busy());
+        assert(pbus[2][2] == 200 && pbus[3][2] == 300);
+    }
+    fail_call = 0;
+    {
+        phy_rx_lab_dco_result_t r;
+        int codes[2];
+        assert(phy_rx_lab_dco_search(dco_measure, dco_observe, &r) == ESP_OK && r.measured);
+        assert(phy_rx_lab_dco_codes(codes));                 /* an earlier valid result */
+        measure_calls = 0; fail_call = 2; corrupt_workmode = true;
+        esp_err_t e = phy_rx_lab_dco_search(dco_measure, dco_observe, &r);
+        assert(e == ESP_FAIL && !r.measured && !r.rolled_back);
+        assert(!phy_rx_lab_dco_codes(codes));                /* not offered as new */
+        fail_call = 0; corrupt_workmode = false; pbus[2][2] = 200;
+    }
+
     /* Filter lab: relative codes saturating at 60, exact restore. */
     for (unsigned r = 6; r <= 13; ++r) analog_regs[r] = 0xC0u | (r + 10u);
     assert(phy_rx_lab_run_filter_sweep(filter_observe) == ESP_OK);
@@ -438,6 +475,11 @@ int main(void)
     /* Refused while the BB-AGC gate is held (native hold / pacing). */
     REG(0x600A7030)|=PHYBIT(29);
     assert(phy_rx_lab_run_sigrssi_probe(sig_observe,&st)==ESP_ERR_INVALID_STATE && sig_enables==1);
+    /* Forced-gain variant: runs with the gate held and restores it too. */
+    uint32_t gate_word=REG(0x600A7030);
+    sig_stages=0;
+    assert(phy_rx_lab_run_sigrssi_probe_forced(sig_observe,&st)==ESP_OK && sig_enables==2 && sig_stages==3);
+    assert(REG(0x600A7030)==gate_word && !phy_rx_lab_busy());
     REG(0x600A7030)&=~PHYBIT(29);
     assert(phy_rx_lab_run_sigrssi_probe(NULL,&st)==ESP_ERR_INVALID_STATE);
     /* Temperature tracking lab: one call between two observations. */

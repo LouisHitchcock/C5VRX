@@ -12,7 +12,17 @@ SPAN_S = 75e-9
 FREQUENCY_BOUND_HZ = 6e6
 RADII = (0.5, 0.75, 1.0, 1.5, 2.0, 2.5)
 NOISE_SIGMAS = (0.56, 0.95)
-MAX_CORRECTION_BINS = 8
+# Near-origin history prior (HISTORY decode only). Host model 2026-10-06
+# (SYNC_FLYWHEEL.md): widening it from radius^2 <= 2.6 / 8 bins to 9 / 16
+# removes ~3 % of the sparkles at C/N 3-5 dB and never costs SNR.
+HISTORY_RADIUS2 = 9.0
+MAX_CORRECTION_BINS = 16
+# Ambiguous (class-3) trajectories carry no usable delta. A constant near the
+# mean picture level (+38 bins = +2 MHz, mid grey) is a far smaller error than
+# blanking (black): +0.43 dB at C/N 3 dB, +0.32 at 5, sparkles -3..-5 %; the
+# optimum is flat over 25..50 bins. Sync detection is unaffected: blanking
+# and grey are both above the sync threshold.
+CLASS3_DELTA = 38
 
 
 def signed(n):
@@ -55,7 +65,7 @@ def decoder(history):
             base = phase8(raw)
             i, q = signed(raw >> 4), signed(raw & 15)
             radius2 = (i + 31.5 / 64) ** 2 + (q + 31.5 / 64) ** 2
-            if not history or radius2 > 2.6:
+            if not history or radius2 > HISTORY_RADIUS2:
                 phases.append(base)
                 continue
             x = y = 0.0
@@ -95,7 +105,7 @@ def transfer_delta(index):
     delta = (index & 63) * 4 + 2 - 128
     cls = index >> 6
     if cls == 3:
-        return 0  # Explicit neutral output for an ambiguous trajectory.
+        return CLASS3_DELTA  # Ambiguous trajectory: mid grey, see above.
     if cls == 1 and delta < 0:
         delta += 256
     if cls == 2 and delta >= 0:

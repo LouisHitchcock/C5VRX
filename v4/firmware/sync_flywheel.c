@@ -24,12 +24,28 @@
 #define MAX_LAG        (4u * 2560u + 4096u)
 #define NEED_LINE      420u   /* window + a normal pulse (field phase known) */
 #define NEED_V_ACQ     2700u  /* + a broad pulse here or half a line later */
+/* Line repair: active picture from 9.4 us (after the burst) to 1.5 us before
+ * the next line start; 24 sampled spans; a line is bad at >= 8 implausible
+ * spans (pure noise scores ~13), a source clean at <= 3. */
+#define ACT_START      376u
+#define ACT_END        60u
+#define SCORE_POINTS   24u
+#define SCORE_BAD      8u
+#define SCORE_GOOD     3u
+/* A dropout, not range-edge noise: the line must score this much worse than
+ * its source (host model, uniformly weak carrier: at bad 6 / margin 0, 224 lines were
+ * swapped for equally noisy older ones and the picture got 2 % worse). */
+#define SCORE_MARGIN   7u
+#define SCORE_NONE     255u
 
 static uint32_t s_evals;
+/* RAM copy of the phase table (256 bytes): every evaluation looks it up, and
+ * the generated tables live in flash (board 2026-10-06: ~340 ns/eval). */
+static uint8_t s_phase[256];
 
 static inline uint8_t ph_at(const sfw_ring_t *r, uint64_t k)
 {
-    return r->phase[r->ring[(uint32_t)k & (r->ring_bytes - 1u)]];
+    return s_phase[r->ring[(uint32_t)k & (r->ring_bytes - 1u)]];
 }
 
 static inline int wrap8(int d)
@@ -83,6 +99,7 @@ static void build_cells(const sfw_ring_t *r)
 {
     int key = r->mask_bit0 ? (int)(r->clear_bit0 & 1u) : 2;
     if (s_cell_phase == r->phase && s_cell_mask == key) return;
+    memcpy(s_phase, r->phase, sizeof(s_phase));
     int best[256];
     for (int t = 0; t < 256; ++t) best[t] = 1 << 30;
     for (int raw = 0; raw < 256; ++raw) {
@@ -143,6 +160,136 @@ static inline int32_t blank_step(const sync_flywheel_t *f) { return (int32_t)f->
 
 /* ---- geometry ---------------------------------------------------------- */
 static inline bool pal(const sync_flywheel_t *f) { return f->nominal_q8 == (int32_t)SFW_PAL_LINE_Q8; }
+
+/* ---- line repair ------------------------------------------------------- */
+/* Implausible spans among SCORE_POINTS in [a, b): active video steps lie
+ * between blanking (black) and white, 7/3 of the sync depth above blanking
+ * (-2 MHz sync, +4.67 MHz white). Below half the sync depth or above white
+ * plus margin only noise or a click lands (uniform noise: ~54 %). */
+static unsigned line_score(const sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_t b)
+{
+    int blank = f->blank_q4 / 16, depth = (f->blank_q4 - f->sync_q4) / 16;
+    int lo = blank - depth / 2, hi = blank + depth * 7 / 3 + 10;
+    uint64_t stride = (b - a - 6u) / SCORE_POINTS;
+    unsigned bad = 0;
+    for (unsigned i = 0; i < SCORE_POINTS; ++i) {
+        int d = step3(r, a + 3u + i * stride);
+        bad += d < lo || d > hi;
+    }
+    s_evals += SCORE_POINTS;
+    return bad;
+}
+
+/* Copy [a, b) from off samples earlier. The decoder uses phase differences
+ * only, so the interior is a bit-exact copy; just the seams are re-phased:
+ * over the first and last SEAM samples the offset to the real sample before
+ * a (and at b) ramps in and out, so neither edge carries a glitch. (Re-phasing
+ * every byte through the strong cells added their ~8-bin quantization and
+ * cost ~1 % at the range edge in the host model.) */
+#define SEAM 48u
+static bool conceal(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t a, uint64_t b, uint64_t off,
+                    uint64_t floor, uint64_t avail_end)
+{
+    if (a < floor) {
+        if (b <= floor + 300u) { ++f->conceal_late; return false; }
+        a = floor;
+    }
+    if (b >= avail_end || a < off + 1u || a - off < r->intact_from) { ++f->conceal_no_source; return false; }
+    const uint32_t mask = r->ring_bytes - 1u;
+    uint32_t n = (uint32_t)(b - a);
+    if (n < 4u * SEAM) { ++f->conceal_late; return false; }
+    int d0 = wrap8((int)ph_at(r, a - 1u) - (int)ph_at(r, a - off - 1u));
+    int d1 = wrap8((int)ph_at(r, b) - (int)ph_at(r, b - off));
+    uint8_t keep = r->mask_bit0 ? (uint8_t)(r->clear_bit0 & 1u) : 0u;
+    for (uint32_t k = 0; k < n; ++k) {
+        uint8_t raw = r->ring[(uint32_t)(a - off + k) & mask];
+        int d = k < SEAM ? d0 * (int)(SEAM - k) / (int)(SEAM + 1u) :
+                k >= n - SEAM ? d1 * (int)(k - (n - SEAM) + 1u) / (int)(SEAM + 1u) : 0;
+        if (d) raw = s_cell[(uint32_t)((int)s_phase[raw] + d) & 255u];
+        else if (r->mask_bit0) raw = (uint8_t)((raw & 0xFEu) | keep);
+        r->ring[(uint32_t)(a + k) & mask] = raw;
+    }
+    s_evals += n / 16u;
+    return true;
+}
+
+/* ---- fade detection --------------------------------------------------- */
+/* Valid FM video (sync to white, with CFO margin) makes 75 ns endpoint
+ * steps between sync - 12 and white + 12 bins; receiver noise lands outside
+ * ~40 % of the time. Coherence was the wrong test: noise-free Q4 at radius
+ * 4-5 with full deviation reads coherence 66-72 (review 2026-10-06). The
+ * new data since the last scan is sampled at up to 32 spans; a faded stretch
+ * is widened by a line on each side and lines outside it never get write
+ * permission. */
+static void fade_scan(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end)
+{
+    if (!f->levels || avail_end < 16u) return;
+    uint64_t a = f->fade_scan, b = avail_end - 8u;
+    if (a + 8192u < b) a = b - 8192u;
+    if (a < 8u) a = 8u;
+    f->fade_scan = avail_end;
+    if (b < a + 96u) return;
+    int sync = f->sync_q4 / 16, blank = f->blank_q4 / 16, depth = blank - sync;
+    int lo = sync - 12, hi = blank + depth * 7 / 3 + 12;
+    unsigned n = 32u, bad = 0;
+    uint64_t stride = (b - a) / n;
+    for (unsigned i = 0; i < n; ++i) {
+        int d = step3(r, a + 3u + i * stride);
+        bad += d < lo || d > hi;
+    }
+    s_evals += n;
+    f->fade_pm = (uint16_t)(bad * 1000u / n);
+    if (f->fade_pm < SFW_FADE_PM) return;
+    uint64_t line = (uint64_t)(f->period_q8 > 0 ? f->period_q8 : (int32_t)SFW_PAL_LINE_Q8) >> 8;
+    if (f->fade_to + line < a || f->fade_to == 0) f->fade_from = a > line ? a - line : 0;
+    f->fade_to = b + line;
+    ++f->fade_detections;
+}
+
+static inline bool in_fade(const sync_flywheel_t *f, uint64_t base_q8)
+{
+    uint64_t s = base_q8 >> 8, line = (uint64_t)f->period_q8 >> 8;
+    return f->fade_to && s + line >= f->fade_from && s <= f->fade_to;
+}
+
+/* A grid line that is not scored (vertical interval, skipped, repair off)
+ * can never be a source, and breaks the previous-line chain. */
+static inline void unscored(sync_flywheel_t *f, uint32_t line)
+{
+    f->line_score[line & 7u] = SCORE_NONE;
+    f->prev_line_valid = false;
+}
+
+/* Judge the previous picture line (now complete) and repair it from the
+ * line with the same subcarrier phase; then remember this line. */
+static void line_repair(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t start, uint32_t line,
+                        bool picture, uint64_t floor, uint64_t avail_end)
+{
+    f->line_score[line & 7u] = SCORE_NONE;
+    if (f->prev_line_valid && f->prev_line + 1u == line &&
+        start > f->prev_line_start + ACT_START + ACT_END + 600u) {
+        uint64_t a = f->prev_line_start + ACT_START, b = start - ACT_END;
+        unsigned score = line_score(f, r, a, b);
+        uint32_t back = pal(f) ? 4u : 2u;
+        uint8_t src = f->line_score[(f->prev_line - back) & 7u];
+        f->line_score[f->prev_line & 7u] = (uint8_t)score;
+        if (score < SCORE_BAD || score < (unsigned)src + SCORE_MARGIN) {
+            f->conceal_run = 0;
+        } else if (f->conceal_run >= SFW_CONCEAL_RUN || src > SCORE_GOOD) {
+            ++f->conceal_no_source;
+        } else if (conceal(f, r, a, b, ((uint64_t)back * (uint64_t)f->period_q8 + 128u) >> 8,
+                           floor, avail_end)) {
+            /* It now carries the source's picture (a later source too). */
+            f->line_score[f->prev_line & 7u] = src;
+            ++f->conceal_run;
+            ++f->concealed;
+        }
+    }
+    f->prev_line_start = start;
+    f->prev_line = line;
+    f->prev_line_valid = picture;
+    if (!picture) f->line_score[line & 7u] = SCORE_NONE;
+}
 static inline unsigned npre(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
 static inline unsigned nbroad(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
 static inline unsigned npost(const sync_flywheel_t *f) { return pal(f) ? 5u : 6u; }
@@ -187,11 +334,26 @@ static void start_track(sync_flywheel_t *f, uint64_t start, uint32_t nominal)
     f->rebuild_lines = 0;
     f->pristine_run = 0;
     f->acq_phase = 0;
+    f->stable = false;
     ++f->acquisitions;
 }
 
+static uint32_t pulse_width(const sync_flywheel_t *f, const sfw_ring_t *r, uint64_t k,
+                            uint32_t max, uint32_t *inside);
+typedef enum { P_NONE, P_NORMAL, P_EQ, P_BROAD } pulse_t;
+static pulse_t classify(uint32_t w, uint32_t inside);
+
+/* Coarse sync search step: shorter than an equalizing pulse (70+ samples),
+ * so no pulse is stepped over. */
+#define ACQ_COARSE 45u
+
 /* Streaming acquisition, resumable under the budget: a step histogram over
- * ~2 lines for the threshold, then sync-width low runs one line apart. */
+ * ~2 lines for the threshold, then sync-width pulses one line apart. The
+ * pulse search probes every ACQ_COARSE samples and measures only around a
+ * low probe (~140 evaluations per line instead of ~850): board 2026-10-06,
+ * with the flywheel at 25 % CPU (~140 evaluations per 200 us run) a stride-3
+ * scan never covered two lines before RX overwrote them, so it never
+ * locked. */
 static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end, uint32_t budget)
 {
     if (avail_end < 8192u) return;
@@ -203,8 +365,8 @@ static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     }
     while (f->scan_pos < end && s_evals < budget) {
         uint64_t k = f->scan_pos;
-        f->scan_pos += 3u;
         if (f->acq_phase == 0) {
+            f->scan_pos += 3u;
             ++s_evals;
             ++f->acq_hist[step3(r, k) + 128];
             if (++f->acq_n < 6800u) continue;      /* ~8 lines: never one V interval */
@@ -225,12 +387,15 @@ static void acquire(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
             f->acq_runs = 0;
             continue;
         }
-        if (++f->acq_n > 6800u) { f->acq_phase = 0; f->acq_n = 0; continue; }   /* 8 lines, no match */
-        if (lowm(f, r, k)) { f->acq_run += 3u; continue; }
-        uint32_t run = f->acq_run;
-        f->acq_run = 0;
-        if (run < 150u || run > 230u) continue;
-        uint64_t start = k - run;
+        if (++f->acq_n > 6800u) { f->acq_phase = 0; f->acq_n = 0; continue; }   /* ~100 lines, no match */
+        f->scan_pos = k + ACQ_COARSE;
+        if (k + 320u > end) { f->scan_pos = k; break; }        /* the pulse is not complete yet */
+        if (!lowm(f, r, k)) continue;
+        uint64_t start = k;
+        for (unsigned back = 0; back < ACQ_COARSE + 3u && lowm(f, r, start - 3u); back += 3u) start -= 3u;
+        uint32_t inside, run = pulse_width(f, r, start, 260u, &inside);
+        f->scan_pos = start + run + 3u;
+        if (classify(run, inside) != P_NORMAL) continue;
         if (f->acq_have_last) {
             uint64_t d = start - f->acq_last_start;
             if (d >= 2552u && d <= 2568u) { start_track(f, start, SFW_PAL_LINE_Q8); return; }
@@ -255,8 +420,6 @@ static uint32_t pulse_width(const sync_flywheel_t *f, const sfw_ring_t *r, uint6
     *inside = total - highs;
     return w - 3u * highs;
 }
-
-typedef enum { P_NONE, P_NORMAL, P_EQ, P_BROAD } pulse_t;
 
 static pulse_t classify(uint32_t w, uint32_t inside)
 {
@@ -399,6 +562,7 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     build_cells(r);
     s_evals = 0;
     f->evals = 0;
+    if (f->self_gate && f->state == SFW_TRACK) fade_scan(f, r, avail_end);
     if (f->state == SFW_ACQUIRE) {
         acquire(f, r, avail_end, budget_evals);
         f->evals = s_evals;
@@ -407,7 +571,8 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
     unsigned processed = 0;
     while (f->state == SFW_TRACK && s_evals < budget_evals) {
         bool locked = sfw_locked(f);
-        bool repair = allow_repair && locked && f->levels;
+        bool window = allow_repair && (!f->self_gate || in_fade(f, f->next_q8));
+        bool repair = window && locked && f->levels && f->stable;
         uint64_t h2q = half_q8(f);
         /* Arm the coming vertical interval 4 lines ahead, on the line grid. */
         if (f->v_valid && !f->v_armed) {
@@ -438,6 +603,18 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         uint64_t pred = rnd(f->next_q8);
         if (pred + (f->v_valid ? NEED_LINE : NEED_V_ACQ) > avail_end) break;
         if (pred + r->ring_bytes / 2u < avail_end) {
+            if (f->stable && f->period_q8 > 0) {
+                /* A stall, not a new transmitter: the crystal-stable period
+                 * carries the phase across whole lines. */
+                uint64_t target = (uint64_t)(avail_end - 4096u) << 8;
+                uint64_t k = (target - f->next_q8) / (uint64_t)f->period_q8;
+                f->next_q8 += k * (uint64_t)f->period_q8;
+                f->grid_line += (uint32_t)k;
+                f->v_armed = false;
+                f->prev_line_valid = false;
+                ++f->jumps;
+                continue;
+            }
             f->state = SFW_ACQUIRE;          /* data gone: start over */
             f->scan_pos = 0;
             break;
@@ -447,13 +624,27 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
         if ((f->v_armed && base >= v_start_q8(f) && base < v_stop_q8(f)) ||
             (f->v_valid && base < f->v_end_q8)) {
             {
+                unscored(f, f->grid_line);
                 advance(f, base + (uint64_t)(int64_t)f->period_q8);
                 ++f->lines;
                 ++processed;
                 continue;
             }
         }
+        /* Outside a fade window a stable lock is only maintained: one line
+         * in SFW_SAMPLE is measured (the period is crystal-stable). The
+         * vertical interval is always followed. */
+        if (!window && f->stable && f->v_valid && !f->v_armed &&
+            (f->grid_line % SFW_SAMPLE) != 0u) {
+            unscored(f, f->grid_line);
+            advance(f, base + (uint64_t)(int64_t)f->period_q8);
+            ++f->lines;
+            ++f->sampled;
+            ++processed;
+            continue;
+        }
         if (avail_end - pred > MAX_LAG) {
+            unscored(f, f->grid_line);
             advance(f, base + (uint64_t)(int64_t)f->period_q8);
             ++f->skipped_lines;
             if (f->lines_since_clean < 0xFFFFFFFFu) ++f->lines_since_clean;
@@ -525,12 +716,17 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
             }
         }
         bool in_v = f->v_armed && base >= v_start_q8(f) && base < v_stop_q8(f);
+        if (r->intact_from && repair && f->v_valid)
+            line_repair(f, r, rnd(base), line, !in_v, write_floor, avail_end);
+        else
+            unscored(f, line);
 
         ++f->lines;
         ++processed;
         if (clean) {
             ++f->clean;
             if (f->clean_since_acq < 0xFFFFu) ++f->clean_since_acq;
+            if (f->clean_since_acq >= SFW_STABLE && f->levels) f->stable = true;
             f->lines_since_clean = 0;
             f->relock_have = false;
             if ((f->clean & 15u) == 1u) learn_levels(f, r, start);
@@ -593,6 +789,8 @@ unsigned sfw_run(sync_flywheel_t *f, const sfw_ring_t *r, uint64_t avail_end,
                             f->v_end_q8 = 0;
                             f->lines_since_clean = 0;
                             f->relock_have = false;
+                            f->stable = false;
+                            f->clean_since_acq = 0;
                             ++f->relocks;
                         } else {
                             f->relock_off = off;

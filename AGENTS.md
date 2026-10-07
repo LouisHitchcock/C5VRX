@@ -302,7 +302,8 @@ own revision.
   Both middle samples contribute to winding classification, not final video
   amplitude. Host exactness is bounded to decoded adjacent steps <=63 Phase8
   bins (<90 degrees); final DAC transfer uses a four-bin midpoint (up to two
-  bins error). Ambiguous opposite-quadrant paths go neutral; corrected outer
+  bins error). Ambiguous opposite-quadrant paths go neutral (mid grey since
+  2026-10-06: fewer sparkles at low C/N, host model); corrected outer
   trajectories saturate. The exhaustive 524,386,048-trajectory oracle is host
   evidence, not a measured range/FIFO/colour result. Read its
   `v4/docs/UNWRAP75.md`; it is not a file on this main snapshot.
@@ -323,9 +324,12 @@ own revision.
   - Host evidence: `tools/test_sync_flywheel.c`, PAL/NTSC fades, weak carrier,
     re-lock and mask-safe bytes. Goggle behaviour is not measured.
   - Hardware, 2026-10-06: default on starved IDLE (task watchdog in
-    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Now
-    default off, `w` opts in; the CPU gate in `SYNC_FLYWHEEL.md` must pass
-    first.
+    gain_v3_obs/fusion_obs/analog_agc), the USB console and the menu. Since
+    the same day it shares the 200 us tick with a 50 us budget at priority
+    4 (its data expires ~0.5 ms after RX; at priority 2 the analog AGC task
+    held it off for up to 90 ms), reads a RAM copy of the phase table, and
+    its acquisition probes coarsely; default on again with line
+    repair (operator, 2026-10-06), `w` or the menu opts out.
 - **Span75 post-detection aliasing (host model, 2026-10-05):**
   `v4/tools/postdetect_alias_model.py` runs the generated
   Unwrap75 LUTs on simulated Q4/I4 bytes.
@@ -438,13 +442,22 @@ requirements by themselves**.
   pulses (with part of the front porch) and vertical-interval slots in the raw
   ring ahead of the TX read, on a PLL line grid locked to the real VTX sync.
   It must keep these properties:
-  - picture content is never decoded or altered;
+  - picture content is never decoded or altered, except by its opt-in
+    line repair (operator request 2026-10-06, menu `LINE REPAIR`, default
+    on, menu opts out): a dropout line is replaced by the line with the same subcarrier
+    phase 2 (NTSC) / 4 (PAL) lines earlier, never at the range edge's
+    uniform noise (host evidence in `SYNC_FLYWHEEL.md`);
   - clean pulses are left untouched;
   - the colour burst is not killed;
   - it never writes the newest completed RX descriptor, which the control
     observers (V5 NO_CARRIER, idle raster, level servo, AFC) copy.
-  It is off by default since its first hardware run starved the CPU
-  (`w`, NVS `sync_fw` or the menu SETUP page opts in) and hardware-pending.
+  Since 2026-10-06 it is fade-gated and on by default: it writes only on
+  lines its own raw-ring detector marks as faded (>= 15 % of endpoint steps
+  outside the valid sync..white range; a coherence gate opened on valid
+  video) and only from a stable lock, measures one line in eight otherwise, and keeps its phase
+  across CPU stalls (the always-writing version re-acquired at new phases
+  and put black streaks into a clean picture). `w`, NVS `sync_fw` or the
+  menu SETUP page opts out; goggle behaviour remains hardware-pending.
   The root C5VRX-3 path is unchanged.
 - Keep USB/debug outside realtime pacing.
 - Do not silently change the tested XIAO D4..D9 DAC pin order or the physical
@@ -483,6 +496,13 @@ the project explicitly changes hosting architecture.
 - It publishes `web/` plus a generated same-origin `firmware/` mirror.
 - It runs for web changes on `main`, manually, and after successful C5VRX-4 or Production
   CI so new/updated/removed PR builds and new releases refresh the mirror.
+  After CI its `changes` job compares the fingerprint of the release set the
+  mirror would contain (`tools/prepare_pages_site.sh --fingerprint`: tag plus
+  asset id, update time and size) with the live `firmware/releases.json` and
+  skips the deploy when they are equal (operator request 2026-10-06: CI keeps
+  an unchanged firmware-input hash on the existing release, so most PR pushes
+  change nothing). Web pushes, manual runs and an unreadable live manifest
+  always deploy.
 - Browser release discovery should use the generated
   `firmware/releases.json` manifest first.
 

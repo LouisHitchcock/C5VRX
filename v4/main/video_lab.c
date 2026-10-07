@@ -1,21 +1,6 @@
 /* C5VRX-4: lab responsibilities. */
 #include "video_internal.h"
-#define DFILT_WINDOWS 48u
 
-#define SPHASE_SETTLE_TRIES 12u
-
-#define SPHASE_POSITIONS 9u
-
-#define LAB_BW_SETTLE_MS   800u      /* allow analog filter change before measurement */
-
-
-typedef struct {
-    int p_median;
-    int p95;
-    int origin_permille;
-} centered_q4_metrics_t;
-
-static centered_q4_metrics_t measure_centered_q4(const uint8_t *sample, size_t bytes);
 static void lab_observe_11p(const char *stage);
 static void lab_dco_observe(const char *stage);
 static void lab_filter_observe(const char *stage, int offset);
@@ -25,12 +10,25 @@ static bool range_lab_pause(const char *tag, analog_agc_mode_t *saved);
 static void lab_observe_rf(const char *tag, const char *stage, int arg, unsigned hold_ms);
 static void lab_observe_dfilt(const char *stage, int arg);
 static void lab_observe_native_hold(const char *stage, unsigned cycle);
+#define DFILT_WINDOWS 48u
+
+#define SPHASE_SETTLE_TRIES 12u
+
+#define SPHASE_POSITIONS 9u
+
+#define LAB_BW_SETTLE_MS   800u      /* allow analog filter change before measurement */
+
+typedef struct {
+    int p_median;
+    int p95;
+    int origin_permille;
+} centered_q4_metrics_t;
+
+static centered_q4_metrics_t measure_centered_q4(const uint8_t *sample, size_t bytes);
 
 /* Sampling-phase evidence: mid-transition reads per observed sample. */
 static volatile uint32_t s_predemod_glitches, s_predemod_samples;
 
-/* 'z': next native AGC patch candidate set (none, 71C4[25:23]=7, 702C[7], both),
- * measured on 3 x 16 windows; it stays applied for a picture/range check. */
 
 /* While masking: share of samples with the hold flag set (data bit 0),
  * from completed observer windows; ~6-13 % expected from the measured
@@ -240,11 +238,19 @@ void lab_predemod_status(void)
            s_current_gain, table ? table->max_index : 0u, rf_get_frequency_mhz(),
            predemod_ppm(glitches, samples), (unsigned long)samples, dc_i, dc_q);
     predemod_correction_print();
+    /* Yield between blocks: the no-driver USB console busy-waits on a full
+     * FIFO, and a long dump at priority 1 starved IDLE (task WDT 2026-10-07). */
+    vTaskDelay(pdMS_TO_TICKS(5));
     phy_rx_lab_predemod_status();
+    vTaskDelay(pdMS_TO_TICKS(5));
     bw_status_print();
     agc_mask_status_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
     idle_raster_status_print();
     sync_flywheel_status_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
+    gain_readback_print();
+    vTaskDelay(pdMS_TO_TICKS(5));
     printf("RADIUS_BOOST enabled=%u active=%u entries=%lu exits=%lu streak=%u "
            "band_p50=30..46 normal_p50=13..32 gain=%u p50=%d p95=%d clip_pm=%d coherence=%d "
            "hardware_acceptance=pending\n",
@@ -252,38 +258,6 @@ void lab_predemod_status(void)
            (unsigned long)s_direct_gain_v3.boost_entries,
            (unsigned long)s_direct_gain_v3.boost_exits, s_direct_gain_v3.boost_streak,
            s_current_gain, s_v3_p50, s_v3_p95, s_v3_clip_pm, s_v3_coherence);
-}
-
-void lab_run_sample_phase_scan(void)
-{
-    analog_agc_mode_t saved_mode;
-    if (!predemod_pause("SPHASE", &saved_mode)) return;
-    printf("SPHASE begin rx_div=%lu lane=%u slip_us=1 positions=%u "
-           "metric=mid_transition_reads hardware_acceptance=pending\n",
-           (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul,
-           rf_get_iq_lanes(), SPHASE_POSITIONS);
-    predemod_window_t w;
-    unsigned best = UINT32_MAX;
-    for (unsigned pos = 0; pos < SPHASE_POSITIONS; ++pos) {
-        if (pos) { rx_clock_slip(1); vTaskDelay(pdMS_TO_TICKS(20)); }
-        if (!predemod_collect(48, &w)) { printf("SPHASE slip=%u sample=unavailable\n", pos); continue; }
-        unsigned ppm = predemod_ppm(w.glitches, w.samples);
-        if (ppm < best) best = ppm;
-        predemod_print("SPHASE", "SCAN", (int)pos, &w);
-    }
-    /* Positions repeat every three ticks: stop on one near the cleanest seen. */
-    bool settled = false;
-    for (unsigned n = 0; best != UINT32_MAX && n < SPHASE_SETTLE_TRIES; ++n) {
-        if (!predemod_collect(48, &w)) break;
-        unsigned ppm = predemod_ppm(w.glitches, w.samples);
-        unsigned margin = best / 4u > 300u ? best / 4u : 300u;
-        if (ppm <= best + margin) { settled = true; break; }
-        rx_clock_slip(1);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    if (w.windows) predemod_print("SPHASE", settled ? "FINAL" : "UNSETTLED", (int)best, &w);
-    predemod_resume(saved_mode);
-    printf("SPHASE done best_ppm=%u settled=%u persistent=0\n", best, settled);
 }
 
 bool lab_dco_measure(int dc[2])
@@ -389,7 +363,7 @@ static void lab_observe_range(const char *stage)
 /* Controllers paused for the A/B (native keeps its own hardware AGC). */
 static bool range_lab_pause(const char *tag, analog_agc_mode_t *saved)
 {
-    if (s_menu_active || s_pre_q4_probe_active || s_rssi_probe_active) {
+    if ((s_menu_active && !IDLE_RASTER_ACTIVE()) || s_pre_q4_probe_active || s_rssi_probe_active) {
         printf("%s refused=other_lab_or_menu\n", tag);
         return false;
     }
@@ -635,3 +609,41 @@ void lab_toggle_native_agc_boot(void)
 }
 
 void lab_dco_quiet(const char *stage) { (void)stage; }
+
+void lab_run_sigrssi_ladder(void)
+{
+    static const uint8_t gains[] = {83, 76, 70, 62, 54, 47, 40, 34, 30, 25};
+    if (rf_native_agc_active()) { printf("SIGLADDER refused=native_owner\n"); return; }
+    analog_agc_mode_t saved;
+    if (!range_lab_pause("SIGLADDER", &saved)) return;
+    const uint8_t saved_gain = s_current_gain;
+    esp_err_t result = ESP_OK;
+    for (unsigned k = 0; k < sizeof(gains) && result == ESP_OK; ++k) {
+        lab_apply_vendor_gain(gains[k]);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        uint8_t sample[256];
+        control_metrics_t m = {0};
+        bool have = false;
+        for (unsigned t = 0; t < 20u && !have; ++t) {
+            vTaskDelay(1);
+            have = rx_probe_copy_completed(sample);
+        }
+        if (have) m = analyze_control_window(sample, sizeof(sample), 0);
+        int wide_dbm = -127;
+        bool wide = rf_try_get_wideband_rssi_dbm(&wide_dbm);
+        phy_rx_lab_rssi_stats_t st = {0};
+        result = phy_rx_lab_run_sigrssi_probe_forced(lab_observe_range, &st);
+        if (result != ESP_OK) break;
+        printf("SIGLADDER freq=%u G=%u P50=%d Q=%d clip_pm=%d origin_pm=%d sig_p10=%d sig_p50=%d "
+               "sig_p90=%d sig_mean=%d.%d phy_rssi=%d phy_rssi_valid=%u\n",
+               rf_get_frequency_mhz(), gains[k], m.p_median, m.q_phase, m.clip_permille,
+               m.origin_permille, st.p10_dbm, st.p50_dbm, st.p90_dbm, st.mean_dbm_x10 / 10,
+               abs(st.mean_dbm_x10 % 10), wide_dbm, wide);
+    }
+    if (result == ESP_FAIL) { printf("SIGLADDER rollback_failed rebooting\n"); esp_restart(); }
+    lab_apply_vendor_gain(saved_gain);
+    ++s_profile_generation;
+    s_agc_mode = saved;
+    s_rssi_probe_active = false;
+    printf("SIGLADDER done status=%d restored_gain=%u\n", (int)result, saved_gain);
+}

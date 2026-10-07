@@ -1,12 +1,5 @@
 /* C5VRX-4: control responsibilities. */
 #include "video_internal.h"
-#define SCAN_VIDEO_PAIRS 4092u
-
-#define GAIN_SETTLE_TICKS 10        /* 500 ms decision hold after a physical gain write */
-
-#define BOOT_BTN_GPIO    GPIO_NUM_28 /* Seeed Studio XIAO ESP32-C5 BOOT Button */
-
-#include "phase8_gain_lut.h"
 
 static int signal_strength_score(const control_metrics_t *m, uint8_t gain);
 static bool copy_recent_endpoints(uint8_t *dst, size_t n);
@@ -15,6 +8,13 @@ static void channel_auto_search(void);
 static void handle_button_short_click(void);
 static void open_recovery_menu(void);
 static void handle_button_long_click(void);
+#define SCAN_VIDEO_PAIRS 4092u
+
+#define GAIN_SETTLE_TICKS 10        /* 500 ms decision hold after a physical gain write */
+
+#define BOOT_BTN_GPIO    GPIO_NUM_28 /* Seeed Studio XIAO ESP32-C5 BOOT Button */
+
+#include "phase8_gain_lut.h"
 
 /* AGC sampling and channel scan are serialized in analog_agc_task, so they
  * share one descriptor-sized CPU snapshot instead of reserving 8 KiB. */
@@ -624,7 +624,7 @@ void analog_agc_task(void *arg)
          * transmitter there (IDLE_RASTER_SYNC_Q), not only a clean one. */
         static unsigned idle_sync_age = 100u;
         const bool idle_sync = sync_quality >= IDLE_RASTER_SYNC_Q;
-        if (idle_sync) idle_sync_age = 0;
+        if (idle_sync) { idle_sync_age = 0; s_last_idle_sync_us = esp_timer_get_time(); }
         else if (idle_sync_age < 100u) ++idle_sync_age;
         idle_raster_service(q_phase, idle_sync, idle_sync_age);
 

@@ -33,6 +33,7 @@ enum {
     C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_DC_RECENTER, C5VRX4_OPT_SPHASE,
     C5VRX4_OPT_IDLE_RASTER, C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW,
     C5VRX4_OPT_LEVEL, C5VRX4_OPT_CVBS, C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
+    C5VRX4_OPT_LINE_FIX, C5VRX4_OPT_EDGE_GEAR,
     C5VRX4_OPT_COUNT
 };
 void c5vrx4_options_snapshot(void);
@@ -45,6 +46,10 @@ bool c5vrx4_options_pending(void);
 bool c5vrx4_native_patch_enabled(void);
 /* Range-edge hardware DC correction (NVS dco_auto, default on). */
 bool c5vrx4_hw_dco_enabled(void);
+/* V5 range-edge narrow filter gear (NVS edge_gear, default off): on main it
+ * never ran (boot bug), and switched on it was never shown to extend range;
+ * operator 2026-10-07: range with it worse than main. Opt-in. */
+bool c5vrx4_edge_gear_enabled(void);
 /* Opaque NVS blob store (c5vrx4/<key>); returns false when absent/short. */
 bool c5vrx4_blob_load(const char *key, void *data, size_t size);
 bool c5vrx4_blob_store(const char *key, const void *data, size_t size);
@@ -115,7 +120,11 @@ void c5vrx4_last_standard_store(uint8_t standard);
  * on a strong, tight, rail-free carrier the healthy P50 band moves from
  * 13..32 to 30..46 for finer phase quantization; the first rail code, P95
  * or level jump drops it. NVS radius_boost. */
-bool c5vrx4_radius_boost_enabled(void);
+bool c5vrx4_radius_boost_enabled(void);/* Line repair inside the sync flywheel (default on, menu opts out, reboot;
+ * SYNC_FLYWHEEL.md): a dropout line is replaced by the line with the same
+ * subcarrier phase 2 (NTSC) / 4 (PAL) lines earlier. Needs the flywheel.
+ * NVS line_fix. */
+bool c5vrx4_line_repair_enabled(void);
 /* Sync flywheel (default on, 'w' toggles, reboot; SYNC_FLYWHEEL.md): missing
  * or noisy H/V sync pulses are rebuilt in the raw ring ahead of the TX read so
  * the goggles always see a valid PAL/NTSC raster. NVS sync_fw. */

@@ -1,9 +1,7 @@
 /* C5VRX-4: video responsibilities. */
 #include "video_internal.h"
+
 #define C5V4_LEVEL_TASK_ENABLED 0
-
-
-esp_err_t video_start(void);
 
 static esp_timer_handle_t s_v3_sentinel_timer;
 
@@ -40,9 +38,16 @@ esp_err_t video_start(void)
     settings_load();
     c5vrx4_options_snapshot();
     s_dg3_saved_valid = c5vrx4_blob_load("dg3_map", &s_dg3_saved, sizeof(s_dg3_saved)) &&
-                        s_dg3_saved.version == DG3_MAP_VERSION;
+                        s_dg3_saved.version == DG3_MAP_VERSION &&
+                        s_dg3_saved.freq_mhz == rf_get_frequency_mhz() &&
+                        s_dg3_saved.lane_mode == c5vrx4_fixed_lane();
     printf("DG3_MAP loaded=%u\n", s_dg3_saved_valid);
+    const rf_bw_mode_t boot_bw_mode = s_rf_bw_mode;
     apply_rx_profile(s_rx_profile);
+    if (s_rx_profile == RX_PROFILE_DIRECT_GAIN && boot_bw_mode != s_rf_bw_mode) {
+        s_rf_bw_mode = boot_bw_mode;
+        apply_rf_bandwidth(boot_bw_mode != RF_BW_MODE_BW20);
+    }
     if (rf_native_agc_active()) {
         rf_native_agc_state_t native;
         rf_get_native_agc_state(&native);
@@ -125,10 +130,12 @@ esp_err_t video_start(void)
                                 3072, NULL, 4,
                                 &s_v3_sentinel_task_handle) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
-    /* Priority 2: below the V5 observer (gain reaction first), above the
-     * console. */
+    /* Priority 4: its data expires ~0.5 ms after RX writes it, so it must
+     * run on time (board 2026-10-06: at priority 2 the analog AGC task held
+     * it off for up to 90 ms and it never locked). Its CPU share is bounded
+     * by its per-run budget (50 us per 200 us), not by its priority. */
     if (c5vrx4_sync_flywheel_enabled())
-        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 2,
+        ESP_ERROR_CHECK(xTaskCreate(sync_flywheel_task, "sync_fw", 3072, NULL, 4,
                                     &s_sfw_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     const esp_timer_create_args_t v3_timer_args = {
         .callback = direct_gain_v3_sentinel_timer_cb,

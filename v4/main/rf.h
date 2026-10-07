@@ -39,6 +39,13 @@ esp_err_t rf_prepare_fresh_phy_calibration(void);
 void rf_reboot_to_download(void);
 
 /**
+ * Called after every forced gain write (inside the actuator section, PBUS in
+ * work mode on the new row) and at the end of every PHY restore. The per-gain
+ * DC correction re-holds its pair here (video.c). NULL disables it.
+ */
+void rf_set_post_gain_hook(void (*hook)(uint8_t gain_idx));
+
+/**
  * Dump all vendor timers intercepted during Wi-Fi operation.
  */
 void rf_dump_tracked_timers(void);

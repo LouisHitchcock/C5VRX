@@ -1,5 +1,15 @@
 /* C5VRX-4: calibration responsibilities. */
 #include "video_internal.h"
+
+static bool bw_noise_measure(unsigned windows, unsigned *width_khz, int *q_phase, int *clip_pm);
+static bool bw_quiet(const char *stage, unsigned width, int q_phase, int clip_pm);
+static void bw_skirt_stage(uint8_t code0, unsigned target);
+static void bw_edge_stage(void);
+static void agc_witness_autocheck(void);
+static bool predemod_quiet_owner(void);
+static void predemod_dg3_map_service(void);
+static void predemod_dc_service(void);
+static void predemod_bw_autocal(void);
 #define BW_EDGE_SKIRTS 4u
 
 #define BW_EDGE_CODES 9u
@@ -7,8 +17,6 @@
 #define BW_AUTO_RETRY_US    60000000
 
 #define BW_AUTO_QUIET_TICKS 12u
-
-#define DCO_RESEARCH_US 120000000LL
 
 #define SPHASE_AUTO_PPM    5000u
 
@@ -35,19 +43,6 @@
 #define BW_CAL_STEP        4
 
 #define BW_CAL_WINDOWS     96u
-
-
-static bool bw_noise_measure(unsigned windows, unsigned *width_khz, int *q_phase, int *clip_pm);
-static bool bw_quiet(const char *stage, unsigned width, int q_phase, int clip_pm);
-static void bw_skirt_stage(uint8_t code0, unsigned target);
-static void bw_edge_stage(void);
-static void agc_witness_autocheck(void);
-static bool predemod_quiet_owner(void);
-static void predemod_dco_service(void);
-static void predemod_dg3_map_service(void);
-static void predemod_dc_service(void);
-static void predemod_sphase_autocheck(void);
-static void predemod_bw_autocal(void);
 
 /* Digital DC recentring evidence, reset whenever gain, lane or profile move. */
 static portMUX_TYPE s_dc_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -109,26 +104,6 @@ static int s_dc_measured[2];
 
 static int64_t s_dc_last_write_us;
 
-static bool s_sphase_auto_done;
-
-static unsigned s_sphase_auto_ppm = UINT32_MAX;
-
-/* Range-edge hardware DC correction. Board 2026-10-06 (G81/82, VTX off):
- * receiver DC 0.2-2.0 fine cells, as large as the noise (P50 ~4) and up to
- * half a threshold-level carrier, so the phase is measured around a shifted
- * origin exactly where FM collapses. The ESPARGOS esp-sdr DC-DAC search
- * (ESPsoup C5 port; phy_rx_lab_run_dco_probe) runs at maximum gain without a
- * carrier (idle raster), and its result is held in PBUS debug mode only
- * while V5 stays at maximum gain; rf.c releases it before every gain write
- * and PHY restore. Re-searched after 120 s or a retune (the DC drifted
- * between 0.2 and 2 cells over the session). Direct V5 only. */
-
-static uint16_t s_dco_freq;
-
-static int64_t s_dco_found_us;
-
-static uint32_t s_dco_searches, s_dco_holds;
-
 /* First-boot fixed-BW calibration: only while uncalibrated, after 3 s of
  * table-maximum listening with no carrier (the V5 no-carrier state), and at
  * most once a minute if a carrier interrupts it. */
@@ -141,7 +116,11 @@ bool predemod_collect(unsigned windows, predemod_window_t *out)
     int64_t si = 0, sq = 0;
     memset(out, 0, sizeof(*out));
     for (unsigned tries = 0; tries < windows * 3u && out->windows < windows; ++tries) {
-        vTaskDelay(1);
+        /* Two ticks: the window analysis below costs about one, so a 1-tick
+         * wait kept this task runnable nearly all the time and, with the V5
+         * observer, IDLE on CPU0 starved (board 2026-10-07: task watchdog
+         * here during the boot SPHASE scan). */
+        vTaskDelay(2);
         if (!rx_probe_copy_completed(sample)) continue;
         for (unsigned r = 0; r < RX_PROBE_REGIONS; ++r)
             out->glitches += predemod_glitches(sample + r * RX_PROBE_REGION_BYTES,
@@ -629,38 +608,6 @@ static bool predemod_quiet_owner(void)
            s_rx_profile == RX_PROFILE_DIRECT_GAIN && s_agc_mode == ANALOG_AGC_ACTIVE;
 }
 
-static void predemod_dco_service(void)
-{
-    if (!c5vrx4_hw_dco_enabled() || rf_native_agc_active() ||
-        s_rx_profile != RX_PROFILE_DIRECT_GAIN || s_agc_mode != ANALOG_AGC_ACTIVE ||
-        s_rssi_probe_active || s_pre_q4_probe_active ||
-        phy_rx_lab_busy() || (s_menu_active && !IDLE_RASTER_ACTIVE())) return;
-    const arc_gain_table_t *table = rf_get_arc_gain_table();
-    if (!table) return;
-    const bool at_max = s_current_gain == table->max_index;
-    const uint16_t freq = rf_get_frequency_mhz();
-    if (freq != s_dco_freq) { phy_rx_lab_dco_invalidate(); s_dco_freq = freq; }
-    const int64_t now = esp_timer_get_time();
-    const bool stale = !phy_rx_lab_dco_valid() || now - s_dco_found_us > DCO_RESEARCH_US;
-    if (at_max && stale && IDLE_RASTER_ACTIVE()) {
-        analog_agc_mode_t saved;
-        if (!predemod_pause("DCO_AUTO", &saved)) return;
-        (void)phy_rx_lab_dco_release();
-        esp_err_t result = phy_rx_lab_run_dco_probe(lab_dco_measure, lab_dco_quiet);
-        rf_set_rx_gain(true, s_current_gain); /* work mode replays the row on a write */
-        predemod_resume(saved);
-        ++s_dco_searches;
-        if (result == ESP_OK || phy_rx_lab_dco_valid()) s_dco_found_us = now;
-        printf("DCO_AUTO search=%lu result=%d valid=%u freq=%u gain=%u\n",
-               (unsigned long)s_dco_searches, (int)result, phy_rx_lab_dco_valid(), freq,
-               s_current_gain);
-        return;
-    }
-    if (at_max && phy_rx_lab_dco_valid() && !phy_rx_lab_dco_held() &&
-        s_direct_gain_v3.state != DG3_SETTLE && phy_rx_lab_dco_set(true) == ESP_OK)
-        ++s_dco_holds;
-}
-
 /* Persist V5's measured gain map: at most every 2 minutes, only when the
  * map changed and V5 is holding (flash wear and no write mid-transition). */
 static void predemod_dg3_map_service(void)
@@ -677,6 +624,10 @@ static void predemod_dg3_map_service(void)
      * slightly stale entry, which the next save replaces. */
     if (!direct_gain_v3_export_map(&s_direct_gain_v3, &blob)) return;
     if (s_dg3_saved_valid && !memcmp(&blob, &s_dg3_saved, sizeof(blob))) return;
+    /* Context identity (review 2026-10-06): a map is a measurement of this
+     * channel and IQ lane; another context must not import it. */
+    blob.freq_mhz = rf_get_frequency_mhz();
+    blob.lane_mode = c5vrx4_fixed_lane();
     if (c5vrx4_blob_store("dg3_map", &blob, sizeof(blob))) {
         s_dg3_saved = blob;
         s_dg3_saved_valid = true;
@@ -724,20 +675,6 @@ static void predemod_dc_service(void)
            next[0], next[1], rf_get_iq_lanes(), s_current_gain, measured[0], measured[1]);
 }
 
-static void predemod_sphase_autocheck(void)
-{
-    if (s_sphase_auto_done || !c5vrx4_sphase_auto_enabled() || !predemod_quiet_owner()) return;
-    if (s_direct_gain_v3.state != DG3_HOLD || s_v3_coherence < 80) return;
-    predemod_window_t w;
-    if (!predemod_collect(48, &w)) return;
-    s_sphase_auto_done = true;
-    s_sphase_auto_ppm = predemod_ppm(w.glitches, w.samples);
-    printf("SPHASE auto_check ppm=%u threshold=%u coherence=%d action=%s\n",
-           s_sphase_auto_ppm, SPHASE_AUTO_PPM, s_v3_coherence,
-           s_sphase_auto_ppm >= SPHASE_AUTO_PPM ? "scan" : "none");
-    if (s_sphase_auto_ppm >= SPHASE_AUTO_PPM) lab_run_sample_phase_scan();
-}
-
 /* First boot: the fixed-BW calibration needs 3 s of live no-carrier
  * listening, so the idle raster waits until it has been tried once. */
 bool bw_autocal_waiting(void)
@@ -779,6 +716,7 @@ static void predemod_bw_autocal(void)
 void predemod_task(void *arg)
 {
     (void)arg;
+    rf_set_post_gain_hook(dco_post_gain);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
         if (s_menu_bw_cal_request && !s_menu_active) {
@@ -797,12 +735,16 @@ void predemod_task(void *arg)
         predemod_dc_service();
         predemod_dco_service();
         predemod_dg3_map_service();
+        predemod_gain_readback_service();
+        predemod_dc_drift_service();
+        flight_log_service();
         static unsigned hb_ticks;
         if (++hb_ticks >= 20u) {
             hb_ticks = 0;
             printf("HB predemod t_s=%lld dco_held=%u dco_valid=%u searches=%lu\n",
                    esp_timer_get_time() / 1000000, phy_rx_lab_dco_held(),
                    phy_rx_lab_dco_valid(), (unsigned long)s_dco_searches);
+            dco_hook_print("HB dco_hook");
         }
         predemod_sphase_autocheck();
         predemod_bw_autocal();
@@ -813,11 +755,23 @@ void predemod_task(void *arg)
 
 void predemod_correction_print(void)
 {
-    printf("PREDEMOD_AUTO dc_recenter=%u measured_mcells=%d/%d evaluations=%lu refusals=%lu "
-           "sphase_auto=%u sphase_checked=%u sphase_ppm=%u\n",
-           c5vrx4_dc_recenter_enabled(), s_dc_measured[0], s_dc_measured[1],
+    /* The digital recentring is disabled in code (live LUT refused): report
+     * the request, not a correction (external audit, PR #174). */
+    printf("PREDEMOD_AUTO dc_recenter_requested=%u dc_recenter_state=blocked_live_lut "
+           "hw_dco=per_gain hw_dco_searches=%lu hw_dco_holds=%lu hw_dco_loads=%lu hw_dco_saves=%lu "
+           "hw_dco_carrier_refusals=%lu hw_dco_env_ratio_x100=%u hw_dco_broken_iq=%lu hw_dco_hold_aborts=%lu "
+           "quiet_s=%lld rx_recal_freq=%u rx_recal_runs=%lu "
+           "temp_c=%.1f drift_avg_mcells=%d/%d drift_nudges=%lu "
+           "measured_mcells=%d/%d evaluations=%lu refusals=%lu "
+           "sphase_auto=%u sphase_checked=%u sphase_ppm=%u sphase_state=%s sphase_scans=%u\n",
+           c5vrx4_dc_recenter_enabled(), (unsigned long)s_dco_searches, (unsigned long)s_dco_holds,
+           (unsigned long)s_dco_loads, (unsigned long)s_dco_saves, (unsigned long)s_dco_carrier_refusals,
+           s_dco_env_ratio, (unsigned long)s_dco_broken_iq, (unsigned long)s_dco_hold_aborts,
+           s_quiet_since_us ? (esp_timer_get_time() - s_quiet_since_us) / 1000000 : 0LL,
+           s_rx_recal_freq, (unsigned long)s_rx_recal_runs, (double)s_temp_c, s_drift_avg[0], s_drift_avg[1],
+           (unsigned long)s_drift_nudges, s_dc_measured[0], s_dc_measured[1],
            (unsigned long)s_dc_evaluations, (unsigned long)s_dc_refusals,
            c5vrx4_sphase_auto_enabled(), s_sphase_auto_done,
-           s_sphase_auto_done ? s_sphase_auto_ppm : 0u);
+           s_sphase_auto_done ? s_sphase_auto_ppm : 0u, sphase_state_name(), s_sphase_scans);
     c5v4_decoder_print();
 }

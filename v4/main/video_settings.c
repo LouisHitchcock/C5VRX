@@ -1,11 +1,15 @@
 /* C5VRX-4: settings responsibilities. */
 #include "video_internal.h"
+
+static uint8_t profile_gain_min(void);
+static uint8_t profile_gain_clamp(int gain);
+static uint8_t apply_rx_gain_tracked(uint8_t gain);
+static void arm_native_agc_and_reboot(bool enable);
 #define SETTINGS_KEY "settings"
 
 #define SETTINGS_NAMESPACE "c5vrx4"
 
 #define SETTINGS_VERSION 4u
-
 
 typedef struct {
     uint8_t version;
@@ -20,16 +24,11 @@ typedef struct {
     uint8_t menu_boot_btn_enabled;
     uint8_t rx_profile;
     uint8_t demod_mode;
-    uint8_t reserved[1];
+    uint8_t bw_afc_persist; /* validates persisted BW/AFC choices */
 } persisted_settings_t;
 
 _Static_assert(sizeof(persisted_settings_t) == 14u,
                "settings v3/v4 migration layout changed");
-
-static uint8_t profile_gain_min(void);
-static uint8_t profile_gain_clamp(int gain);
-static uint8_t apply_rx_gain_tracked(uint8_t gain);
-static void arm_native_agc_and_reboot(bool enable);
 
 volatile hw_transport_counters_t s_hw_counters;
 
@@ -250,7 +249,7 @@ void cycle_rf_bandwidth_mode(void)
         s_rf_bw_mode = RF_BW_MODE_AUTO;
         apply_rf_bandwidth(true); /* AUTO always enters in high gear. */
     } else {
-        s_rf_bw_mode = RF_BW_MODE_BW40;
+        s_rf_bw_mode = RF_BW_MODE_AUTO;
         apply_rf_bandwidth(true);
     }
 }
@@ -313,6 +312,7 @@ void settings_save(void)
         .menu_boot_btn_enabled = s_menu_boot_btn_enabled ? 1u : 0u,
         .rx_profile = (uint8_t)s_rx_profile,
         .demod_mode = (uint8_t)s_demod_mode,
+        .bw_afc_persist = 1u,
     };
     nvs_handle_t handle;
     esp_err_t err = nvs_open(SETTINGS_NAMESPACE, NVS_READWRITE, &handle);
@@ -350,9 +350,13 @@ void settings_load(void)
     }
 
     if (settings.channel_index < rf_get_channel_count()) (void)rf_set_channel(settings.channel_index);
-    if (settings.rf_bw_mode <= RF_BW_MODE_AUTO) s_rf_bw_mode = (rf_bw_mode_t)settings.rf_bw_mode;
+    /* Board 2026-10-06: an old record's BW40 switched V5's edge gear off
+     * (gear=manual) once the menu choice started to persist. */
+    if (settings.bw_afc_persist == 1u && settings.rf_bw_mode <= RF_BW_MODE_AUTO)
+        s_rf_bw_mode = (rf_bw_mode_t)settings.rf_bw_mode;
     apply_rf_bandwidth(s_rf_bw_mode != RF_BW_MODE_BW20);
-    if (settings.afc_mode <= AFC_MODE_OFF) s_afc_mode = (afc_mode_t)settings.afc_mode;
+    if (settings.bw_afc_persist == 1u && settings.afc_mode <= AFC_MODE_OFF)
+        s_afc_mode = (afc_mode_t)settings.afc_mode;
     /* v3 used this exact byte as zero-initialized reserved storage, so old
      * Range-v2 settings migrate losslessly with the proven GOLDEN demod. */
     s_demod_mode = DEMOD_MODE_GOLDEN_PHASE5;
@@ -388,7 +392,7 @@ void apply_rx_profile(rx_profile_t profile)
     ++s_profile_generation;
     s_agc_state = AGC_STATE_SEARCH;
     s_agc_mode = ANALOG_AGC_ACTIVE;
-    s_rf_bw_mode = RF_BW_MODE_BW40;
+    s_rf_bw_mode = RF_BW_MODE_AUTO;
     apply_rf_bandwidth(true);
     s_afc_mode = AFC_MODE_OFF;
     if (rf_get_frequency_offset_khz() != 0) apply_frequency_offset_khz_tracked(0);

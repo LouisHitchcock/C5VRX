@@ -1,6 +1,5 @@
 /* C5VRX-4: measure responsibilities. */
 #include "video_internal.h"
-#include "trajectory_v2_lut.h"
 
 static inline unsigned trajectory_v2_stage1_address(uint8_t previous_phase5,
                                                     uint8_t middle_raw,
@@ -8,6 +7,7 @@ static inline unsigned trajectory_v2_stage1_address(uint8_t previous_phase5,
 static void video_standard_vote(video_standard_t standard, uint16_t period);
 static void cvbs_analyze_locked(const uint8_t *raw, size_t bytes, c5v4_cvbs_stats_t *stats);
 static bool copy_level_snapshot(uint8_t *raw);
+#include "trajectory_v2_lut.h"
 
 /* Exact Phase5 state decode mirrored from the embedded fm.bsasm LUT.  The
  * detector is observation-only: the realtime BitScrambler remains the sole

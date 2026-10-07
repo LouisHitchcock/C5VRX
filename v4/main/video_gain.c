@@ -1,5 +1,11 @@
 /* C5VRX-4: gain responsibilities. */
 #include "video_internal.h"
+
+static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32_t phy);
+static void direct_gain_v5_dc_observe(const uint8_t *sample, size_t bytes,
+                                      const dg3_observation_t *o);
+static bool bw_in_narrow_gear(void);
+static void direct_gain_v5_bw_gear(const dg3_observation_t *o);
 #define V5_BW_REENTRY_US 5000000u
 
 #define V5_BW_CLEAR_HEADROOM 8u
@@ -7,12 +13,6 @@
 #define V5_BW_DWELL_US 1000000u
 
 #include "phase8_gain_lut.h"
-
-static void direct_gain_v3_apply_target(uint8_t target, uint32_t profile, uint32_t phy);
-static void direct_gain_v5_dc_observe(const uint8_t *sample, size_t bytes,
-                                      const dg3_observation_t *o);
-static bool bw_in_narrow_gear(void);
-static void direct_gain_v5_bw_gear(const dg3_observation_t *o);
 
 direct_gain_v3_t s_direct_gain_v3;
 
@@ -80,8 +80,10 @@ void direct_gain_v3_sentinel_timer_cb(void *arg)
     if (s_sfw_task_handle) xTaskNotifyGive(s_sfw_task_handle);
     if (s_v3_sentinel_task_handle)
         xTaskNotifyGive(s_v3_sentinel_task_handle);
-    /* V5: the observer runs on the same 200 us cadence instead of the 1 ms
-     * RTOS tick; a new RX descriptor completes every ~102 us. */
+    /* V5: the observer runs on the same 200 us cadence; a new RX
+     * descriptor completes every ~102 us. (A 1 kHz observer against the
+     * task watchdog cut range in flight on another board, PR #177 report;
+     * the CPU budget is measured instead: DG3_OBS obs_us_avg/max.) */
     if (s_v3_observer_task_handle)
         xTaskNotifyGive(s_v3_observer_task_handle);
 }
@@ -94,7 +96,7 @@ void direct_gain_v3_sentinel_task(void *arg)
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&
-                      !phy_rx_lab_busy() && !s_pre_q4_probe_active;
+                      !phy_rx_lab_busy() && !s_pre_q4_probe_active && !s_rssi_probe_active;
         if (!active || s_v3_fast_overload_state != 0u ||
             s_rx_dma_ch < 0 || s_rx_dma_ch >= 3 || s_rx_dscr_count < 2)
             continue;
@@ -190,7 +192,7 @@ static void direct_gain_v5_bw_gear(const dg3_observation_t *o)
     static uint64_t weak_since, strong_since, exit_us;
     const direct_gain_v3_t *v3 = &s_direct_gain_v3;
     const bool fixed = bw_fixed_calibrated();
-    if (s_rf_bw_mode != RF_BW_MODE_AUTO ||
+    if (s_rf_bw_mode != RF_BW_MODE_AUTO || !c5vrx4_edge_gear_enabled() ||
         (fixed && c5vrx4_bw_edge_code() == C5VRX4_BW_UNCALIBRATED)) {
         if (fixed && rf_fixed_bw_edge_active()) bw_set_edge(false);
         weak_since = strong_since = 0;
@@ -239,7 +241,7 @@ void direct_gain_v3_observer_task(void *arg)
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
         bool active = s_rx_profile == RX_PROFILE_DIRECT_GAIN &&
                       s_agc_mode == ANALOG_AGC_ACTIVE && !s_menu_active &&
-                      !phy_rx_lab_busy() && !s_pre_q4_probe_active;
+                      !phy_rx_lab_busy() && !s_pre_q4_probe_active && !s_rssi_probe_active;
         if (!active) {
             was_active = false;
             /* Never clear state 1 while the sentinel owns publication. */
@@ -306,6 +308,7 @@ void direct_gain_v3_observer_task(void *arg)
          * check counts consecutive stable windows and must see new data. */
         if (block_idx == last_block_idx) continue;
         last_block_idx = block_idx;
+        const int64_t obs_t0 = esp_timer_get_time();
         dg3_observation_t observation = direct_gain_v3_measure(
             sample, sizeof(sample), c5vrx_phase8_gain_lut,
             (uint64_t)esp_timer_get_time());
@@ -326,5 +329,11 @@ void direct_gain_v3_observer_task(void *arg)
          * task watchdog fired with gain_v3_obs on the CPU and the console
          * (USB input) starved; this work fed nothing anymore. */
         direct_gain_v5_bw_gear(&observation);
+        const uint32_t obs_us = (uint32_t)(esp_timer_get_time() - obs_t0);
+        s_obs_us_sum += obs_us;
+        if (obs_us > s_obs_us_max) s_obs_us_max = obs_us;
+        ++s_obs_windows;
     }
 }
+
+volatile uint32_t s_obs_us_sum, s_obs_us_max, s_obs_windows;

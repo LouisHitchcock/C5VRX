@@ -1,5 +1,9 @@
 /* C5VRX-4: diagnostics responsibilities. */
 #include "video_internal.h"
+
+static void record_transport_event(uint32_t flags);
+static void lab_clear_transport_sticky(void);
+static uint32_t lab_delta(uint32_t current, uint32_t base);
 #define P8ENV_CAPTURE_ATTEMPTS 96u
 
 #define P8ENV_CAPTURE_PROBES   32u
@@ -9,10 +13,6 @@
 #define GDMA_IN_FAULT_MASK  0xfcu /* ERR_EOF, DSCR_ERR/EMPTY, FIFO OVF/UDF, AHB response */
 
 #include "phase8_gain_lut.h"
-
-static void record_transport_event(uint32_t flags);
-static void lab_clear_transport_sticky(void);
-static uint32_t lab_delta(uint32_t current, uint32_t base);
 
 static void record_transport_event(uint32_t flags)
 {
@@ -169,7 +169,8 @@ void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            "dc_i_mstep=%d dc_q_mstep=%d bw40=%u bw_switches=%lu "
            "lane_changes=%lu fold_drops=%lu "
            "virtual_q8=%ld writes=%lu holds=%lu verified=%lu learned=%lu "
-           "settle_fine_us=%u settle_bb_us=%u settle_rf_us=%u\n",
+           "settle_fine_us=%u settle_bb_us=%u settle_rf_us=%u obs_windows=%lu obs_us_avg=%lu obs_us_max=%lu "
+           "sfw_us_last=%lu sfw_us_max=%lu\n",
            s_v3_p50, s_v3_p90, s_v3_p95, s_v3_origin_pm, s_v3_clip_pm,
            s_v3_coherence,
            (unsigned)s_direct_gain_v3.state, s_current_gain,
@@ -187,7 +188,12 @@ void lab_print_row(const char *kind, const hw_transport_counters_t *base)
            (unsigned long)s_direct_gain_v3.learned,
            s_direct_gain_v3.settle_us[DG3_FINE],
            s_direct_gain_v3.settle_us[DG3_BB],
-           s_direct_gain_v3.settle_us[DG3_RF]);
+           s_direct_gain_v3.settle_us[DG3_RF],
+           (unsigned long)s_obs_windows,
+           (unsigned long)(s_obs_windows ? s_obs_us_sum / s_obs_windows : 0u),
+           (unsigned long)s_obs_us_max,
+           (unsigned long)s_sfw_last_us, (unsigned long)s_sfw_max_us);
+    s_obs_us_sum = 0; s_obs_us_max = 0; s_obs_windows = 0;
 }
 
 /* Issue #119 origin-collapse oracle. On demand only ('E'): copy up to 32
@@ -309,4 +315,80 @@ void lab_print_arc_oracle(void)
            tuple->adc_rate_sel, tuple->iq_correction.enable,
            tuple->iq_correction.coef0, tuple->iq_correction.coef1);
     lab_print_row("ARC_ORACLE", NULL);
+}
+
+#define GAIN_FORCE_REG 0x600A702Cu
+static uint32_t s_gain_readback_checks, s_gain_readback_mismatch, s_gain_rf_word_mismatch;
+static uint32_t s_gain_readback_last;
+
+void predemod_gain_readback_service(void)
+{
+    if (rf_native_agc_active() || s_rx_profile != RX_PROFILE_DIRECT_GAIN ||
+        s_agc_mode != ANALOG_AGC_ACTIVE || phy_rx_lab_busy() ||
+        s_direct_gain_v3.state == DG3_SETTLE) return;
+    uint32_t reg = REG_READ(GAIN_FORCE_REG);
+    s_gain_readback_last = reg;
+    ++s_gain_readback_checks;
+    bool forced = (reg >> 23) & 1u;
+    uint8_t index = (uint8_t)(reg >> 24);
+    if (!forced || index != s_current_gain) {
+        if (++s_gain_readback_mismatch <= 5u)
+            printf("GAIN_READBACK mismatch reg=0x%08lx forced=%u hw_index=%u v5_index=%u\n",
+                   (unsigned long)reg, forced, index, s_current_gain);
+    }
+    /* The PBUS RF control word must carry the vendor tuple's RF code (not
+     * held: in debug mode it is our re-asserted copy). */
+    uint16_t w[3];
+    arc_gain_tuple_t t;
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    if (!phy_rx_lab_dco_held() && table && table->band5 && phy_rx_lab_gain_words(w) &&
+        arc_gain_tuple_decode(table, s_current_gain, &t) && w[0] != t.rf_code) {
+        if (++s_gain_rf_word_mismatch <= 5u)
+            printf("GAIN_READBACK rf_word=%u expected_rf=%u gain=%u\n", w[0], t.rf_code, s_current_gain);
+    }
+}
+
+void gain_readback_print(void)
+{
+    uint32_t reg = REG_READ(GAIN_FORCE_REG);
+    arc_gain_tuple_t t = {0};
+    const arc_gain_table_t *table = rf_get_arc_gain_table();
+    bool ok = table && arc_gain_tuple_decode(table, (uint8_t)(reg >> 24), &t);
+    printf("GAIN_READBACK reg=0x%08lx forced=%lu hw_index=%lu v5_index=%u tuple_rf=%u tuple_bb=%u "
+           "tuple_fine=%u packed=0x%05lx band5=%u checks=%lu mismatches=%lu\n",
+           (unsigned long)reg, (unsigned long)((reg >> 23) & 1u), (unsigned long)(reg >> 24),
+           s_current_gain, ok ? t.rf_code : 0u, ok ? t.bb_code : 0u, ok ? t.fine_code : 0u,
+           (unsigned long)(ok ? t.packed_state : 0u), table ? table->band5 : 0u,
+           (unsigned long)s_gain_readback_checks, (unsigned long)s_gain_readback_mismatch);
+    uint16_t w[3] = {0, 0, 0}, tr[3][3];
+    uint32_t events = 0;
+    bool words = phy_rx_lab_gain_words(w);
+    phy_rx_lab_gain_trace(tr, &events);
+    printf("GAIN_PBUS words=%u rf=%u bb=%u fine=%u rf_mismatches=%lu hold_trace_events=%lu "
+           "enter=%u/%u/%u debug=%u/%u/%u release=%u/%u/%u dco_held=%u\n",
+           words, w[0], w[1], w[2], (unsigned long)s_gain_rf_word_mismatch, (unsigned long)events,
+           tr[0][0], tr[0][1], tr[0][2], tr[1][0], tr[1][1], tr[1][2], tr[2][0], tr[2][1], tr[2][2],
+           phy_rx_lab_dco_held());
+    /* IQ path state, read-only (review 2026-10-07): phy_param[44] selects the
+     * phy_rxiq_opt() averaging branch, phy_param[650] the phy_rxiq_scale_set()
+     * selector (0x0000 / 0xFA00 / 0x00FA in 0x600A043C[15:0]); 0x600A0438
+     * holds the IQ coefficients. Image rejection itself is a bench item. */
+    printf("IQ_STATE rxiq_opt_flag=%u scale_sel=%u scale_reg=0x%08lx coef_reg=0x%08lx\n",
+           phy_param[44], phy_param[650], (unsigned long)REG_READ(0x600A043Cu),
+           (unsigned long)REG_READ(0x600A0438u));
+    /* Measured on the live IQ: meaningful with a strong carrier (the FM
+     * signal sweeps the circle). An ellipse shows as fine grain on a strong
+     * picture. */
+    {
+        const size_t w = RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES;
+        unsigned got = 0;
+        for (unsigned tries = 0; tries < 48u && got < 24u; ++tries) {
+            vTaskDelay(1);
+            if (rx_probe_copy_completed(s_dco_env_buf + got * w)) ++got;
+        }
+        predemod_iq_imbalance_t m = predemod_iq_imbalance(s_dco_env_buf, got * w);
+        printf("IQ_IMBALANCE windows=%u gain_ratio=%d.%03d phase_deg=%d.%d irr_db=%d.%d gain=%u p50=%d coherence=%d\n",
+               got, m.gain_x1000 / 1000, m.gain_x1000 % 1000, m.phase_x10 / 10, abs(m.phase_x10 % 10),
+               m.irr_db_x10 / 10, m.irr_db_x10 % 10, s_current_gain, s_v3_p50, s_v3_coherence);
+    }
 }

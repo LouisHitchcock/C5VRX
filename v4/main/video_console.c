@@ -1,9 +1,9 @@
 /* C5VRX-4: console responsibilities. */
 #include "video_internal.h"
+
 #define LAB_GAIN_STEP      2u        /* characterize the states production actually uses */
 
 #define LAB_GAIN_MIN       2u        /* production controller lower bound */
-
 
 void console_diag_task(void *arg)
 {
@@ -45,6 +45,7 @@ void console_diag_task(void *arg)
                 }
                 if (c5vrx4_console(c)) continue;
                 if (c == '`') rf_reboot_to_download(); /* flashing, never returns */
+                if (c == 0x14) { dco_ab_toggle(); continue; }
                 if (phy_rx_lab_profile_active() && c < 128 &&
                     !strchr("[]HpLl}q\r\n", c)) phy_rx_lab_stock();
                 if (rf_native_agc_active() && c < 128 &&
@@ -121,10 +122,16 @@ void console_diag_task(void *arg)
                     lab_run_11p_probe();
                 } else if (c == '\'') {
                     lab_run_sigrssi();
+                } else if (c == 'd') {
+                    lab_run_sigrssi_ladder();
                 } else if (c == '"') {
                     lab_run_phy_track();
                 } else if (c == '/') {
                     lab_run_dfilt();
+                } else if (c == '~') {
+                    lab_run_rx_recal();
+                } else if (c == '?') {
+                    flight_log_print();
                 } else if (c == ';') {
                     lab_run_bw20_wide();
                 } else if (c == '!') {
@@ -374,7 +381,7 @@ void console_diag_task(void *arg)
                            MENU_RUNTIME_ENABLED ?
                            (s_menu_active ? "OPEN" : "CLOSED") :
                            "TEMPORARILY DISABLED (live video only)");
-                    printf(" Keys: T/E/p/d diagnostics, J CVBS snapshots, r reset counters, l/L lag mark\n"
+                    printf(" Keys: T/E/p diagnostics, d sigRSSI ladder, J CVBS snapshots, r reset counters, l/L lag mark\n"
                            " N/X native AGC toggle (reboot), D Direct Gain V5, a/s/m active/frozen/manual\n"
                            " +/- manual gain, c channel, f AFC, ,/. offset, 0 center, e sample edge\n"
                            " o/v/O menu/standard/BOOT, space/n/tab next, enter/x select\n"
@@ -382,7 +389,8 @@ void console_diag_task(void *arg)
                            " * native witness calibration, # DCO A/B, $ filter sweep\n"
                            " W/B bandwidth A/B, : 11p A/B, / digital-filter A/B, ; BW20-wide A/B\n"
                            " '/\" signal-RSSI/tracking A/B, (/) native hold A/B, H/{/}/[/] PHY lab\n"
-                           " K fresh PHY calibration, q quiet, t timers, ` USB download\n"
+                           " K fresh PHY calibration, ~ RX recal lab, ? flight log, Ctrl-T DCO A/B\n"
+                           " q quiet, t timers, ` USB download\n"
                            " h/M/Z decode/transfer/lanes, u/%%/&/^/|/_/y/w boot options (reboot)\n");
                     printf("=======================================================\n\n");
                 }

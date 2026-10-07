@@ -10,6 +10,8 @@
 #include "cvbs_level.h"
 #include "cvbs_snapshot.h"
 #include "predemod.h"
+#include "rx_recal.h"
+#include "driver/temperature_sensor.h"
 #include "agc_witness.h"
 #include "idle_raster.h"
 #include "sync_flywheel.h"
@@ -430,3 +432,74 @@ extern const char *s_witness_result;
 extern agc_witness_result_t s_witness_last;
 extern unsigned s_witness_runs;
 extern volatile uint32_t s_cvbs_capture_running;
+
+#define CAL_SETTLE_US 1500000LL
+typedef enum { SPHASE_SCAN_REFUSED, SPHASE_SCAN_UNSETTLED, SPHASE_SCAN_SETTLED } sphase_scan_t;
+
+typedef struct {
+    int16_t code[2];
+    int16_t residual_mcells[2];    /* provenance: DC left at those codes */
+    uint8_t valid;
+} dco_entry_t;
+
+typedef struct {
+    uint16_t freq;
+    uint8_t version, lo, hi;
+    uint8_t band5, lane_mode, iq_scale_sel;
+    uint8_t recal;               /* measured on top of our exact-frequency recal */
+    int8_t filter_code, filter_skirt;
+    dco_entry_t e[ARC_VENDOR_GAIN_MAX + 1u];
+} dco_table_blob_t;
+
+typedef struct {
+    uint32_t uptime_s;
+    int16_t temp_c10, dc_i, dc_q;
+    uint8_t gain, p50, p95, coherence, idle, boot;
+} flog_entry_t;
+
+#define FLOG_N 16u
+typedef struct {
+    uint8_t version, next, boot;
+    flog_entry_t e[FLOG_N];
+} flog_blob_t;
+
+typedef enum { SPHASE_UNVERIFIED, SPHASE_CHECKING, SPHASE_SETTLED, SPHASE_FAILED } sphase_state_t;
+
+void dco_post_gain(uint8_t g);
+void dco_hook_print(const char *tag);
+void dco_ab_toggle(void);
+void lab_run_rx_recal(void);
+void predemod_dco_service(void);
+
+void predemod_gain_readback_service(void);
+void gain_readback_print(void);
+void predemod_dc_drift_service(void);
+
+void lab_run_sigrssi_ladder(void);
+
+void flight_log_service(void);
+void flight_log_print(void);
+const char *sphase_state_name(void);
+void predemod_sphase_autocheck(void);
+
+extern int64_t s_quiet_since_us, s_quiet_eval_us;
+extern uint16_t s_rx_recal_freq;
+extern uint32_t s_rx_recal_runs;
+extern volatile int64_t s_last_idle_sync_us;
+extern dco_table_blob_t s_dco_tab;
+extern uint32_t s_dco_searches, s_dco_holds, s_dco_loads, s_dco_saves, s_dco_carrier_refusals;
+extern bool s_dco_dirty;
+extern uint8_t s_dco_env_buf[24u * RX_PROBE_REGIONS * RX_PROBE_REGION_BYTES];
+extern unsigned s_dco_env_ratio;
+extern uint32_t s_dco_broken_iq, s_dco_hold_aborts;
+extern float s_temp_c;
+extern int s_drift_avg[2];
+extern uint32_t s_drift_nudges;
+extern volatile uint32_t s_obs_us_sum, s_obs_us_max, s_obs_windows;
+extern volatile uint32_t s_sfw_last_us, s_sfw_max_us, s_sfw_rebases;
+extern bool s_sphase_auto_done;
+extern unsigned s_sphase_auto_ppm;
+extern unsigned s_sphase_scans;
+extern volatile int64_t s_cal_settle_until_us;
+
+extern unsigned char phy_param[];

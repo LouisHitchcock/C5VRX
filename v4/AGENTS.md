@@ -57,7 +57,13 @@ pacing exclusion and the DC-recentring refusal (bank 3 is the hold plane). The
 no-carrier idle raster (docs/HDZERO.md, 2026-10-04) only replaces demodulated
 receiver noise: keep it out of any state with a carrier or sync, exit at the
 first one, keep V5 at its no-carrier maximum while it owns TX, and keep the `_`
-opt-out. It is not sync regeneration of a received picture. The V5
+opt-out. It is not sync regeneration of a received picture. Leon asked on 2026-10-06 for line repair in
+the sync flywheel (docs/SYNC_FLYWHEEL.md): `LINE REPAIR`, default on with the
+flywheel since the same day (operator), menu opt-out, needs the
+flywheel, copies only to bytes TX has not read and only from bytes RX has not
+overwritten, never in the vertical interval, at most 6 lines in a row; keep
+its dropout criterion (score >= 8, >= 7 worse than a clean source), which the
+host model needs so the uniformly weak range edge is not made worse. The V5
 radius boost (docs/RADIUS_BOOST.md) only moves the healthy P50 band on a strong,
 tight, rail-free ring; keep the immediate exit on rail codes/P95/jumps, the
 doubling hold-off, the normal-band constants and `y` as an opt-in. The

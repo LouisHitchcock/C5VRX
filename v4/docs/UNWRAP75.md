@@ -24,7 +24,7 @@ For a decoded adjacent step strictly below 90 degrees, quadrant motion is
 | 0 | abs(n) <= 1 | Ordinary endpoint branch |
 | 1 | n >= 2 | Positive trajectory; lift negative endpoint by 256 |
 | 2 | n <= -2 | Negative trajectory; lower positive endpoint by 256 |
-| 3 | Any opposite-quadrant adjacent pair | Ambiguous; neutral DAC voltage |
+| 3 | Any opposite-quadrant adjacent pair | Ambiguous; mid-grey DAC voltage (+2 MHz; was blanking until 2026-10-06, SYNC_FLYWHEEL.md) |
 
 This removes the +/-180 degree **endpoint** wrap within the proved domain.
 It does not make arbitrary noisy paths unambiguous. A true adjacent jump

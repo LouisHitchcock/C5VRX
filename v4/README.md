@@ -37,6 +37,8 @@ the previous 8,765-line C5VRX-3/V4 implementation is split by ownership:
 | `video_control.c`, `video_settings.c` | Buttons, scanner, AFC, NVS and native ownership |
 | `video_menu.c`, `video_idle.c` | Standalone menu/idle TX and optional flywheel |
 | `video_measure.c`, `video_calibration.c` | Completed snapshots, CVBS, bandwidth/witness calibration |
+| `video_dco.c`, `video_drift.c`, `video_sampling.c` | Per-gain DC correction, drift tracking and verified sampling checks |
+| `video_recorder.c` | Bounded flight history in NVS |
 | `video_console.c`, `video_diagnostics.c`, `video_lab.c` | USB commands, fault evidence and retained PHY A/B labs |
 
 `video_internal.h` is the private task/transport contract; application code uses
@@ -70,7 +72,8 @@ AGC, calibration and live video after the refactor.
 - Six original DAC GPIOs and resistor network; no CPU sample-paced output.
 - Direct Gain V5 by default: first-window physical correction, 200-us observer,
   descriptor dedupe, table-maximum listening, measured noise lane cap and
-  anti-hunt damping. Channel fades, poor phase coherence and prior clipping
+  anti-hunt damping: moderate excursions must persist for 20 ms before a
+  write; severe clipping still cuts gain immediately. Channel fades, poor phase coherence and prior clipping
   never permanently blacklist gain tuples; legacy NVS bans are ignored while
   measured gain ratios remain available. A healthy envelope stays write-free
   even with poor phase, while real overload still drops gain immediately.
@@ -79,7 +82,8 @@ AGC, calibration and live video after the refactor.
   Native AGC remains a separate opt-in gain owner.
 - Fixed fine IQ lanes by default: ADC bits {9,7,6,5} on I and Q (step 32
   codes, signed window +-256), selected before PARLIO RX starts and never
-  switched at runtime, for every gain owner. Analog gain does all amplitude
+  switched at runtime, for Direct V5 (native AGC uses the coarse set
+  {9,8,7,6} for its whole session). Analog gain does all amplitude
   tracking; its 13..32 P50 band is ~3.6-5.7 fine cells (~115-180 codes). With
   the measured ~35-code receiver noise at maximum gain, one fine step is close
   to one noise sigma: finer lanes add no phase information there but fold
@@ -108,15 +112,19 @@ AGC, calibration and live video after the refactor.
   stale-overload mailbox rejection, reversible pinned PHY/BW/11p/native-hold labs.
 - Tuning reaches 5945 MHz (R8, E6..E8) through `phy_set_freq` from the 5885 MHz
   centre, as zerowidth decoded R8; the old 5885 MHz ceiling is gone.
-- Default-on digital DC recentring: the raw I/Q centre is averaged per
-  gain/lane epoch from settled, unclipped observer windows; after two agreeing
-  evaluations and a move of at least 0.12 cell (at most every 2 s) the static
-  Phase8 decoder banks are rewritten around it through the verified LUT16
-  path. No PHY writes, no raw-ring change; HISTORY decode refuses it. NVS
-  `c5vrx4/dc_recenter=0` (`%`) opts out.
-- Default-on first-lock sampling-phase check: one glitch measurement at the
-  first stable carrier HOLD; only >=5000 ppm mid-transition reads trigger the
-  RX clock-slip scan. NVS `c5vrx4/sphase_auto=0` (`&`) opts out.
+- Digital DC recentring and the CVBS level servo retain their requested boot
+  options, but live LUT updates are blocked by the current implementation;
+  the level task is not started. The historical level/recentring notes describe
+  the intended paths and pending hardware gates, not active corrections.
+- Per-gain hardware DC correction uses quiet-gated, context-tagged calibration
+  codes, stops below the boot's measurable noise floor, and re-holds each gain's
+  pair immediately after a gain write/PHY restore. Native ownership, labs,
+  settling, broken-IQ refusal and per-gain bans remain enforced. Drift tracking
+  makes bounded fine-code nudges while receiving; Ctrl-T provides a RAM A/B.
+  Exact-frequency vendor RX recalibration is a manual `~` lab only.
+- The default-on sampling-phase autocheck latches only after a measured-good
+  result, retries refused/unsettled scans and rechecks after retunes. Native
+  AGC is supported; `&` opts out.
 - Default-on fixed analog bandwidth replaces the BW20/BW40 gear, which only
   moved the digital filter. It builds on [ESPARGOS esp-sdr](https://github.com/ESPARGOS/esp-sdr)'s C5 `BANDWIDTH`
   control (absolute RX0 capacitor code in BBTOP 0x67 regs 6/7, noise-FFT
@@ -141,10 +149,10 @@ AGC, calibration and live video after the refactor.
   goggles neither show green nor switch PAL/NTSC. The first carrier or sync
   returns to live video. The last stable standard is kept in NVS. `_` opts
   out. See docs/HDZERO.md.
-- The sync-referenced level servo (`u`) now also runs under native AGC (and
-  with the native acquisition mask, which decodes Q3 in every CPU snapshot),
-  so VTX deviation and carrier offset are corrected in every gain mode. See
-  docs/HDZERO.md for the HDZero cause analysis.
+- Fade-gated sync flywheel and line repair follow PR #180's defaults and
+  preserve its bounded CPU work, source/read-frontier checks, vertical-interval
+  refusal and limited consecutive line repair. SETUP/`w` provide opt-outs.
+  Board acceptance of the combined runtime remains pending.
 - V5 strong-signal radius boost (opt-in, `y`): on a strong, tight, rail-free
   carrier the healthy P50 band moves from 13..32 to 30..46 (IQ ring ~200
   instead of ~150 codes), so the 4-bit phase is finer. The first rail code,
@@ -161,7 +169,7 @@ AGC, calibration and live video after the refactor.
 |---|---|
 | `T` | Detector, mapping, lane geometry and gain-owner status |
 | `J` | AFC state plus eight bounded sync/IQ snapshots; no actuator |
-| `u` | Toggle default-on sync/black level regulation, reboot; fixed mapping required |
+| `u` | Toggle the requested level-regulation option, reboot; live LUT writes remain blocked |
 | `M` | Cycle STD150 (default) / CVBS150 / previous full-span transfer, reboot |
 | `Z` | Cycle fixed fine (default) / fixed ultrafine / protected adaptive V5 lanes, reboot |
 | `h` | STATIC / bounded HISTORY phase decode, reboot |
@@ -172,7 +180,7 @@ AGC, calibration and live video after the refactor.
 | `@` | Sampling-phase scan: RX clock slips, mid-transition glitch ppm, settles on a clean position |
 | `#` | Reversible RX DCO (PBUS DC DAC) closed-loop correction A/B, pinned PHY only |
 | `$` | Reversible RX filter-capacitor sweep (0x67 regs 6..13), pinned PHY only |
-| `%` | Toggle default-on digital DC recentring of the static decoder, reboot |
+| `%` | Toggle the requested digital DC-recentring option, reboot; live LUT writes remain blocked |
 | `&` | Toggle default-on first-lock sampling-phase check, reboot |
 | `=` | Measure the receiver-noise width per RX filter code and store the fixed BW (VTX off) |
 | `^` | Toggle default-on fixed analog BW (off restores the V5 BW gear), reboot |

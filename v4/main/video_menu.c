@@ -1,30 +1,5 @@
 /* C5VRX-4: menu responsibilities. */
 #include "video_internal.h"
-#define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + sizeof(s_setup_options))
-
-#define MENU_NODE_CHUNKS ((MENU_MAX_NODES + MENU_NODE_CHUNK - 1u) / MENU_NODE_CHUNK)
-
-
-enum { SETUP_ITEM_AFC, SETUP_ITEM_BOOT_MENU, SETUP_ITEM_OPTIONS };
-
-enum {
-    RF_ITEM_GAIN, RF_ITEM_DIGITAL_BW, RF_ITEM_ANALOG_BW, RF_ITEM_LANES,
-    RF_ITEM_CAL_BW, RF_ITEM_CAL_AGC, RF_ITEM_COUNT
-};
-
-enum {
-    UI_ROOT = 22,
-    UI_HEADER = 24,
-    UI_PANEL = 26,
-    UI_PANEL_2 = 29,
-    UI_DIVIDER = 33,
-    UI_MUTED = 39,
-    UI_SELECTED = 43,
-    UI_SELECTED_EDGE = 48,
-    UI_STRONG = 54,
-    UI_WHITE = 60,
-};
-#include "menu_font.h"
 
 static inline void menu_ui_pixel(int x, int y, uint8_t code);
 static void menu_ui_rect(int x, int y, int w, int h, uint8_t code);
@@ -57,6 +32,30 @@ static void menu_draw_list(const char *title);
 static void menu_draw_exit_page(void);
 static void menu_render_idle(void);
 static void start_menu_tx(void);
+#define SETUP_ITEM_COUNT (SETUP_ITEM_OPTIONS + sizeof(s_setup_options))
+
+#define MENU_NODE_CHUNKS ((MENU_MAX_NODES + MENU_NODE_CHUNK - 1u) / MENU_NODE_CHUNK)
+
+enum { SETUP_ITEM_AFC, SETUP_ITEM_BOOT_MENU, SETUP_ITEM_OPTIONS };
+
+enum {
+    RF_ITEM_GAIN, RF_ITEM_DIGITAL_BW, RF_ITEM_ANALOG_BW, RF_ITEM_LANES,
+    RF_ITEM_CAL_BW, RF_ITEM_CAL_AGC, RF_ITEM_COUNT
+};
+
+enum {
+    UI_ROOT = 22,
+    UI_HEADER = 24,
+    UI_PANEL = 26,
+    UI_PANEL_2 = 29,
+    UI_DIVIDER = 33,
+    UI_MUTED = 39,
+    UI_SELECTED = 43,
+    UI_SELECTED_EDGE = 48,
+    UI_STRONG = 54,
+    UI_WHITE = 60,
+};
+#include "menu_font.h"
 
 QueueHandle_t s_menu_commands;
 
@@ -118,6 +117,7 @@ static const uint8_t s_setup_options[] = {
     C5VRX4_OPT_AGC_MASK, C5VRX4_OPT_SPHASE, C5VRX4_OPT_IDLE_RASTER,
     C5VRX4_OPT_RADIUS_BOOST, C5VRX4_OPT_SYNC_FW, C5VRX4_OPT_CVBS,
     C5VRX4_OPT_HISTORY, C5VRX4_OPT_NATIVE_PATCH, C5VRX4_OPT_HW_DCO,
+    C5VRX4_OPT_LINE_FIX, C5VRX4_OPT_EDGE_GEAR,
 };
 
 static inline void menu_ui_pixel(int x, int y, uint8_t code)
@@ -469,10 +469,14 @@ bool menu_changes_pending(void)
 
 static void menu_option_text(unsigned option, char *value, size_t n)
 {
-    /* Native-AGC-only options do nothing under Direct V5: say so. */
+    /* Native-AGC-only options do nothing under Direct V5, and line repair
+     * runs inside the sync flywheel: say so. */
     bool native_only = option == C5VRX4_OPT_AGC_MASK || option == C5VRX4_OPT_NATIVE_PATCH;
+    bool needs_fw = option == C5VRX4_OPT_LINE_FIX &&
+                    !strcmp(c5vrx4_option_value(C5VRX4_OPT_SYNC_FW), "OFF");
     snprintf(value, n, "%s%s%s", c5vrx4_option_value(option),
-             native_only && !rf_native_agc_requested() ? " (NATIVE)" : "",
+             native_only && !rf_native_agc_requested() ? " (NATIVE)" :
+             needs_fw ? " (FLYWHEEL)" : "",
              c5vrx4_option_pending(option) ? " *" : "");
 }
 
@@ -683,9 +687,18 @@ static void start_menu_tx(void)
     __asm__ __volatile__("fence rw, rw" ::: "memory");
     AHB_DMA.out_link_addr[s_tx_dma_ch].val = (uint32_t)menu_node(0);
     AHB_DMA.channel[s_tx_dma_ch].out.out_link.outlink_start_chn = 1;
-    int64_t deadline = esp_timer_get_time() + 1000;
+    /* Board 2026-10-07: a 1 ms busy-wait with ESP_ERROR_CHECK rebooted the
+     * receiver when the idle raster started while its task (priority 3,
+     * sharing time slices with the V5 observer, below the flywheel) lost one
+     * 1 ms slice. Wait up to 50 ms, yielding; if TX is still not ready, start
+     * anyway (PARLIO outputs the idle code until data arrives) - never abort. */
+    int64_t deadline = esp_timer_get_time() + 50000;
     while (!parlio_ll_tx_is_ready(&PARL_IO)) {
-        ESP_ERROR_CHECK(esp_timer_get_time() < deadline ? ESP_OK : ESP_ERR_TIMEOUT);
+        if (esp_timer_get_time() >= deadline) {
+            printf("MENU_TX not_ready_after_us=50000 action=start_anyway\n");
+            break;
+        }
+        taskYIELD();
     }
     parlio_ll_tx_start(&PARL_IO, true);
     parlio_ll_tx_enable_clock(&PARL_IO, true);

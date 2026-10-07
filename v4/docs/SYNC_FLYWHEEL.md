@@ -104,7 +104,7 @@ C5VRX-4. Hardware acceptance is pending.
 
 | Key | Action |
 |---|---|
-| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default off since the first hardware run: task watchdog, USB console and menu starved), reboot |
+| `w` | Toggle the flywheel (NVS `c5vrx4/sync_fw`, default on; it was off after the first hardware run starved the task watchdog, USB console and menu, until the 2026-10-06 fix: 200 us tick, 50 us budget, priority 4 so its expiring data is processed on time, phase table in RAM), reboot |
 | `!` | `SYNC_FW` line: lock and standard, lines/clean/repaired/slots/rebuilt/missed, V syncs found/coasted, parity fixes, re-locks, acquisitions, skipped lines, floor skips, levels, period, noisy mode, `last_us`/`max_us`, budget, ns/evaluation |
 
 ## Host evidence (`tools/test_sync_flywheel.c`)
@@ -150,10 +150,142 @@ descriptor still holds the received bytes.
 5. **Re-lock.** Power-cycle the VTX: one short timing jump, no rolling.
 6. **Native mode with the mask.** Same as 3, plus `AGC_MASK` unchanged.
 
+## Board result 2026-10-06: default off again
+
+With the priority-4 / RAM-table build the flywheel locked (NTSC, V syncs
+found), but on a strong clean carrier (P50 37, Q 99 %) it re-acquired 862
+times and rebuilt 2916 pulses in 14 s while handling only ~60 % of the
+lines: it fell behind, re-acquired at a new phase and wrote synthetic syncs
+off the real ones - black streaks in a clean picture (operator). Default
+off until the redesign below.
+
+## Fade-gated repair (2026-10-06, default on)
+
+The flywheel no longer decides on its own when to write:
+
+- **Fade window, detected by the flywheel itself.** Each run samples up to
+  32 spans of the new raw data: valid FM video makes 75 ns endpoint steps
+  between sync - 12 and white + 12 bins (white = 7/3 of the sync depth above
+  blanking); receiver noise lands outside ~40 % of the time. At >= 15 % the
+  stretch, widened by one line on each side, is a fade; only lines inside
+  it may be written. Independent of the gain owner (native AGC too), no
+  hold after recovery, no shared deadline field. The first version used
+  V5's coherence < 75 (held 30 ms): review 2026-10-06 showed noise-free Q4
+  at radius 4-5 with full 4.667 MHz deviation reads coherence 66-72, so
+  valid video opened it. Integral host test: raw IQ -> detector ->
+  flywheel; noise-free radius 4 and 5 give 0 detections and 0 bytes
+  written; the deep fade is repaired; nothing is written before it or in
+  the clean stretch after it. Sync-only damage under a clean picture is
+  not a fade and is left alone.
+- **Stable lock first.** No write until 64 clean lines after a (re)lock, so
+  a fresh lock at a wrong phase can never write.
+- **Maintenance tracking.** Outside a window a stable lock measures one line
+  in eight (the VTX crystal keeps the period) and always follows the
+  vertical interval: ~10 instead of ~31 evaluations per line.
+- **Stalls keep the phase.** A stable tracker that falls behind (board:
+  7 ms CPU stalls) jumps whole lines on its period instead of re-acquiring
+  at a new phase - the cause of the black streaks.
+
+Host evidence (`tools/test_sync_flywheel.c`): clean signal without a window
+0 bytes changed, locked with the field phase, 9.8 (PAL) / 10.4 (NTSC)
+evaluations per line; 7 ms stalls every 30 ms: one acquisition, 5-6 phase-
+keeping jumps, 0 bytes changed; the PAL/NTSC fade scenes with the window
+open only around the fades: every H/V pulse on the output for every span
+alignment, no byte changed before the first fade. The line repair runs in
+the same window (its first dropout line may lack a scored source when the
+window opens on it). `!` status: `stable`, `fade_window`, `fade_opens`,
+`jumps`, `sampled`.
+
+## Line repair (2026-10-06)
+
+Operator request (Leon, 2026-10-06): repair static streaks from short
+dropouts, VCR-style. This **alters picture content**: a dropout line shows an
+older line instead of noise. It runs inside the flywheel and needs it on;
+menu SETUP `LINE REPAIR` (NVS `c5vrx4/line_fix`, default on since the
+operator's goggle check the same day, reboot).
+
+**Acquisition at the real budget.** The first board run with the flywheel at
+25 % CPU never locked: the preempted-run cost estimate (357 ns/eval) set the
+budget to ~140 evaluations per run, and the stride-3 search needs ~1700
+contiguous ones before RX overwrites the data. The search now probes every
+45 samples and measures only around a low probe (~140 evaluations per
+line); preempted runs no longer update the estimate, and the budget is at
+least 256. `tools/test_sync_flywheel.c` locks and keeps every range-edge
+pulse at 128 evaluations per descriptor.
+
+- **Detection.** When line L starts, line L-1 is complete. 24 spans across
+  its active picture (9.4 us after the sync to 1.5 us before the next line)
+  are checked against the learned levels: video lies between half the sync
+  depth below blanking and white (7/3 of the sync depth above blanking) plus
+  a margin. Pure noise lands outside ~54 % of the time (~13 of 24); a clean
+  line 0.
+- **Decision.** Repair only a dropout: score >= 8, at least 7 worse than the
+  source line, the source clean (<= 3), at most 6 lines in a row, never in
+  the vertical interval or on a skipped line.
+- **Source.** The line 2 (NTSC, 455 subcarrier cycles) or 4 (PAL, 1135
+  cycles) lines earlier: the same colour-subcarrier phase, so the colour
+  stays right. It must not be overwritten by RX (`intact_from`: one ring
+  behind RX plus two descriptors); the copy goes only to bytes TX has not
+  read.
+- **Copy.** Bit-exact interior; only the first and last 48 samples (1.2 us,
+  in the blanking edges) are re-phased onto the real neighbours, so neither
+  seam carries a glitch. Mask mode keeps data bit 0 unflagged.
+- **Cost.** 24 evaluations per line plus a ~2.4 KB copy per repaired line,
+  inside the flywheel budget.
+
+Host evidence (`tools/test_sync_flywheel.c`, `line_repair_scenario`):
+
+| Case | Result |
+| --- | --- |
+| Clean signal, repair on | 0 lines repaired, output byte-identical |
+| 8 dropouts x 1.6 lines, PAL | 16 repaired; active-picture error 17.3 -> 2.4 DAC codes/span |
+| 8 dropouts x 1.6 lines, NTSC | 15 repaired; 17.1 -> 3.4 |
+| Mask mode | repaired, no flagged byte written |
+| Uniformly weak carrier (range edge) | 23 (PAL) / 11 (NTSC) lines swapped; error 13.44 -> 13.49 / 13.29 -> 13.30 (noise level) |
+
+Rejected while building it (host model, same file):
+
+- Re-phasing every copied byte through the strong cells: ~8-bin quantization,
+  ~1 % worse at the range edge. Only the seams are re-phased now.
+- Score >= 6 with no margin: at the range edge 224 lines were swapped for
+  equally noisy older ones and the picture got 1.3 % worse.
+
+## Decoder: fewer sparkles at the range edge (2026-10-06)
+
+The decoder side of the same request, built after the operator pointed out
+that a free table change is worth even a few tenths of a dB
+(`generate_phase8.py`, no CPU or runtime cost):
+
+- **Ambiguous (class-3) trajectories** output mid grey (+38 bins, +2 MHz)
+  instead of blanking (black). They carry no usable delta; a constant near
+  the mean picture level is a smaller error. The optimum is flat over
+  25..50 bins. Sync detection is unaffected (blanking and grey are both
+  above the sync threshold).
+- **HISTORY near-origin prior** widened from radius^2 <= 2.6 / 8 bins
+  correction to 9 / 16 (HISTORY decode only; STATIC phases unchanged).
+
+Host model (post-detection model chain, 2^18 samples, Q4/I4 fine lane):
+
+| C/N | SNR before -> after | Sparkles (\|err\| > 25 % FS) |
+| --- | --- | --- |
+| 3 dB | 1.48 -> 1.90 dB | -6.2 % |
+| 5 dB | 3.71 -> 4.02 dB | -5.7 % |
+| 7 dB | 6.09 -> 6.22 dB | -2.8 % |
+| 9 dB | 8.19 -> 8.23 dB | -1.4 % |
+
+Tried and not taken: the class-3 endpoint delta clamped to the video range
+(+0.02 dB), and holding the previous value (not possible in the three-bundle
+TX program without a branch; the grey constant gets most of the gain).
+
+Hardware gates: goggle picture through hand-over-antenna dropouts with
+repair on/off; `!` status `concealed` / `conceal_no_source` /
+`conceal_late`; no task watchdog with flywheel + repair on.
+
 ## Limits
 
-- The repair cannot recover the picture content of a damaged line. It only
-  keeps the raster valid.
+- The sync repair cannot recover the picture content of a damaged line; it
+  keeps the raster valid. Line repair (above) replaces a dropout line with an
+  older one, it does not recover it either.
 - Timing when coasting through a long blackout follows the learned period: a
   slow drift of a few ppm, invisible to the goggles. The VTX picture can sit a
   fraction of a microsecond off until the PLL pulls it back.

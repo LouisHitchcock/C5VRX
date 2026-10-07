@@ -164,3 +164,26 @@ first-boot calibration and standalone menu/idle transitions before merging.
 The layout work incorporates Louis Hitchcock's PR #178 (commit
 `30ec84f81ed3f56833318037103a0986a34085c5`), adapted to the simplified runtime.
 Its parent branch's separate receiver behaviour changes are not imported.
+
+## Combined runtime and receiver fixes (2026-10-07)
+
+This integration combines PR #179 at `b1e4550c78ed3fff617812364d4b13cda25c8847`
+with PR #180 at `cf41672eb3376fdc9168ce559a3dac8043269648`. The earlier
+layout-only integration deliberately excluded the receiver fixes; this combined
+branch now includes them. Both source PRs remain open for independent review.
+
+The receiver fixes are applied to the split V4 runtime rather than restoring
+its monolithic C5VRX-3 copy. Per-gain DC state/hooks, drift tracking, sampling
+verification and flight recording have separate modules. The exact gain-table
+and retained algorithm regressions follow PR #180. Removed-controller tests
+stay removed; vendor gain-table/IQ correction coverage is retained separately.
+The nine generated current programs match PR #180, including its wider HISTORY
+prior and mid-grey ambiguous spans. Its release-mirror change detection is also
+included; trusted-main website publication stays unchanged.
+
+The merge preserves retained-lab ownership refusals in the V5 observer,
+sentinel and flywheel. It keeps native AGC exclusive, no automatic exact-channel
+vendor RX recalibration, opt-in edge filter gear, the 200-us observer and
+20-ms moderate-excursion persistence. No combined-image board acceptance is
+claimed; check live video, gain/DC transitions, CPU/watchdog margin, calibration,
+retuning and menu/idle handoffs on hardware.

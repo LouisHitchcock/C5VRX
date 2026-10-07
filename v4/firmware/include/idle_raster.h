@@ -26,6 +26,11 @@
  * noise now; the 2-window exit, 2 s entry and re-entry hold-off still stop
  * toggling. */
 #define IDLE_RASTER_QUIET_Q     20  /* carrier coherence below: receiver noise */
+/* Back at main's 20/22 (2026-10-07): 28/30 had been chosen for the noise
+ * after the automatic exact-frequency recal (q 10..26), which is removed. A
+ * fringe carrier reads q 25..39 - grainy but watchable - and must stay live:
+ * at 28/30 it was blanked and stayed blanked (operator: range worse than
+ * main). */
 #define IDLE_RASTER_CARRIER_Q   22  /* at or above: a carrier, return to live */
 /* Any sync fragment at this quality means a transmitter (noise reads 0); the
  * picture-grade threshold (70) is for the AGC, not for blanking video. */

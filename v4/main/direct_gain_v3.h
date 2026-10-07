@@ -53,6 +53,9 @@ typedef struct {
     int8_t last_write_dir;
     uint8_t reversals;
     uint64_t dir_write_us, damp_until_us;
+    /* Start of the current out-of-band streak; writes by severity. */
+    uint64_t excursion_since_us;
+    uint32_t writes_moderate, writes_severe;
     uint32_t damp_events;
     /* Range lanes: finer IQ bit sets above the table's maximum analog gain.
      * Lane k scales the Q4 amplitude by exactly 2^k (power 4^k). Lanes are
@@ -89,9 +92,11 @@ void direct_gain_v3_reset(direct_gain_v3_t *v3, const arc_gain_table_t *table,
 /* Measured gain map, kept across tracking resets on the same table and
  * persisted in NVS so V5 does not explore blindly after every reset/boot.
  * Powers are relative to each other (Q10); only confident states count. */
-#define DG3_MAP_VERSION 1u
+#define DG3_MAP_VERSION 3u  /* 3: + context identity; 2: exact vendor 5 GHz tuples; v1 maps used the 2.4 GHz model */
 typedef struct {
     uint8_t version, max_index;
+    uint16_t freq_mhz;          /* context: channel the map was measured on */
+    uint8_t lane_mode, band5;   /* context: IQ lane policy, 5 GHz table */
     uint8_t confidence[DG3_STATES];
     uint8_t bad_state[DG3_STATES]; /* v1 compatibility: export zero, ignore on import */
     uint16_t power_q10[DG3_STATES];

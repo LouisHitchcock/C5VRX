@@ -33,6 +33,13 @@ static bool s_lut_ready;
 #define DG3_REVERSALS_ARM   2u
 #define DG3_DAMP_US        200000u
 #define DG3_DAMPED_WINDOWS  8u   /* ~1.6 ms at the 200 us cadence */
+/* A moderate excursion (inside the clip/rail/starved limits) must persist
+ * this long before a write. Two 200 us windows made V5 write 30-100 times a
+ * second on a steady carrier (board and PR #177, 2026-10-07): ordinary FM
+ * envelope ripple crosses a band edge that often, and every write is a PHY
+ * transient (workmode G50 ~2 us, DC hold released) seen as rolling/static.
+ * 20 ms is a third of a field; severe excursions still act on one window. */
+#define DG3_MODERATE_US     20000u
 /* Range lanes. A lane switch is an instant GPIO remap, but the newest
  * completed RX descriptor (~102 us) can still hold pre-switch samples, so
  * two descriptor periods are skipped before measuring. */
@@ -265,6 +272,7 @@ unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *b
     memset(blob, 0, sizeof(*blob));
     blob->version = DG3_MAP_VERSION;
     blob->max_index = v3->table.max_index;
+    blob->band5 = v3->table.band5;
     unsigned confident = 0;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
         if (!v3->confidence[g] || !v3->relative_power_q10[g]) continue;
@@ -280,7 +288,7 @@ unsigned direct_gain_v3_export_map(const direct_gain_v3_t *v3, dg3_map_blob_t *b
 bool direct_gain_v3_import_map(direct_gain_v3_t *v3, const dg3_map_blob_t *blob)
 {
     if (!v3 || !blob || blob->version != DG3_MAP_VERSION ||
-        blob->max_index != v3->table.max_index) return false;
+        blob->max_index != v3->table.max_index || blob->band5 != v3->table.band5) return false;
     const uint8_t anchor = v3->current_gain;
     if (!blob->confidence[anchor] || !blob->power_q10[anchor]) return false;
     for (unsigned g = 0; g <= v3->table.max_index && g < DG3_STATES; ++g) {
@@ -356,16 +364,20 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
                 t->fine_code == boundary_fine) return (uint8_t)g;
         }
     }
-    /* A stage boundary is the last resort. Pick its weakest/strongest
-     * available tuple and verify before any further physical write. */
+    /* A stage boundary is the last resort: the adjacent stage's entry
+     * nearest in the vendor order - its first index going up, its last going
+     * down - verified before any further physical write. The old test asked
+     * for BB 1 / fine 5, true only in the former 2.4 GHz model: the exact
+     * 5 GHz table starts its stages at counters 12..15 (BB 7), so V5 could
+     * never leave the top of a stage (board 2026-10-07: stuck at G24, the
+     * last index of RF stage 2, with P50 5-7 and a fine grain). */
     int wanted_rf = (int)current->rf_stage + (up ? 1 : -1);
-    for (int distance = 0; distance < 6; ++distance) {
-        int boundary_fine = up ? 5 - distance : distance;
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
-            const arc_gain_tuple_t *t = &v3->tuple[g];
-            if ((int)t->rf_stage == wanted_rf && t->bb_code == 1u &&
-                t->fine_code == boundary_fine) return (uint8_t)g;
-        }
+    if (up) {
+        for (unsigned g = 20u; g <= v3->table.max_index; ++g)
+            if ((int)v3->tuple[g].rf_stage == wanted_rf) return (uint8_t)g;
+    } else {
+        for (int g = (int)v3->table.max_index; g >= 20; --g)
+            if ((int)v3->tuple[g].rf_stage == wanted_rf) return (uint8_t)g;
     }
     return best;
 }
@@ -376,22 +388,23 @@ static uint8_t adjacent_physical(const direct_gain_v3_t *v3, bool up)
  * the next emergency drop takes the RF stage. */
 static uint8_t emergency_drop(const direct_gain_v3_t *v3)
 {
+    /* Targets are the weakest entry (first index in the vendor order) of the
+     * lower BB group in this stage, else of the previous RF stage. The old
+     * tests asked for fine 5 / BB 1, which the exact 5 GHz table does not
+     * have at every group and never has at a stage start (counters 12..15),
+     * so an overload drop fell through to single steps (2026-10-07). */
     const arc_gain_tuple_t *current = &v3->tuple[v3->current_gain];
     if (current->bb_code > 1u) {
         unsigned lower_bb = (current->bb_code - 1u) / 2u;
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
+        for (unsigned g = 20u; g < v3->current_gain; ++g) {
             const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (t->rf_stage == current->rf_stage &&
-                t->bb_code == lower_bb && t->fine_code == 5u)
+            if (t->rf_stage == current->rf_stage && t->bb_code == lower_bb)
                 return (uint8_t)g;
         }
     }
     if (current->rf_stage > 0u) {
-        for (unsigned g = 20u; g <= v3->table.max_index; ++g) {
-            const arc_gain_tuple_t *t = &v3->tuple[g];
-            if (t->rf_stage + 1u == current->rf_stage &&
-                t->bb_code == 1u && t->fine_code == 5u) return (uint8_t)g;
-        }
+        for (unsigned g = 20u; g < v3->current_gain; ++g)
+            if (v3->tuple[g].rf_stage + 1u == current->rf_stage) return (uint8_t)g;
     }
     return adjacent_physical(v3, false);
 }
@@ -863,10 +876,12 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (high) {
         v3->weak_windows = 0;
         v3->last_direction = 2;
+        if (!v3->high_windows) v3->excursion_since_us = o->observed_us;
         if (v3->high_windows < 255u) ++v3->high_windows;
     } else if (weak) {
         v3->high_windows = 0;
         v3->last_direction = 1;
+        if (!v3->weak_windows) v3->excursion_since_us = o->observed_us;
         if (v3->weak_windows < 255u) ++v3->weak_windows;
     } else {
         v3->high_windows = v3->weak_windows = 0;
@@ -888,6 +903,8 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     unsigned need_weak = damped ? DG3_DAMPED_WINDOWS : severe ? DG3_WEAK_WINDOWS : 2u;
     if ((high && v3->high_windows < need_high) ||
         (weak && v3->weak_windows < need_weak)) return v3->current_gain;
+    if (!severe && o->observed_us - v3->excursion_since_us < DG3_MODERATE_US)
+        return v3->current_gain;
     /* Lanes are the last gain stage in and the first one out, but only in
      * whole 6 dB steps: when dropping one lane would undershoot the band,
      * the analog gain trims down instead (continuous total gain). */
@@ -908,6 +925,8 @@ uint8_t direct_gain_v3_tick(direct_gain_v3_t *v3,
     if (target == v3->current_gain) return target;
     if (v3->state == DG3_VERIFY) ++v3->corrections;
     v3->high_windows = v3->weak_windows = 0;
+    if (severe) ++v3->writes_severe;
+    else ++v3->writes_moderate;
     return start_write(v3, o, &prior, target);
 }
 
