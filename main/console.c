@@ -1,6 +1,7 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: USB serial console.
  * Polled, never paces the realtime path. */
 #include "receiver.h"
+#include "backpack.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "esp_app_desc.h"
@@ -50,6 +51,7 @@ static void status(void)
     profile_print();
     calibration_print();
     transport_print();
+    backpack_print();
 }
 
 /* 8190 contiguous IQ bytes as hex lines (tools/capture_iq_snapshot.py). */
@@ -89,6 +91,7 @@ static void snapshot(void)
 static void help(void)
 {
     printf("C5VRX-5 keys: T status, D range/health report, M gain map (for a preset), R per-second FIELD_DIAG lines on/off,\n"
+           "  U ELRS backpack UART/frame counters (read only),\n"
            "  g OUTPUT 0.5x..5.0x in 0.5x steps (saved after application; restored at boot),\n"
            "  G RX gain AUTO (KEEL-1) -> MAX -> fixed G78..G24 (until the next boot; every boot starts AUTO),\n"
            "  A live VTX profile switch on/off (continuous matching every 30 s; off = report only),\n"
@@ -135,6 +138,7 @@ static void console_task(void *arg)
         while (xQueueReceive(s_keys, &c, pdMS_TO_TICKS(100)) == pdTRUE) {
             switch (c) {
             case 'T': status(); break;
+            case 'U': backpack_print(); break;
             case 'I': snapshot(); break;
             case 'F': filter_request(); break;
             case 'D': diag_report(); break;
@@ -144,7 +148,7 @@ static void console_task(void *arg)
             case 'N': self_noise_request(); break;
             case 'Y': case 'W': case 'X': flightlog_console((char)c); break;
             case 'h': case '?': help(); break;
-            case 'o': case 'e': case 'v': case 'n': case 'x': case 'c': case 'b': case 's': case 'g': case 'A': case 'U': case 'G': case 'Q': case 'Z': {
+            case 'o': case 'e': case 'v': case 'n': case 'x': case 'c': case 'b': case 's': case 'g': case 'A': case 'G': case 'Q': case 'Z': {
                 int command = c;
                 if (s_commands) (void)xQueueSend(s_commands, &command, 0);
                 break;

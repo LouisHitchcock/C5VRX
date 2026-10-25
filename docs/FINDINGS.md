@@ -7,6 +7,52 @@ scripts and data live in that branch under `v4/docs/PICTURE_CLIFF_STUDY.md`,
 Synthetic results are host simulations; board results are labelled as such.
 Measured range is not established.
 
+## ELRS backpack V5 port (2026-10-25, local development)
+
+Extends the C5VRX-4 HDZero/MSPv2 UART link by Twotoz and the C5VRX
+contributors, on V5 release `5.0.493` / `057e3971ffd3`. D10/GPIO10 is
+UART1 RX at 115200, so its proposed seventh DAC resistor must remain DNP.
+The existing control task polls at most 64 bytes per 50 ms iteration and
+performs retunes through the normal AFC/profile/settings lifecycle. Busy
+calibration retains only the latest requested channel; repeats cannot undo
+a later local selection. ELRS L channels are refused rather than mapped
+onto V5's different L frequencies. `U`/`T` expose frame/error counters.
+
+Host evidence: CRC checked against an independent table for all 65,536
+input pairs; all 80 single-bit frame corruptions rejected with subsequent
+frame recovery; malformed/unsupported requests, deferred latest-request
+policy and repeat suppression pass. All 40 supported channel names and
+frequencies match the actual V5 RF table. Existing profile, AFC (32 checks),
+control-window (151), transport recovery and receiver-state tests pass.
+Local ESP-IDF 6.0.2 build `5.0.493-backpack.1` passes (217,444 bytes static
+RAM, 1,154,528-byte application image). The pinned PHY SHA-256 matches the
+base release. Application SHA-256:
+`92553a1e6f3aa381dedd00e5e10369e8cadea99140b3bd86e5d467655979064e`.
+Flashed to the XIAO C5 on COM33 with flash hash verification, preserving
+the matching partition table, NVS/calibration and flight log. The USB
+disconnect during watchdog reset occurred after verification; subsequent
+logs confirm the new version, ready-stage heartbeats and completed startup
+(`filter=loaded`, `dco_rows=30`, `sphase=settled`). `U` reports `ready=1`
+and zero UART/CRC errors. Initially no MSP frames arrived. After the
+operator sent R3 from the radio, USB log output had gone silent across a
+port close/reopen (status writes succeeded). A console-requested download
+boot and watchdog restart restored logs without reflashing. The receiver
+restored R3 / 5732 MHz, and fresh UART counters increased 2 -> 5 -> 7
+with `last_elrs=34`, zero CRC/UART/rejected errors and no pending request.
+The operator then sent R5. The same running receiver logged
+`[CHANNEL] R5 5806 MHz` and
+`[BACKPACK] SET_CHANNEL_INDEX 36 -> R5 5806 MHz: ESP_OK`.
+Subsequent STATUS lines stayed on R5 while received frames increased
+99 -> 104 -> 109 -> 114, with zero CRC, UART, oversize or rejected errors
+and `pending=-1`. This confirms the radio -> C3 -> UART -> V5 control
+path and a live R3-to-R5 retune; repeated announcements did not retrigger
+the channel change. Video reception was not established (`detected=none`,
+`afc_locked=0`). The USB
+logging issue also occurred on the base release before this port; its
+cause is not established here. No RF quality/range claim is made.
+See [ELRS_BACKPACK.md](ELRS_BACKPACK.md)
+for exact source revisions, wiring and the board validation procedure.
+
 ## GPIO27 IQ loopback experiment (2026-10-25)
 
 Operator request: a standalone GPIO-only PR directly on main, reserving

@@ -693,6 +693,14 @@ requirements by themselves**.
 
 ## Current realtime invariants (C5VRX-5)
 
+- Local V5 ELRS backpack port: UART1 RX-only on D10/GPIO10 at 115200.
+  This uses the otherwise unpopulated future DAC pin for control instead;
+  do not fit the D10 DAC resistor while the backpack is connected.
+  Extends C5VRX-4's HDZero/MSPv2 link, with bounded polling in the existing
+  control task and deferred retunes after calibration. The realtime IQ,
+  BitScrambler and six-bit DAC geometry is unchanged. Source revisions and
+  evidence boundaries: `docs/ELRS_BACKPACK.md`, `docs/FINDINGS.md`.
+
 - Operator IQ pin experiment (2026-10-25): `RF_IQ_GPIO_NUMS` in `main/rf.h`
   supplies both MODEM_DIAG routing and PARLIO RX: Q = 1/0/25/2,
   I = 27/5/3/4. GPIO27 replaces GPIO10; GPIO2 replaces GPIO7. Reserve

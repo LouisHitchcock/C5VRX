@@ -112,6 +112,19 @@ board validation. The operator reported unsatisfactory behavior with the
 LED-pin IQ route; this PR isolates it for comparison, not hardware acceptance.
 See [the pin-routing findings](docs/FINDINGS.md#gpio27-iq-loopback-experiment-2026-10-25).
 
+### ELRS backpack (V5 port)
+
+Follow-up to [PR #189](https://github.com/Twotoz/C5VRX/pull/189): adapt
+the C5VRX-4 HDZero/MSPv2 backpack link to V5. Wire C3 GPIO21
+TX through 1 kOhm to XIAO D10, plus common GND. USB `U` shows receive
+counters; radio channel changes use the normal receiver retune path.
+Leave the future D10 DAC resistor unpopulated. See
+[ELRS_BACKPACK.md](docs/ELRS_BACKPACK.md) for wiring, supported channels,
+validation and exact source revisions. This is a local adaptation of
+[C5VRX](https://github.com/Twotoz/C5VRX) by Twotoz and the C5VRX contributors,
+not an official release. The [official website](https://twotoz.github.io/C5VRX/)
+has the original project and its Discord invite.
+
 ### Wiring the resistor DAC
 
 Six resistors, one per XIAO pin, all joined on one node: that node is the

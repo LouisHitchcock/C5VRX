@@ -2,6 +2,8 @@
  * BOOT button and menu, AFC acquisition, PAL/NTSC detection, signal
  * strength and the channel scanner. Observes completed RX descriptors only. */
 #include "receiver.h"
+#include "backpack.h"
+#include "elrs_backpack.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -336,6 +338,7 @@ static void control_task(void *arg)
     uint32_t seen_phy = phy_generation(), seen_control = s_control_epoch;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+        backpack_poll();
         int c;
         for (unsigned k = 0; k < 8 && xQueueReceive(s_commands, &c, 0) == pdTRUE; ++k) command(c, &menu_idle);
 
@@ -345,6 +348,20 @@ static void control_task(void *arg)
          * menu, no idle exit. */
         if (menu_status_active() || menu_splash_active()) {
             btn = 0; long_fired = false; menu_idle = 0; continue;
+        }
+        /* Retunes belong to this task, after calibration/splash ownership.
+         * While busy the parser keeps only the newest radio request. */
+        uint8_t elrs;
+        if (!receiver_paused() && !phy_busy() && backpack_take(&elrs)) {
+            const int channel = elrs_backpack_c5_index(elrs);
+            esp_err_t err = ESP_OK;
+            if ((size_t)channel != rf_channel_index()) {
+                err = rf_set_channel((size_t)channel);
+                if (err == ESP_OK) after_retune();
+            }
+            menu_idle = 0;
+            printf("[BACKPACK] SET_CHANNEL_INDEX %u -> %s %u MHz: %s\n", elrs,
+                   rf_channel()->name, rf_frequency_mhz(), esp_err_to_name(err));
         }
         if (boot_grace) { --boot_grace; btn = 0; long_fired = false; }
         else if (gpio_get_level(BOOT_BUTTON) == 0) {
@@ -516,6 +533,7 @@ void control_start(void)
     }
     s_commands = xQueueCreate(16, sizeof(int));
     ESP_ERROR_CHECK(s_commands ? ESP_OK : ESP_ERR_NO_MEM);
+    backpack_start();
     /* IDF task stack depths are bytes. Reserve before driver allocations,
      * then supply that same 6144-byte stack and TCB without another malloc. */
     ESP_ERROR_CHECK(control_prepare() &&
