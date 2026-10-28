@@ -105,7 +105,9 @@ void app_main(void)
     s_boot_stage = "ready";
     s_boot_ready_ms = (esp_timer_get_time() - app_t0) / 1000;
     printf("BOOT_TIMING ready_ms=%lld target_ms=10000\n", s_boot_ready_ms);
-    printf("C5VRX5 %s ready: %s %u MHz, %s, ultrafine IQ, KEEL-1 ('h' for keys) fw=%s\n",
+    char gain_name[16];
+    printf("C5VRX5 %s ready: %s %u MHz, %s, ultrafine IQ, gain %s ('h' for keys) fw=%s\n",
            esp_app_get_description()->version, rf_channel()->name, rf_frequency_mhz(),
-           transport_program_name(), firmware_id());
+           transport_program_name(), receiver_gain_mode_name(receiver_gain_mode(), gain_name, sizeof(gain_name)),
+           firmware_id());
 }
