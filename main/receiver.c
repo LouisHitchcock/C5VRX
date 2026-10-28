@@ -145,6 +145,14 @@ static uint8_t agc_decision(uint8_t mode, const dg_observation_t *o)
                                    : agc_rssi_tick(&s_agc.rssi, o, s_current_gain, o->observed_us);
 }
 
+/* LEVEL reads a folded window by its carrier radius (agc_level_fold_radius);
+ * only folded windows pay for the estimate. */
+static void fold_measure(dg_observation_t *o, const uint8_t *samples, unsigned n)
+{
+    if (s_gain_mode == GAIN_MODE_LEVEL && s_agc_mode == GAIN_MODE_LEVEL && agc_folded(o))
+        o->fold_r_x16 = agc_level_fold_radius(&s_agc.level, samples, n, s_current_gain);
+}
+
 /* Fixed modes bypass the controller; apply_target clamps to the live table. */
 static uint8_t gain_decision(const dg_observation_t *o)
 {
@@ -771,6 +779,7 @@ static void sentinel_task(void *arg)
         if (control != s_control_epoch || phy != phy_generation() || phy_busy()) continue;
         ++s_sentinel_forwarded;
         if (!__sync_bool_compare_and_swap(&s_overload_state, 0u, 1u)) continue;
+        fold_measure(&o, sample, sizeof(sample));
         s_overload = o;
         s_overload_gain_epoch = gain_epoch;
         s_overload_control_epoch = control;
@@ -851,6 +860,7 @@ static void observer_task(void *arg)
                           (uint64_t)t0 - previous_cn.us >= CN_OBSERVE_PERIOD_US);
         dg_observation_t o = measure_cn ? dg_measure(sample, sizeof(sample), c5vrx_phase8_gain_lut, (uint64_t)t0) :
                                          dg_measure_gain(sample, sizeof(sample), c5vrx_phase8_gain_lut, (uint64_t)t0);
+        fold_measure(&o, sample, sizeof(sample));
         s_obs_p50 = o.p50;
         s_obs_p95 = o.p95;
         s_obs_origin_pm = o.origin_pm;

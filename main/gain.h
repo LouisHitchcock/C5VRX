@@ -46,6 +46,7 @@ typedef struct {
     uint16_t neg_i, neg_q;   /* samples with the sign bit set: never folded (dc_servo.h) */
     uint8_t rails;           /* rails reached: bit 0 I-8, 1 I+7, 2 Q-8, 3 Q+7 */
     uint16_t pwr_x16;        /* DC-removed mean power, cells^2 x16 (rx_level.h) */
+    uint16_t fold_r_x16;     /* carrier radius of a folded window, cells x16 (agc_level_fold_radius); 0 unknown */
     uint64_t observed_us;
 } dg_observation_t;
 

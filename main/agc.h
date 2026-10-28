@@ -71,6 +71,10 @@ typedef struct {
  * receiver noise power at the table maximum, cells^2 x16. */
 void agc_level_reset(agc_level_t *a, const int16_t row_db_q8[DG_STATES], uint8_t max_index, uint16_t noise_top_x16);
 uint8_t agc_level_tick(agc_level_t *a, const dg_observation_t *o, uint8_t current, uint64_t now_us);
+/* The carrier radius of a folded window at row `current`, cells x16, for
+ * dg_observation_t.fold_r_x16; 0 when the window is no clear circle over
+ * the 4-bit window or the row's noise is too high to tell (agc.c). */
+uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current);
 
 void agc_rssi_reset(agc_rssi_t *a, const int16_t row_db_q8[DG_STATES], uint8_t max_index);
 uint8_t agc_rssi_tick(agc_rssi_t *a, const dg_observation_t *o, uint8_t current, uint64_t now_us);
