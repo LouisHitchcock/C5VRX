@@ -315,6 +315,15 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
         phy_end_actuator();
         return;
     }
+    /* Only the KEEL-1 core counts its own writes (start_write); LEVEL, RSSI,
+     * fixed gains and the pair sweep write here without it, so the blackbox
+     * and T read 0 writes while the gain moves (blackbox session 279, LEVEL:
+     * G20..G83, gain_writes 0, no attack events). Counted as applied writes
+     * by direction: down is the attack, up the release. */
+    if (s_gain_mode != GAIN_MODE_AUTO || s_pair_active) {
+        ++s_gain.writes;
+        if (target < s_current_gain) ++s_gain.writes_severe; else ++s_gain.writes_moderate;
+    }
     s_current_gain = target;
     s_last_gain_write_us = esp_timer_get_time();
     ++s_gain_epoch;
