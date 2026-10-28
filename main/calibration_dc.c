@@ -125,7 +125,7 @@ static bool dco_matches(const dco_table_t *t, const dco_want_t *w)
 }
 
 /* Per-channel tables (dco_slots.h): slot blobs "dco0".."dco5" plus the
- * index "dco_idx". The single legacy "dco" table is adopted once. */
+ * index "dco_idx". */
 static dco_index_t s_dco_index;
 static bool s_dco_index_loaded;
 static uint16_t s_dco_seed_mhz;     /* the current table was seeded from this channel, 0 = own */
@@ -191,32 +191,10 @@ static void dco_index_load(void)
         dco_ready_load();
         return;
     }
+    /* No index of this version: start empty. The version 2 index and the
+     * single "dco" table of earlier builds predate calibration generation
+     * 5, which discards every older calibration, so nothing is upgraded. */
     dco_index_init(&s_dco_index);
-    /* Version 2 (one table per frequency): keep the measured tables, each
-     * under the filter its header records. */
-    dco_index_v2_t v2;
-    if (blob_load("dco_idx", &v2, sizeof(v2)) && v2.version == 2u) {
-        for (unsigned k = 0; k < DCO_SLOTS; ++k) {
-            s_dco_index.freq[k] = v2.freq[k];
-            s_dco_index.seq[k] = v2.seq[k];
-            memcpy(s_dco_index.templ[k], v2.templ[k], sizeof(dco_mask_t));
-            if (v2.freq[k] && dco_load_slot(k, &s_dco))
-                s_dco_index.filt[k] = dco_filter_key(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20);
-            else
-                s_dco_index.freq[k] = 0;
-        }
-        s_dco_index.next_seq = v2.next_seq;
-        memset(&s_dco, 0, sizeof(s_dco));
-        if (blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index))) printf("DCO index upgraded to per-filter slots\n");
-        dco_ready_load();
-        return;
-    }
-    /* Adopt the single table of earlier builds as the first slot. */
-    memset(s_dco_templ, 0, sizeof(s_dco_templ));   /* measured on its own channel */
-    if (blob_load("dco", &s_dco, sizeof(s_dco)) && s_dco.version == DCO_VERSION && s_dco.freq) {
-        s_dco_serving_valid = false;   /* dco_save() keys it by its own filter fields */
-        if (dco_save()) printf("DCO adopted the legacy table freq=%u as slot 0\n", s_dco.freq);
-    }
 }
 
 static void dco_load_table(const dco_want_t *w);
@@ -745,44 +723,13 @@ static const char *dco_quiet_rows(bool manual, bool refine, int64_t deadline, co
  * is restored. The DC DAC offsets are baseband offsets per gain row, so the
  * codes are stored for the own channel; the live drift nudges trim the
  * remaining difference. Startup only, behind the status screen. */
-/* ---- DC health in flight, repair at the next boot (dc_health.h) ---------
- * Passive: reads the table state, the filter registers and the trim's DC
- * mean; never writes the receiver. A sustained finding stores one flag per
- * (frequency, filter) and the menu shows DC CAL NEEDED; dco_startup then
- * re-measures that table and clears the flag only when it is complete. */
-static dc_flags_t s_dc_flags;
-static bool s_dc_flags_loaded;
-
-static uint32_t s_dc_flag_writes;
-
-static void dc_flags_load(void)
-{
-    if (s_dc_flags_loaded) return;
-    s_dc_flags_loaded = true;
-    if (!blob_load("dc_recal", &s_dc_flags, sizeof(s_dc_flags)) || !dc_flags_valid(&s_dc_flags))
-        dc_flags_init(&s_dc_flags);
-}
-
-static void dc_flags_save(void)
-{
-    if (blob_store("dc_recal", &s_dc_flags, sizeof(s_dc_flags))) ++s_dc_flag_writes;
-    else printf("DC_HEALTH error: repair flags not stored\n");
-}
-
-/* Profile name of a filter key on this board (NORMAL/NARROW/WIDE). */
-static const char *dc_key_profile(uint16_t key)
-{
-    static const int classes[3] = {FILTER_NORMAL, FILTER_NARROW, FILTER_WIDE};
-    static const char *const names[3] = {"NORMAL", "NARROW", "WIDE"};
-    for (unsigned c = 0; c < 3u; ++c) {
-        rf_filter_t f;
-        if (filter_setting(classes[c], &f) && dco_filter_key(f.code, (int)f.skirt, f.bw20) == key) return names[c];
-    }
-    return "OTHER";
-}
-
-/* No search or automatic repair is attached to this warning. Old NVS
- * repair flags may guide an explicit manual run, never normal boot. */
+/* ---- DC health in flight ------------------------------------------------
+ * Passive (drift_service): reads the table state, the filter registers and
+ * the DC mean; never writes the receiver. A sustained finding the servo
+ * cannot fix shows DC CAL NEEDED; no search or automatic repair is attached.
+ * (The NVS repair flags "dc_recal" of earlier builds are no longer read:
+ * nothing has written them since the manual calibration policy, and
+ * calibration generation 5 discarded the old ones.) */
 unsigned calibration_dc_needed(char *buf, size_t size)
 {
     /* Keep a proven recommendation visible while the user navigates the
@@ -828,14 +775,7 @@ void dco_startup(bool manual, int64_t deadline)
     const bool stale = dco_filter_stale(results,
         dco_filter_same(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20, live.code, (int)live.skirt,
                         live.bw20));
-    /* A repair flag from the last flight (dc_health_latch): the whole table
-     * is re-measured like a stale one, also with the VTX on. */
-    dc_flags_load();
-    const bool flagged = dc_flags_find(&s_dc_flags, rf_frequency_mhz(), live_filter_key()) >= 0;
-    if (flagged)
-        printf("DCO startup repair_flag=1 freq=%u filter_key=%04x profile=%s\n", rf_frequency_mhz(),
-               live_filter_key(), dc_key_profile(live_filter_key()));
-    if ((stale || flagged) && !dco_template_rows()) {
+    if (stale && !dco_template_rows()) {
         for (unsigned g = s_dco.lo; g <= s_dco.hi && g <= ARC_VENDOR_GAIN_MAX; ++g)
             if (s_dco.e[g].valid) dco_mask_put(s_dco_templ, g, true);
         s_dco_dirty = true;
@@ -848,7 +788,7 @@ void dco_startup(bool manual, int64_t deadline)
     /* Template rows from another channel are replaced only when the own
      * channel can be measured without a detour (VTX off at boot); rows of
      * another filter also go to a quiet channel. */
-    const bool refine = !manual && !missing && templ && (stale || flagged || (!carrier && dc_searchable()));
+    const bool refine = !manual && !missing && templ && (stale || (!carrier && dc_searchable()));
     if (!manual && !missing && !refine) {
         printf("DCO startup skip=complete rows=%u floor_rows=%u template_rows=%u\n", dco_valid_rows(),
                dco_rows(DCO_ROW_FLOOR), templ);
@@ -884,13 +824,6 @@ void dco_startup(bool manual, int64_t deadline)
         s_dco_dirty = true;
     }
     if (s_dco_dirty && dco_save()) s_dco_dirty = false;
-    /* The flag goes only with a complete table of this filter, saved. */
-    if (complete && !s_dco_dirty && !dco_rows(0) && !dco_template_rows() &&
-        dc_flags_clear(&s_dc_flags, rf_frequency_mhz(), live_filter_key())) {
-        dc_flags_save();
-        printf("DCO startup repair_flag=cleared freq=%u profile=%s\n", rf_frequency_mhz(),
-               dc_key_profile(live_filter_key()));
-    }
     printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u template_rows=%u "
            "floor_from_gain=%u\n", where, why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0),
            dco_template_rows(), s_dco_floor);
@@ -1326,7 +1259,7 @@ void drift_service(void)
     s_basemap_context = context;
     s_health_us += esp_timer_get_time() - now;
     const bool watch = cal_watch_add(&s_basemap_watch, context, now, qualified,
-                                    mismatch > 0 ? DC_HEALTH_FILTER : 0u, w.dc_i, w.dc_q);
+                                    mismatch > 0 ? CAL_REASON_FILTER : 0u, w.dc_i, w.dc_q);
     /* The live servo corrects DC: stable bad DC recommends calibration only
      * where it cannot (trim limit, no row, fault) or after it failed for
      * CAL_SERVO_GIVEUP_US on this channel and filter. */
@@ -1480,21 +1413,18 @@ void calibration_flog_live(int dc[2], int off[2], uint32_t *servo_writes, uint8_
 }
 
 
-/* Discard every DC table and repair flag of an earlier calibration
- * generation (calibration_generation), then store the empty state. */
+/* Discard every DC table of an earlier calibration generation
+ * (calibration_generation), then store the empty index. */
 void cal_dc_discard(void)
 {
     dco_index_init(&s_dco_index);
     s_dco_index_loaded = true;                 /* never adopt or upgrade the old tables */
     memset(s_dco_ready, 0, sizeof(s_dco_ready));
-    dc_flags_init(&s_dc_flags);
-    s_dc_flags_loaded = true;
 }
 
 bool cal_dc_store_discarded(void)
 {
-    return blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index)) &&
-           blob_store("dc_recal", &s_dc_flags, sizeof(s_dc_flags));
+    return blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index));
 }
 
 /* Flight-log calibration record, bytes 30..48 and 50..54: DC state. */
@@ -1505,7 +1435,7 @@ void cal_dc_record(uint8_t *p)
         flog_put16(e, s_dco_ready[k].freq); flog_put16(e + 2, s_dco_ready[k].key); e[4] = s_dco_ready[k].ready;
     }
     p[45] = (uint8_t)dco_valid_rows(); p[46] = (uint8_t)dco_rows(0); p[47] = (uint8_t)dco_template_rows();
-    p[48] = (uint8_t)s_dc_flags.count;
+    p[48] = 0;   /* repair flags (retired; the byte stays for the record layout) */
     flog_put16(p + 50, (uint16_t)(int16_t)s_drift_avg[0]); flog_put16(p + 52, (uint16_t)(int16_t)s_drift_avg[1]);
     p[54] = (uint8_t)(int8_t)(s_temp_c < -100.f ? -128 : (int)s_temp_c);
 }

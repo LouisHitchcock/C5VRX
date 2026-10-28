@@ -455,7 +455,7 @@ static void calibration_task(void *arg)
  * (DC codes measured in the wrong analog filter branch, one table for every
  * filter; docs/FINDINGS.md 2026-10-19), and an upgrade path that keeps old
  * codes kept exactly those errors. A boot with another generation discards
- * the filter calibration, every DC table and the repair flags, and runs the
+ * the filter calibration and every DC table, and runs the
  * full first-boot calibration. Raise CAL_GENERATION whenever a firmware
  * changes what a stored calibration means. */
 /* 3: 11p, 4: digital RX mode 12, 5: 4-class mode 12 filter and DC base map;

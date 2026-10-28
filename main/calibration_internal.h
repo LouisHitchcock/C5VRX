@@ -24,7 +24,6 @@
 #include "profile_logic.h"
 #include "sphase_logic.h"
 #include "dco_slots.h"
-#include "dc_health.h"
 #include "rf.h"
 
 typedef struct {

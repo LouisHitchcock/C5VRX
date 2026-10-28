@@ -16,7 +16,6 @@ PREFIX = r'''
 #include <stdio.h>
 #include <string.h>
 #include "calibration_policy.h"
-#include "dc_health.h"
 #include "sphase_logic.h"
 #define RF_LANE_ULTRAFINE 2
 static cal_watch_t s_basemap_watch;

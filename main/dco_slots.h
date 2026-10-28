@@ -34,13 +34,6 @@ typedef struct {
     uint16_t filt[DCO_SLOTS];   /* dco_filter_key() of the slot's table */
 } dco_index_t;
 
-/* Version 2 layout, for the one-time upgrade (calibration_dc.c). */
-typedef struct {
-    uint16_t version;
-    uint16_t freq[DCO_SLOTS], seq[DCO_SLOTS], next_seq;
-    dco_mask_t templ[DCO_SLOTS];
-} dco_index_v2_t;
-
 /* One number per physical filter setting (code -1..63, skirt, BW20). */
 static inline uint16_t dco_filter_key(int code, int skirt, unsigned bw20)
 {

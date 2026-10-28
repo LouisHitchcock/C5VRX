@@ -206,9 +206,9 @@ void receiver_dc_reset_all(void);
 /* A row's sample count and sign counts so far, without taking them: the
  * servo decides early on a saturated sign share (dc_servo.h). */
 bool receiver_dc_peek_row(uint8_t gain, uint32_t neg[2], uint32_t *samples);
-/* DC CAL NEEDED on this channel (dc_health.h): the flagged profiles in buf
- * ("NARROW", "NORMAL+WIDE"), the number of flags as the result; the next
- * boot re-measures them. */
+/* DC CAL NEEDED on this channel: nonzero while a live DC fault or a
+ * sustained DC finding the servo cannot fix recommends CALIBRATE; buf gets
+ * "FAULT" or "BASEMAP". */
 unsigned calibration_dc_needed(char *buf, size_t size);
 void calibration_print(void);
 void dco_post_gain(uint8_t gain);

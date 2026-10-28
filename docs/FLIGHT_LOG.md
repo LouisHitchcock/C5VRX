@@ -61,7 +61,7 @@ What the receiver was, how it was set and calibrated, and why it started.
 | settings: channel, standard mode, output level, gain mode, flywheel (removed 2026-10-25, always 0), live profile switch, AFC sign | user settings that cost range (fixed gain) are visible |
 | calibration this boot: what ran (filter, DC rows per filter, sampling phase, deviation), result, duration | "this boot calibrated" vs "loaded" |
 | filter settings NORMAL/NARROW/WIDE (bw20, code, skirt, width, noise bandwidth) | calibration-to-calibration differences |
-| DC tables: rows, template rows, ready per filter; repair flags | a stale or partial table |
+| DC tables: rows, template rows, ready per filter; repair flags (retired, always 0) | a stale or partial table |
 | sampling phase: state, chosen position, contrast | the per-boot choice our noise model cannot see |
 | boot DC (before the servo) and temperature | the boot offset the servo had to remove |
 
