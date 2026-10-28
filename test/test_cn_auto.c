@@ -34,6 +34,7 @@
 #include "cn_auto.h"
 #include "cn_estimate.h"
 #include "../research/legacy_demod/kp_only_kp_ladder.h"
+#include "adc_fold.h"
 
 static unsigned s_fail, s_run;
 static void check(const char *name, int ok)
@@ -46,7 +47,6 @@ static void check(const char *name, int ok)
 static uint32_t s_seed = 99u;
 static double urand(void) { s_seed = s_seed * 1664525u + 1013904223u; return ((s_seed >> 8) + 0.5) / 16777216.0; }
 static double gauss(void) { return sqrt(-2.0 * log(urand())) * cos(6.283185307179586 * urand()); }
-static int wrap4(double x) { const int c = (int)floor(x); return ((c + 8) & 15) - 8; }
 
 /* Rows and gains: model 1 dB a row over the test rows, real gain with a
  * per-row error of up to +-3 dB. */
@@ -78,8 +78,8 @@ static void generate(gen_t *g, unsigned k, double c_cells2, double porch_hz, dou
             const double t = t0 + n / 40e6;
             const double f = porch_hz + 2.3e6 * (0.5 + 0.5 * sin(6.283185307179586 * 15734.0 * t));
             phi += 6.283185307179586 * f / 40e6;
-            const int i = wrap4(r * cos(phi) + sg * gauss() + dci);
-            const int q = wrap4(r * sin(phi) + sg * gauss() + dcq);
+            const int i = adc_fold4(r * cos(phi) + sg * gauss() + dci);
+            const int q = adc_fold4(r * sin(phi) + sg * gauss() + dcq);
             const double x = i + 0.5, y = q + 0.5, p = x * x + y * y;
             cna_sums_add(&g->s, (uint8_t)(((unsigned)i & 15u) << 4 | ((unsigned)q & 15u)));   /* as the firmware */
             wx += x; wy += y; wp += p;

@@ -33,6 +33,7 @@
 #include <string.h>
 #include "gain.h"
 #include "phase8_gain_lut.h"
+#include "adc_fold.h"
 
 unsigned char phy_param[2048];
 
@@ -97,11 +98,6 @@ static double gauss(void)
     s_nseed = s_nseed * 1664525u + 1013904223u; u2 = (s_nseed >> 8) / 16777216.0;
     return sqrt(-2.0 * log(u1)) * cos(6.2831853 * u2);
 }
-static int wrap4(double x)
-{
-    const int c = (int)floor(x);
-    return ((c + 8) & 15) - 8;
-}
 /* A gain write is a PHY transient: WRITE_TRANSIENT_US of garbage across
  * the whole 4-bit window after it (the board's overload snapshots were clean
  * a few ms later; the overloads came from the transient). */
@@ -124,8 +120,8 @@ static dg_observation_t observe_samples(double level_db, unsigned k, uint64_t t)
         const double ts = (double)t * 1e-6 + n / 40e6;
         const double f = -1.0e6 + 1.5e6 * sin(6.2831853 * 15734.0 * ts);
         s_phi += 6.2831853 * f / 40e6;
-        const int i = wrap4(r * cos(s_phi) + sigma * gauss() + di);
-        const int q = wrap4(r * sin(s_phi) + sigma * gauss() + dq);
+        const int i = adc_fold4(r * cos(s_phi) + sigma * gauss() + di);
+        const int q = adc_fold4(r * sin(s_phi) + sigma * gauss() + dq);
         b[n] = (uint8_t)(((unsigned)i & 15u) << 4 | ((unsigned)q & 15u));
     }
     return dg_measure_gain(b, sizeof(b), c5vrx_phase8_gain_lut, t);
