@@ -7,6 +7,88 @@ scripts and data live in that branch under `v4/docs/PICTURE_CLIFF_STUDY.md`,
 Synthetic results are host simulations; board results are labelled as such.
 Measured range is not established.
 
+## LEVEL walks: blind counters, a frozen DC servo and folded windows (blackbox, 2026-10-28)
+
+Walks on LEVEL, 5865 MHz NTSC: sessions 279 (before PR #287), 286 (write
+counters) and 288 (DC servo fix).
+
+**Blind counters.** Only the KEEL-1 core counted its writes: on LEVEL the
+gain moved G20..G83 while `gain_writes`, `writes_attack/release` and the
+attack events read 0. `apply_target` now counts every model's writes.
+
+**Frozen DC servo on the top rows.** Session 286, VTX out of range: G83 for
+12 s with 2.4-4.2 cells of DC and 0 servo writes. IQ snapshot: the receiver
+noise cloud (2.1 cells per axis, as clean G83 noise) centred at +4.1/-3.7
+cells, half on the rails. The passive health block demoted the sampling
+phase to `unverified` on every block whose absolute HF statistic exceeded
+300, and receiver noise on the top rows reads ~725 on a clean position; the
+servo only corrects on a settled phase. A high block no longer demotes the
+phase (only scans do) and NOISE_LIMITED no longer stops the servo. Session
+288: the phase stayed settled all walk, G83 held 0.1-0.6 cells with 1-5
+servo writes a second, and the worst window without a carrier clipped 0.7 %
+instead of 4.6 %. The range cliff stayed at ~-85 dBm (video per 5 dB bin
+within walk-to-walk spread): that walk never met a weak carrier on a
+drifted top row, which is the case the fix removes.
+
+**Video follows the gain, not the walking.** Seconds with a carrier over
+sessions 279 and 286, video %:
+
+| | gain held | gain moved |
+| --- | ---: | ---: |
+| strong (> -78 dBm), level steady | 89.6 (n=23) | 73.8 (n=29) |
+| strong, level changing | 87.8 (n=8) | 72.5 (n=49) |
+| edge, level steady | 60.2 (n=30) | 51.5 (n=13) |
+
+The ~16 points (160 ms a second) are far more than the writes themselves
+(1-5 a second); the attack events show what surrounds them.
+
+**A fold steps down one home row at a time.** Session 286 attack events:
+G83 -> G79 -> G75 -> G71 -> G68 in 100 ms, a fold (14-38 % of the samples
+clipped, all four rails) before each step. The ultrafine lane keeps each
+component's sign and folds its magnitude modulo 8 cells (+9 cells reads +1,
+board PR #228), so a folded window reads small, and LEVEL counted it at its
+own power + 3 dB: one home row lower each time. The host models folded all
+four bits instead (`((c + 8) & 15) - 8`: +9 cells read -7, near the far
+rail), where a folded window reads large; they now share the hardware model
+(`test/adc_fold.h`). That alone hardly moves the host scores: with an exact
+gain model LEVEL seldom folds.
+
+**Fold radius.** An FM carrier is a circle, so the class probabilities of
+(|I|, |Q|) tokens per radius on the exact fold model
+(`research/fold_radius.py`, `main/fold_radius_table.h`, residual DC 0.3 cells
+per axis included) give the carrier radius of a folded window by maximum
+likelihood (`agc_level_fold_radius`). `test/test_fold_radius.c`: 96-100 % of
+folded carriers (9-24 cells, noise 0.3-0.6 cells, 64 or 256 samples) within
+half a cell, the rest no estimate (old reading), noise clouds 0-1 of 200.
+LEVEL counts a folded window at that radius. `test_agc_compare`, hand on the
+antenna (the folding case), without -> with:
+
+| gain model | close | mid | score, writes/s |
+| --- | --- | --- | --- |
+| exact | 79.1 -> 81.5 % | 63.9 -> 68.6 % | 70.47 -> 70.62, 1.6 -> 1.4 |
+| CI error (1 dB, low rows 6) | 77.8 -> 80.7 % | 63.9 -> 66.8 % | 70.07 -> 70.20, 2.0 -> 1.7 |
+| 3 dB per row | 77.8 -> 80.7 % | 64.6 -> 69.6 % | 69.21 -> 69.40, 3.1 -> 2.6 |
+
+Other scenarios within +-0.6 points; the edge is unchanged. With 3 dB of
+gain-model error LEVEL falls under KEEL-1 at the edge (39.9 against 41.2 %
+at 3 dB C/N, 9 writes a second at 6 dB): the board measures 13 rows from
+receiver noise and models the rest, so a measured row table is the next
+step.
+
+**Board walk 290 with LEVEL acting on it: no gain, so LEVEL only logs it.**
+Steps down from G77 and below (where the row noise allows an estimate) grew
+from one home row (median 3 rows, 14 % over several homes, walk 286) to a
+median 9 rows (59 %): the radius is used. But LEVEL climbed back (releases
+50 -> 90 per walk, folds a median 77 ms after the previous write against
+107) and folded again: folds at > -78 dBm 14.0/s (14.5 and 12.3 in walks 286
+and 288), video while the gain moved 70.8 % (73.2, 71.3), and -85..-80 dBm
+46 % (n=26) against 77 % (n=8) and 68 % (n=18). Either the radius
+overestimates on board IQ (the 0.7-cell table separates noise from a circle
+far less than the 0.35-cell one) or LEVEL's 200 ms history pulls it back to
+the pre-fold rows. `LEVEL_FOLD_RADIUS` is 0: LEVEL reads folds as before,
+and every attack event carries the radius it could have taken, the best one
+before the fit check and the fit, to tell the two apart on the next walk.
+
 ## DC fault after a walk: vendor bank 1 copied into the hold (board, 2026-10-27)
 
 **Symptom.** A walk on LEVEL (session 272) lost the picture at -50..-70

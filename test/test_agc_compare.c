@@ -34,6 +34,7 @@
 #include "agc.h"
 #include "gain.h"
 #include "phase8_gain_lut.h"
+#include "adc_fold.h"
 
 unsigned char phy_param[2048];
 
@@ -114,19 +115,18 @@ static double gauss(void)
     s_nseed = s_nseed * 1664525u + 1013904223u; u2 = (s_nseed >> 8) / 16777216.0;
     return sqrt(-2.0 * log(u1)) * cos(6.2831853 * u2);
 }
-static int wrap4(double x) { const int c = (int)floor(x); return ((c + 8) & 15) - 8; }
 
+static uint8_t b[256];   /* the last window, for LEVEL's fold radius (receiver.c fold_measure) */
 static dg_observation_t observe(double level_db, unsigned k, uint64_t t)
 {
-    uint8_t b[256];
     const double r = radius(level_db, k), sigma = noise_radius(k) / sqrt(2.0), d = dc_cells(k);
     const double di = d * cos(s_dca[k]), dq = d * sin(s_dca[k]);
     for (unsigned n = 0; n < 256u; ++n) {
         const double ts = (double)t * 1e-6 + n / 40e6;
         const double f = -1.0e6 + 1.5e6 * sin(6.2831853 * 15734.0 * ts);
         s_phi += 6.2831853 * f / 40e6;
-        const int i = wrap4(r * cos(s_phi) + sigma * gauss() + di);
-        const int q = wrap4(r * sin(s_phi) + sigma * gauss() + dq);
+        const int i = adc_fold4(r * cos(s_phi) + sigma * gauss() + di);
+        const int q = adc_fold4(r * sin(s_phi) + sigma * gauss() + dq);
         b[n] = (uint8_t)(((unsigned)i & 15u) << 4 | ((unsigned)q & 15u));
     }
     return dg_measure_gain(b, sizeof(b), c5vrx_phase8_gain_lut, t);
@@ -287,7 +287,10 @@ static result_t run(const scenario_t *sc, uint32_t seed, ctl_t ctl, int fixed_ro
         }
         uint8_t target = applied;
         if (ctl != C_STATIC) {
-            const dg_observation_t o = observe(lv, applied, t);
+            dg_observation_t o = observe(lv, applied, t);
+            /* As receiver.c fold_measure; LEVEL acts on it with -DLEVEL_FOLD_RADIUS=1 only. */
+            if (ctl == C_LEVEL && agc_folded(&o))
+                o.fold_r_x16 = agc_level_fold_radius(&s_lv, b, sizeof(b), applied, &o.fold_raw_x16, &o.fold_fit);
             target = ctl == C_KEEL ? dg_tick(&g, &o) : ctl == C_LEVEL ? agc_level_tick(&s_lv, &o, applied, t)
                                                                       : agc_rssi_tick(&s_rs, &o, applied, t);
         }

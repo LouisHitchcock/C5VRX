@@ -1,5 +1,5 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: live DC servo decisions
- * (pure logic, host test test/test_dc_servo.c; actuator in calibration.c).
+ * (pure logic, host test test/test_dc_servo.c; actuator in calibration_dc.c).
  *
  * Every channel setup gives the receiver DC another offset: six boots with
  * the VTX off left 1.0-3.8 cells after 60 s, a range limit of 2-8 dB C/N

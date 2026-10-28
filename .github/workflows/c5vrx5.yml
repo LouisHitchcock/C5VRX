@@ -77,7 +77,7 @@ jobs:
         working-directory: test
         run: |
           set -euo pipefail   # each compile on its own line: in "cc && ./t" a failed cc did not stop -e
-          for t in test_quiet test_profile test_diag test_afc test_afc_measure test_control_window test_cn_observation test_transport_recovery test_calibration_noise test_sphase test_dco_slots test_dc_health test_dc_servo test_flightlog test_rx_state test_dac_check test_sense_metrics; do
+          for t in test_quiet test_profile test_diag test_afc test_afc_measure test_control_window test_cn_observation test_transport_recovery test_calibration_noise test_sphase test_dco_slots test_dc_servo test_flightlog test_rx_state test_dac_check test_sense_metrics; do
             cc -O2 -std=c11 -Wall -Wextra -Werror -I../main "$t.c" -lm -o "/tmp/$t"
             "/tmp/$t" | tail -1
           done
@@ -111,6 +111,9 @@ jobs:
           /tmp/test_agc_compare | tail -5
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main -DSKIP_BOUNDS -DAGC_CHECKS -DPICTURE_Q -DWRITE_COST_US=7000 -DGAIN_ERR_DB=1.0 -DGAIN_ERR_LOW_DB=6.0 test_agc_compare.c ../main/agc.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_agc_compare_err
           /tmp/test_agc_compare_err | tail -5
+          # LEVEL's carrier radius of a folded window on the exact hardware fold model (adc_fold.h)
+          cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_fold_radius.c ../main/agc.c -lm -o /tmp/test_fold_radius
+          /tmp/test_fold_radius
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_cn_auto.c -lm -o /tmp/test_cn_auto
           /tmp/test_cn_auto
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_gain_measured.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_measured
@@ -178,6 +181,8 @@ jobs:
         run: /tmp/iqf-test-env/bin/python research/output_level.py --check
       - name: LEVEL quality table (level_quality.h matches the measured demod grid)
         run: /tmp/iqf-test-env/bin/python research/level_quality.py --check
+      - name: Fold radius table (fold_radius_table.h matches the hardware fold model)
+        run: /tmp/iqf-test-env/bin/python research/fold_radius.py header --check
       - name: Build C5VRX-5
         shell: bash
         run: |

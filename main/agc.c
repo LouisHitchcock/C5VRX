@@ -1,5 +1,6 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: LEVEL and RSSI AGC (agc.h). */
 #include "agc.h"
+#include "fold_radius_table.h"
 #include "level_quality.h"
 #include <math.h>
 #include <stdlib.h>
@@ -39,6 +40,22 @@
 #endif
 #ifndef LEVEL_LEARN_SETTLE_US
 #define LEVEL_LEARN_SETTLE_US 600u     /* the write transient */
+#endif
+/* Fold radius (agc_level_fold_radius): accepted when the window fits a
+ * circle within this much of a true one, per sample (0.2 nat; host model,
+ * research/fold_radius.py eval: carriers -0.04 median, noise clouds -0.55),
+ * and only beyond the window (a smaller "radius" is noise peaks folding). */
+#define FOLD_FIT_MIN    (-(FOLD_SCALE * 16 / 5))
+#define FOLD_R_MIN_X16  (8 * 16)
+/* Whether LEVEL acts on the fold radius. Off: measured and logged only
+ * (attack events). Board walk 290 with it on: the steps down from G77 and
+ * below grew from one home row (median 3 rows) to 9, but LEVEL then climbed
+ * back (releases 50 -> 90 per walk) and folded again within ~80 ms; folds
+ * and video were unchanged and -85..-80 dBm read 46 % against 68-77 %. The
+ * radius it took is logged so the next walk can tell an overestimate from a
+ * release too early. Host: -DLEVEL_FOLD_RADIUS=1 (test_agc_compare). */
+#ifndef LEVEL_FOLD_RADIUS
+#define LEVEL_FOLD_RADIUS 0
 #endif
 
 /* RSSI parameters. */
@@ -206,16 +223,27 @@ uint8_t agc_level_tick(agc_level_t *a, const dg_observation_t *o, uint8_t curren
     const int rel = a->rel_q8[current];
     const uint32_t noise = a->noise_x16[current];
     if (agc_folded(o)) {
-        /* Above the fold the level is unknown: the folded window's own power
-         * (the wrapped samples read low), counted LEVEL_FOLD_OVER_Q8 over when
-         * the carrier dominates it. At the edge the noise peaks fold windows
-         * while the carrier is weak, which costs nothing (level_quality.h). A
-         * fixed level at the rails instead read every such window as a strong
-         * carrier: with the measured table it held the top row on a strong
-         * folding carrier (the rails map to ~6 cells rms, the table's best). */
-        const uint32_t c = o->pwr_x16 > noise ? o->pwr_x16 - noise : noise / 50u + 1u;
-        const int over = c >= 2u * noise ? LEVEL_FOLD_OVER_Q8 : 0;
-        level_add(a, agc_db_q8(c) - agc_db_q8(16) - rel + over, LEVEL_FOLD_WEIGHT);
+        if (LEVEL_FOLD_RADIUS && o->fold_r_x16) {
+            /* The carrier's own radius, unfolded (agc_level_fold_radius): one
+             * decision goes to the row that fits. The window's power reads
+             * low, several dB under the carrier, and the old estimate below
+             * stepped down one home row per fold (blackbox session 286:
+             * G83 -> G79 -> G75 -> G71 -> G68 in 100 ms, a fold each). */
+            const uint32_t c = (uint32_t)o->fold_r_x16 * o->fold_r_x16 / 16u;   /* cells^2 x16 */
+            level_add(a, agc_db_q8(c) - agc_db_q8(16) - rel, LEVEL_FOLD_WEIGHT);
+        } else {
+            /* No circle (noise peaks folding at the edge, or too much noise
+             * to tell): the folded window's own power (the wrapped samples
+             * read low), counted LEVEL_FOLD_OVER_Q8 over when the carrier
+             * dominates it. Noise peaks folding windows at the edge cost
+             * little (level_quality.h). A fixed level at the rails instead
+             * read every such window as a strong carrier: with the measured
+             * table it held the top row on a strong folding carrier (the
+             * rails map to ~6 cells rms, the table's best). */
+            const uint32_t c = o->pwr_x16 > noise ? o->pwr_x16 - noise : noise / 50u + 1u;
+            const int over = c >= 2u * noise ? LEVEL_FOLD_OVER_Q8 : 0;
+            level_add(a, agc_db_q8(c) - agc_db_q8(16) - rel + over, LEVEL_FOLD_WEIGHT);
+        }
         a->fold_pending = true;
         a->move_pending = false;   /* a folded level says nothing about the row's gain */
         a->level_windows = 0;
@@ -283,6 +311,51 @@ uint8_t agc_level_tick(agc_level_t *a, const dg_observation_t *o, uint8_t curren
     a->level_windows = 0;
     return a->home[best];
 }
+
+/* Magnitude class of a sample, |I| * 8 + |Q| (fold_radius.py mag_class): a
+ * token t >= 0 is the cell t + 0.5, a negative one mirrors to -t - 1. */
+static inline unsigned fold_class(uint8_t b)
+{
+    const unsigned i = b >> 4, q = b & 15u;
+    return ((i & 8u) ? 15u - i : i) * 8u + ((q & 8u) ? 15u - q : q);
+}
+
+/* The ultrafine lane keeps the sign of each component and folds its
+ * magnitude modulo 8 cells, so a folded window reads small. An FM carrier
+ * is a circle: the radius whose class probabilities (fold_radius_table.h,
+ * the exact hardware fold model) explain the window best is the carrier's,
+ * folded or not. Host model: exact to the 0.25-cell step for noise up to
+ * 0.7 cells per axis, radii 4-24 cells, 64 or 256 samples. Integer only;
+ * ~7500 multiply-adds, run on folded windows only. */
+uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current,
+                               uint16_t *raw_x16, int8_t *fit_out)
+{
+    if (raw_x16) *raw_x16 = 0;
+    if (fit_out) *fit_out = INT8_MIN;
+    if (!a->homes || current > a->max_index || !n) return 0;
+    /* noise_x16 is cells^2 x16 for both axes; per axis sigma^2 x256 = 8 x it */
+    const uint32_t var_x256 = 8u * a->noise_x16[current];
+    unsigned s = 0;
+    while (s < FOLD_SIGMAS - 1u && var_x256 > (uint32_t)fold_sigma_x16[s] * fold_sigma_x16[s] * 2u) ++s;
+    if (var_x256 > (uint32_t)fold_sigma_x16[FOLD_SIGMAS - 1u] * fold_sigma_x16[FOLD_SIGMAS - 1u] * 2u) return 0;
+    uint16_t hist[64] = {0};
+    for (unsigned k = 0; k < n; ++k) ++hist[fold_class(samples[k])];
+    int32_t best = INT32_MIN;
+    unsigned best_r = 0;
+    for (unsigned r = 0; r < FOLD_R_N; ++r) {
+        const int8_t *lp = fold_logp[s][r];
+        int32_t score = 0;
+        for (unsigned c = 0; c < 64u; ++c) score += (int32_t)hist[c] * lp[c];
+        if (score > best) { best = score; best_r = r; }   /* ties: the smaller radius */
+    }
+    const int32_t fit = best * 16 / (int32_t)n - fold_expect[s][best_r];
+    const unsigned r_x16 = FOLD_R0_X16 + best_r * FOLD_R_STEP_X16;
+    if (raw_x16) *raw_x16 = (uint16_t)r_x16;
+    if (fit_out) *fit_out = (int8_t)(fit < -127 ? -127 : fit > 127 ? 127 : fit);
+    return fit >= FOLD_FIT_MIN && r_x16 >= FOLD_R_MIN_X16 ? (uint16_t)r_x16 : 0;
+}
+
+bool agc_level_fold_radius_used(void) { return LEVEL_FOLD_RADIUS != 0; }
 
 /* ---- RSSI ---- */
 

@@ -5,7 +5,8 @@ Preserve contributor attribution and third-party license notices.
 
 Only C5VRX-5 (repository root) is built; `legacy/` holds archived
 generations. Before changing RF, DSP, PARLIO, or AV behavior, read
-[docs/FINDINGS.md](docs/FINDINGS.md), the research ledger in `AGENTS.md`,
+[docs/FINDINGS.md](docs/FINDINGS.md), the research ledger
+[docs/RESEARCH_LEDGER.md](docs/RESEARCH_LEDGER.md),
 [legacy/c5vrx3/docs/KNOWLEDGE_INDEX.md](legacy/c5vrx3/docs/KNOWLEDGE_INDEX.md) and the relevant
 historical findings. Clearly distinguish simulation, bounded hardware tests,
 and long-duration physical proof.

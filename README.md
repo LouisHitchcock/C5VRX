@@ -23,24 +23,15 @@
 
 ---
 
-C5VRX-5 receives analog 5.8 GHz FPV video using the ESP32-C5's own radio
-and outputs composite PAL/NTSC through a passive 6-bit resistor DAC.
-It includes automatic gain control, quick baseline boot and manual calibration, an on-screen menu
-and browser-based flashing and controls. The sync flywheel was removed on
-2026-10-25 (it caused severe desyncs and poor range on the board).
+C5VRX-5 receives analog 5.8 GHz FPV video with the ESP32-C5's own radio and
+outputs composite PAL/NTSC through a passive 6-bit resistor DAC: automatic
+gain control, a quick baseline boot with manual calibration, an on-screen
+menu, and browser-based flashing and controls.
 
-This branch builds and boots **U80P64-R1 only**. U85Q, kp/LP switching and
-`m/K/k/j/P/O/H` controls are retired; see [P64 integration and evidence](docs/P64.md).
-The fixed R1 table has one positive NTSC observation; PAL, weak-signal/range
-and the final cleanup still need hardware validation. This default is an
-operator choice, not a hardware qualification claim.
-
-The PR #254 **11p receive baseline** is now applied at startup and after
-channel/bandwidth/AFC restores, before measured analog profiles and digital
-mode 0. In this branch calibration is manual; a quick boot phase check and
-passive health monitor may recommend CALIBRATE. Upgrades can invalidate older
-tables without starting an automatic calibration. The noise-only bench result is not a measured
-sensitivity/range gain; see [11p integration and limits](docs/FINDINGS.md#11p-receive-baseline-pr-254-integration-2026-10-24).
+The demodulator is **U80P64-R1** ([evidence and limits](docs/P64.md)). It has
+one positive NTSC check; PAL, weak-signal behaviour and range still need
+hardware validation. Board findings, including the retired U85Q/kp/LP models
+and the removed sync flywheel, are in [docs/FINDINGS.md](docs/FINDINGS.md).
 
 ## Experimental firmware — flight safety warning
 
@@ -51,29 +42,24 @@ sensitivity/range gain; see [11p integration and limits](docs/FINDINGS.md#11p-re
 > Loss of FPV video can lead to a crash, property damage or serious injury.**
 > Do not rely on C5VRX as your only means of maintaining safe control of an aircraft.
 
-- **Test every new firmware version and hardware/settings combination on the
-  ground first.** Remove propellers for bench tests. Check startup and
-  calibration, weak-signal behaviour, recovery after video loss, and your actual
-  camera/goggles. Complete calibration before takeoff.
-- **Keep disruptive controls on the ground:** calibration, scanning, channel
-  changes, menu entry/exit, DAC tests and diagnostics can interrupt or replace
-  the live picture. Do not flash firmware or run bench tests during flight.
-- **Automatic changes are experimental too.** Live filter/profile switching is
-  currently documented as enabled by default and awaiting board validation.
-  It restarts part of the receive chain and may interrupt video. Console
-  `A` disables live profile switching (report-only mode); confirm the state
-  with `T` on your build. Live OUTPUT, format and profile changes restart the pipeline. These settings do not establish flight safety.
-- If you proceed to flight testing, use a controlled area clear of people,
-  traffic and property, keep the aircraft close, and have a safe way to recover
-  control if video disappears. Follow applicable local rules, including visual
-  line-of-sight and observer requirements.
-- **A versioned release, a “Latest” label or passing CI is not flight
-  qualification.** Unmerged PR builds are development builds. Check the exact
-  build's documented hardware and flight-test evidence; a test of an earlier
-  build does not validate later changes.
-- Report unexpected video loss with the exact firmware version/commit, hardware,
-  settings, reproduction steps and any available logs/DVR footage. Preserve
-  evidence after an incident, and investigate on the ground before flying again.
+- **Test every firmware, hardware and settings combination on the ground
+  first**, propellers removed: startup, calibration, weak signal, recovery
+  after video loss, with your own camera and goggles.
+- **Keep disruptive actions on the ground.** Calibration, scanning, channel
+  changes, the menu, DAC tests and diagnostics can interrupt the picture;
+  never flash or run bench tests in flight.
+- **Automatic changes are experimental too.** Live filter/profile switching
+  (default on; console `A` turns it off, `T` shows the state) and live
+  OUTPUT/format changes restart part of the pipeline and may interrupt video.
+- **Fly tests in a controlled area** clear of people, traffic and property,
+  close by, with a safe way to recover if video disappears, and within local
+  rules (visual line of sight, observers).
+- **A release, a "Latest" label or green CI is not flight qualification.**
+  PR builds are development builds; a test of an earlier build does not
+  validate later changes.
+- **Report video loss** with the exact firmware version, hardware, settings,
+  steps and any logs/DVR footage, and investigate on the ground before flying
+  again.
 
 The firmware is provided under [GPL-3.0-only](LICENSE), including its warranty
 and liability provisions in sections 15–17, to the extent permitted by
@@ -82,43 +68,15 @@ that cannot legally be excluded.
 
 ## Video
 
-[Watch the C5VRX-5 vs C5VRX-4 flight range test by Louis Hitchcock](https://www.youtube.com/watch?v=Gp3xmLrn_34).
+[C5VRX-5 vs C5VRX-4 flight range test by Louis Hitchcock](https://www.youtube.com/watch?v=Gp3xmLrn_34).
 
 ## Hardware
 
-XIAO ESP32-C5. DAC on D4..D9 (GPIO 23, 24, 11, 12, 8, 9; LSB first) with
-8.2k / 3.9k / 2k / 1k / 470R / 240R and a 200R load, as in C5VRX-3/4
-([schematic](docs/hardware/c5vrx-dac-schematic.png)). The
-receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
+A Seeed Studio XIAO ESP32-C5 and seven resistors; no extra RF parts
+([schematic](docs/hardware/c5vrx-dac-schematic.png)). Six resistors, one per
+pin, join on one node, the CVBS output; the seventh loads that node to GND.
 
-This development build moves the internal I-LSB loopback from D10/GPIO10
-to the user-LED GPIO27, and the Q-sign loopback from D3/GPIO7 to GPIO2.
-This reserves **D10 and D3 for future seventh/eighth DAC branches**. The LED
-may glow during reception. No external IQ wiring is needed; the active DAC
-remains 6-bit and the extra resistor footprints must stay **unpopulated (DNP)**.
-
-| Reserved extra branch | XIAO pin / GPIO | Nominal resistor to CVBS | Future significance |
-| --- | --- | --- | --- |
-| Seventh branch | D10 / GPIO10 | 15 kOhm | 7-bit: bit 0; 8-bit: bit 1 |
-| Eighth branch | D3 / GPIO7 | 33 kOhm | 8-bit: bit 0 (LSB) |
-
-“Seventh/eighth” counts physical branches; these are added **low** bits,
-not new MSBs. Existing D4..D9 branches become bits 1..6 for 7-bit or 2..7
-for 8-bit. These are reserved footprints, not enabled output lanes or a
-validated 7/8-bit resistor network. Wider output needs firmware and loaded
-CVBS level/linearity checks. D3/GPIO7 is a boot strap: check reset loading
-before populating its branch. GPIO2 is now IQ-owned and cannot also carry
-the optional sample clock from PR #257. Both new IQ routes still require
-board validation. The operator reported unsatisfactory behavior with the
-LED-pin IQ route; this PR isolates it for comparison, not hardware acceptance.
-See [the pin-routing findings](docs/FINDINGS.md#gpio27-iq-loopback-experiment-2026-10-25).
-
-### Wiring the resistor DAC
-
-Six resistors, one per XIAO pin, all joined on one node: that node is the
-video output (CVBS). A seventh resistor from that node to GND is the load.
-
-| XIAO pin | GPIO | DAC bit | resistor to the output node |
+| XIAO pin | GPIO | DAC bit | Resistor to the output node |
 | --- | ---: | --- | ---: |
 | D4 | 23 | bit 0 (LSB) | 8.2 kΩ |
 | D5 | 24 | bit 1 | 3.9 kΩ |
@@ -139,21 +97,22 @@ D9 --[240R]--+   [200R]   (optional: 470 pF from the node to GND,
 GND ---------------+------> GND (goggle / monitor AV-in ground)
 ```
 
-- The pin order matters: the largest resistor (8.2k) goes on D4 and the
-  smallest (240R) on D9. A swapped pair gives a scrambled, banded picture.
-- Connect the output node to the video input (centre/tip) of the goggles,
-  a DVR or an analog monitor, and the XIAO GND to its ground. A common
-  ground is required.
-- All values are standard E24; 1 % metal-film resistors are fine. Keep
-  the wires from the pins to the node short.
-- Too dark or too dim on some goggles: try OUTPUT in the menu (0.5-5.0x,
-  saved). Higher levels can clip; check the loaded output on your display.
-- The XIAO is powered over USB-C or its 5 V pin as usual; the DAC needs no
-  separate supply.
-- **Check the build with the DAC self-test** before chasing picture
-  problems: a test pattern for the goggles and a multimeter check that names
-  a swapped, open or wrong resistor. See
+- **Pin order matters**: 8.2k on D4, 240R on D9. A swapped pair gives a
+  scrambled, banded picture.
+- Connect the node to the video input (tip) of the goggles, DVR or monitor,
+  with a common ground. Standard E24 1 % resistors are fine; keep the wires
+  short. Power comes over USB-C or the 5 V pin.
+- Too dim on some goggles: raise **OUTPUT** in the menu (0.5–5.0x, saved);
+  high levels can clip.
+- **Check the build with the DAC self-test** (`Z` or menu DAC TEST) before
+  chasing picture problems: see
   [Building and testing the resistor DAC](docs/hardware/dac-build-and-test.md).
+
+IQ routing is internal (no wiring) and uses GPIO27 (the user LED, which may
+glow) and GPIO2. That keeps **D10/GPIO10 and D3/GPIO7 free for a future
+seventh/eighth DAC branch** (15 kΩ and 33 kΩ, added as *low* bits). Leave
+them **unpopulated**: the firmware is 6-bit, and the new IQ routes still need
+board validation ([pin-routing findings](docs/FINDINGS.md#gpio27-iq-loopback-experiment-2026-10-25)).
 
 ### DIY Carrier PCB — REV C: Fat Shark Module + 3.5 mm AV Jack
 
@@ -183,89 +142,64 @@ KiCad ERC/DRC and schematic/PCB parity checks are clean; REV C has not been buil
 ## Flashing
 
 - **Browser:** open the [web flasher](https://twotoz.github.io/C5VRX/) in
-  desktop Chrome or Edge, choose **C5VRX-5** and a build, then flash.
-  Use **Full firmware** when switching from another generation.
-  Unmerged PR builds are marked as development builds.
-- **From source:** use ESP-IDF **6.0.2**, run `idf.py build` in the
-  repository root, then `python tools/flash.py PORT` (for example `COM6`
-  or `/dev/ttyACM0`). Filter and DC correction require its exact libphy;
-  other PHY versions disable them and produce a build warning.
+  desktop Chrome or Edge, choose **C5VRX-5** and a build, and flash. Use
+  **Full firmware** when coming from another generation. **Local File**
+  flashes your own `.bin`; **Legacy builds** holds archived C5VRX-3 firmware.
+- **From source:** ESP-IDF **6.0.2** (filter and DC correction need its exact
+  libphy; other versions build with them disabled and a warning):
+
+  ```sh
+  idf.py build
+  python tools/flash.py PORT          # e.g. COM6 or /dev/ttyACM0
+  ```
+
   Do not use `idf.py flash` on a running receiver: its USB line reset hangs
-  the board (pySerial "Write timeout") until USB and battery are removed.
-  `tools/flash.py` asks the firmware for download mode with the `` ` `` key,
-  flashes without a line reset and restarts through the watchdog. If the
-  board is already in the ROM loader (BOOT held while plugging in), add
-  `--no-key`. `--app-only` flashes only the app image, which is faster
-  when the bootloader and partition table have not changed, and
-  `--monitor` then shows the console without resetting the chip (use it
-  instead of `idf.py flash monitor`; `--monitor-only` opens it without
-  flashing). `--log FILE` keeps a timestamped copy of the console,
-  `--iq DIR` saves each IQ snapshot (key `I`, or every N seconds with
-  `--iq-every N`) as `.bin` + `.json`, and `--check` waits for the boot,
-  runs `T` and `D` and exits 1 if the board crashed, runs a different
-  image than the one flashed, or reports a chain fault (low heap only
-  warns). Before flashing it warns when the build's `sdkconfig` differs
-  from `sdkconfig.defaults`: ESP-IDF keeps an existing `sdkconfig`, so
-  delete it and rebuild after the defaults change.
-- **Local File** flashes your own `.bin`; **Legacy builds** contains archived
-  C5VRX-3 firmware.
+  the board until USB and battery are removed. `tools/flash.py` enters
+  download mode through the firmware instead. Useful options: `--app-only`,
+  `--monitor` / `--monitor-only`, `--log FILE`, `--iq DIR` (IQ snapshots),
+  `--check` (boot, `T` and `D`; fails on a crash, wrong image or chain
+  fault), `--no-key` (board already in the ROM loader). After
+  `sdkconfig.defaults` changes, delete `sdkconfig` and rebuild.
+- **XIAO ESP32-C5HR8 with 8 MB PSRAM** (optional; the standard image also
+  runs without PSRAM, this one panics without it):
 
-## Optional XIAO PSRAM build
+  ```sh
+  idf.py -B build-psram -DSDKCONFIG=sdkconfig.psram "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.psram.defaults" build
+  python tools/flash.py PORT --build build-psram --check
+  ```
 
-The standard release and web-flasher image also support boards without PSRAM.
-For a XIAO ESP32-C5HR8 with 8 MB PSRAM, build a separate image with ESP-IDF 6.0.2:
-
-```sh
-idf.py -B build-psram -DSDKCONFIG=sdkconfig.psram "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.psram.defaults" build
-python tools/flash.py PORT --build build-psram --check
-```
-
-Use a fresh `sdkconfig.psram` when changing these defaults. Flash the full image
-when switching configurations, including the matching bootloader. This image
-requires PSRAM and will panic on a board without it. The contributor measured
-boot `heap_min` rising from about 2.1 KB to 21.9 KB on the XIAO; PAL and long-run
-checks remain pending. The live DMA/video buffers stay in internal RAM.
-See [PSRAM measurements and limits](docs/FINDINGS.md#psram-8-mb-on-the-xiao-now-mapped-board-2026-10-26).
+  Flash the full image when switching. Boot `heap_min` rose from ~2.1 KB to
+  ~21.9 KB; PAL and long runs are pending
+  ([measurements](docs/FINDINGS.md#psram-8-mb-on-the-xiao-now-mapped-board-2026-10-26)).
 
 ## First boot
 
-1. Power the receiver: it loads saved values or a fixed baseline. A bounded
-   sampling-phase check runs under the boot logo; no automatic RF/DC sweep.
-2. If repeated measurements show a poor baseline, the menu shows a calibration
-   recommendation. Use **CALIBRATE** on the ground, preferably with the VTX off.
-   Menu calibration measures the current normal filter; **Full RF optimization**
-   in the web controls is a separate, longer bench operation.
-3. Select the VTX channel or use SCAN. Without a saved channel it starts on A1.
-4. For multi-board testing, use **CALIBRATE → Download calibration report** in
-   the connected web controls. This reads data without changing settings.
-   See [measurement protocol and timing evidence](docs/FASTER_CALIBRATION.md).
+1. The receiver loads saved settings or a fixed baseline; a short
+   sampling-phase check runs under the boot logo. There is no automatic
+   RF/DC sweep.
+2. If repeated measurements show a poor baseline, the menu recommends
+   **CALIBRATE**: run it on the ground, preferably with the VTX off. Full RF
+   optimization (`B` / web controls) is a separate, longer bench operation.
+3. Select the VTX channel or use SCAN (A1 without a saved channel).
+4. **CALIBRATE → Download calibration report** in the web controls exports
+   read-only board data ([protocol](docs/FASTER_CALIBRATION.md)).
 
-## Controls (BOOT button)
+## Controls
 
-| Action | Live video | Menu |
-| --- | --- | --- |
-| Short press | Next channel | Next item |
-| Hold 0.6 s | Open menu | Select item |
+**BOOT button:** short press = next channel (menu: next item); hold 0.6 s =
+open the menu (menu: select).
 
-The menu is one black-and-white settings list with every row in view:
-**BAND**, **CHANNEL**, **SCAN**, **VIDEO** (AUTO/NTSC/PAL),
-**CALIBRATE**, **OUTPUT** (0.5-5.0x), **GAIN** (AUTO/LEVEL/RSSI/MAX/fixed),
-**DAC TEST** and **EXIT**, each with its current value. A card beside the
-list keeps the frequency, signal and level in view and names what a hold
-does. Every boot shows the C5VRX logo while Direct Gain finds its first
-gain: the bar fills over 3 s (up to 4 s while the gain has not
-held yet), so live video starts on a settled gain.
-It closes after 30 seconds of
-inactivity, or five minutes in DAC TEST. Menu transitions can interrupt video.
-GAIN starts in AUTO (KEEL-1) on every boot. LEVEL and RSSI are research AGC
-models for a side-by-side comparison on your own setup (docs/FINDINGS.md,
-"AGC research"); they are simulated, not yet proven on the board.
+**Menu**, one list with every value in view: BAND, CHANNEL, SCAN, VIDEO
+(AUTO/NTSC/PAL), FILTER (AUTO/XNARROW/NARROW/NORMAL/WIDE), PHY FILT
+(digital filter mode), AFC (ON/OFF), CALIBRATE, OUTPUT (0.5–5.0x), GAIN
+(LEVEL/KEEL/RSSI/MAX/fixed), DAC TEST, EXIT. It closes after 30 s of
+inactivity (5 min in DAC TEST); entering and leaving can interrupt video.
+GAIN defaults to **LEVEL**; KEEL and RSSI are kept for comparison
+([AGC research](docs/FINDINGS.md)). The automatic models are remembered
+across reboots; MAX and fixed gains never are.
 
-## Serial console (USB, 115200)
-
-Use the web flasher's **Terminal** tab for receiver controls and logs,
-or a serial terminal at 115200 baud. Keys are case-sensitive and sent
-without Enter; `h` lists the commands supported by your firmware.
+**Serial console** (web flasher **Terminal** tab, or 115200 baud): keys are
+case-sensitive, without Enter; `h` lists what your firmware supports.
 
 | Key | Action |
 | --- | --- |
@@ -277,44 +211,32 @@ without Enter; `h` lists the commands supported by your firmware.
 | `Z` | DAC self-test (ground only) |
 | `D` / `R` | Health report / per-second field diagnostics |
 | `I` / `M` / `L` | IQ snapshot / gain map / bench IQ lane test |
-| `A` | Live analog filter/profile switching on/off (saved) |
+| `A` | Live filter/profile switching on/off (saved) |
 | `S` + suite | Bench PHY sensitivity lab, VTX on ([docs](docs/PHY_SENSITIVITY_LAB.md); ground only) |
 | `` ` `` | USB download mode |
 
-P64 always uses the same fixed program and LUT. Profiles select only the
-analog filter (DEFAULT, NARROW or WIDE); old `kp_auto` and `lp_cn` settings
-are ignored. `A` toggles experimental live profile switching (default on).
-Live OUTPUT and profile changes share a five-second
-cooldown and verified halted restart/rollback. Higher OUTPUT levels can clip.
-GAIN always starts AUTO at boot; the OUTPUT preference is saved.
-Check `T` after changing settings. Retired models remain research only.
-
-The browser terminal and flasher use the port one at a time. **Download log**
-saves the displayed output; only the latest 120,000 characters are retained.
+Live OUTPUT and profile changes share a five-second cooldown and a verified
+restart with rollback. The browser terminal and the flasher use the port one
+at a time; **Download log** saves the last 120,000 characters.
 
 ## Documentation and development
 
-- [DAC build and self-test guide](docs/hardware/dac-build-and-test.md)
-- [REV C Fat Shark carrier PCB, power diode, jumpers and fabrication files](hardware/C5VRX_JACK_DIY_V3)
-- [REV B carrier](hardware/C5VRX_JACK_DIY_V2)
-- [REV A carrier archive](hardware/C5VRX_JACK_DIY)
-- [Receiver findings and hardware evidence](docs/FINDINGS.md)
-- [Field-test protocol](docs/FIELD_TEST.md)
-- [Current receiver changes and validation](docs/PR212.md)
-- [U85Q research](docs/pr190-key-findings.md) and [research index](research/README.md)
-- [Contributing](CONTRIBUTING.md)
+- [DAC build and self-test](docs/hardware/dac-build-and-test.md) ·
+  carriers [REV C](hardware/C5VRX_JACK_DIY_V3), [REV B](hardware/C5VRX_JACK_DIY_V2), [REV A](hardware/C5VRX_JACK_DIY)
+- [Receiver findings and hardware evidence](docs/FINDINGS.md) ·
+  [field-test protocol](docs/FIELD_TEST.md) ·
+  [current receiver behaviour](docs/PR212.md)
+- [Research ledger](docs/RESEARCH_LEDGER.md) · [research index](research/README.md) ·
+  [U85Q research](docs/pr190-key-findings.md) · [contributing](CONTRIBUTING.md)
 
-`main/` contains C5VRX-5 firmware, `web/` the GitHub Pages flasher,
-`test/` host tests, `docs/` guides and findings, `research/` experiments,
-and `tools/` console and CI helpers. `legacy/` preserves C5VRX-1 through
-C5VRX-4 as reference; they are not built.
+`main/` is the C5VRX-5 firmware, `web/` the flasher, `test/` host tests,
+`docs/` guides and findings, `research/` experiments, `tools/` console and CI
+helpers; `legacy/` keeps C5VRX-1 to C5VRX-4 for reference (not built).
 
-CI runs host/research checks and builds firmware with ESP-IDF 6.0.2.
-Firmware changes publish versioned `c5vrx5-v5.0.N` releases or unmerged
-`c5vrx5-pr-N` builds. Website-only changes do not create firmware releases.
-Pages deploys the website from `main` with a same-origin firmware mirror.
-Firmware PRs need passing checks and board tests on the matching artifact;
-host tests alone do not establish picture compatibility or RF range.
+CI runs the host and research checks, builds with ESP-IDF 6.0.2 and publishes
+`c5vrx5-v5.0.N` releases from `main` and `c5vrx5-pr-N` builds for PRs;
+website-only changes create no firmware. Firmware PRs need board tests on the
+matching build: host tests do not establish picture compatibility or range.
 
 ## Community
 

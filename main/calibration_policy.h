@@ -14,6 +14,9 @@
 #define CAL_CONFIRM_BLOCKS 3u
 #define CAL_EVIDENCE_GAP_US 2000000LL
 enum { CAL_UNKNOWN, CAL_GOOD, CAL_BAD };
+/* cal_watch_t reason: the analog filter registers do not read back as set
+ * (logged as CAL_HEALTH reason=2). */
+#define CAL_REASON_FILTER 2u
 typedef struct {
     uint32_t generation;
     int64_t last_us;
