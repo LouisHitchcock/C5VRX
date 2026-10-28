@@ -14,7 +14,7 @@ def run(source):
 
 class PolicyTest(unittest.TestCase):
  def test_actual_boot_never_calibrates(self):
-  s=(ROOT/'main/calibration.c').read_text()
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
   body=s[s.index('static void calibration_boot(void)'):s.index('static void calibration_task(')]
   run(r'''
 #include <assert.h>
@@ -53,8 +53,9 @@ int main(void){
 }
 ''')
  def test_actual_dump_line_integrity_and_bounds(self):
-  s=(ROOT/'main/calibration.c').read_text()
-  body=s[s.index('typedef struct { unsigned lines; uint32_t hash; bool failed; } cal_dump_t;'):s.index('static void cal_dump_table(')]
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+  h=(ROOT/'main/calibration_internal.h').read_text()
+  body=h[h.index('typedef struct { unsigned lines;'):h.index('void cal_dump_line(')]+s[s.index('void cal_dump_line('):s.index('static void calibration_dump(void)')]
   out=run(r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -80,11 +81,11 @@ int main(void){
    for b in (payload+'\n').encode():hash_value=((hash_value^b)*16777619)&0xffffffff
   self.assertEqual(lines[2],f'END 2 {hash_value:08x}')
  def test_dump_has_no_rf_actuator(self):
-  s=(ROOT/'main/calibration.c').read_text();body=s[s.index('static void calibration_dump(void)'):s.index('static void calibration_boot(void)')]
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')));body=s[s.index('static void calibration_dump(void)'):s.index('static void calibration_boot(void)')]
   for name in ['rf_set_filter(', 'rf_set_channel(', 'receiver_set_gain(', 'phy_dco_search(', 'rx_clock_slip(', 'status_screen(', 'blob_store(']:
    self.assertNotIn(name,body)
  def test_menu_recommendation_is_latched_until_recovery(self):
-  s=(ROOT/'main/calibration.c').read_text()
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
   body=s[s.index('unsigned calibration_dc_needed('):s.index('static void dc_health_print(')]
   run(r'''
 #include <assert.h>
@@ -112,8 +113,8 @@ int main(void){char label[24];
 }
 ''')
  def test_actual_boot_phase_guard(self):
-  s=(ROOT/'main/calibration.c').read_text()
-  body=s[s.index('static bool phase_slip(void)'):s.index('static sphase_verdict_t sphase_scan_n(')]
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+  body=s[s.index('static bool phase_slip(void)'):s.index('sphase_verdict_t sphase_scan_n(')]
   run(r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -160,9 +161,10 @@ int main(void){
 ''')
 
  def test_actual_noise_dither_collection(self):
-  s=(ROOT/'main/calibration.c').read_text()
-  typedef=s[s.index('typedef struct {\n    uint32_t windows;'):s.index('static int64_t s_boot_policy_ms')]
-  body=s[s.index('static bool collect_stats('):s.index('static bool collect(unsigned windows')]
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+  h=(ROOT/'main/calibration_internal.h').read_text()
+  typedef=h[h.index('typedef struct {\n    uint32_t windows;'):h.index('/* ---- calibration.c ---- */')]
+  body=s[s.index('bool collect_stats('):s.index('bool collect(unsigned windows')]
   run(r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -202,9 +204,11 @@ int main(void){window_stats_t w;
 ''')
 
  def test_stored_dc_tables_ready_after_reboot(self):
-  s=(ROOT/'main/calibration.c').read_text()
+  s=''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+  h=(ROOT/'main/calibration_internal.h').read_text()
+  rows=h[h.index('#define DCO_ROW_OK'):h.index('extern TaskHandle_t')]
   top=s[s.index('#define DCO_VERSION'):s.index('static void dco_load_table(const dco_want_t *w);')]
-  ready=s[s.index('#define DCO_READY_MAX'):s.index('static void dco_startup_profiles(')]
+  ready=s[s.index('#define DCO_READY_MAX'):s.index('void dco_startup_profiles(')]
   run(r'''
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -250,7 +254,7 @@ static bool blob_load(const char *k, void *d, size_t n) {
   if (s_nvs[i].size == n && !strcmp(s_nvs[i].key, k)) { memcpy(d, s_nvs[i].data, n); return true; }
  return false;
 }
-''' + top + ready + r'''
+''' + rows + top + ready + r'''
 static void save_filter(rf_filter_t f, bool complete, bool templ, bool bad) {
  s_live = f; s_dco_serving = live_filter_key(); s_dco_serving_valid = true;
  memset(&s_dco, 0, sizeof(s_dco)); memset(s_dco_templ, 0, sizeof(s_dco_templ));

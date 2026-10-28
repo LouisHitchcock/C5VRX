@@ -1,5 +1,5 @@
 /* C5VRX by Twotoz/contributors: bounded live-carrier DC trial decisions.
- * The actual caller is calibration.c drift_service; no per-sample CPU path. */
+ * The actual caller is calibration_dc.c drift_service; no per-sample CPU path. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

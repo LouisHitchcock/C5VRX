@@ -169,7 +169,7 @@ video_standard_t menu_standard(void);
 void control_print(void);
 void control_print_beat(void);   /* STATUS line every 2 s (console.c) */
 
-/* ---- calibration.c ---- */
+/* ---- calibration*.c (module-internal: calibration_internal.h) ---- */
 void calibration_start(void);
 bool filter_calibrate(bool automatic);
 void filter_request(void);
@@ -224,7 +224,7 @@ bool receiver_noise_learned(void);
 void receiver_pair_sweep_toggle(void);   /* bench, console Q */
 #include "cn_auto.h"
 cna_reading_t receiver_cn_reading(void);   /* C/N-AUTO: value, confidence, source */
-void receiver_cn_noise_store(uint8_t row, float cells2);   /* startup noise map (calibration.c) */
+void receiver_cn_noise_store(uint8_t row, float cells2);   /* startup noise map (calibration_dc.c) */
 void receiver_cn_noise_save(void);
 /* The startup noise map as the gain table (noise per row, 0 = not measured). */
 void receiver_gain_table_measured(const float noise_cells2[DG_STATES]);

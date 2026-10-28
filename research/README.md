@@ -688,7 +688,7 @@ the table maximum, where a clean position already reads ~725 (board,
 intrinsic broadband noise), and a phase that drifts there in flight was
 only reported until the next boot.
 
-**Firmware (`main/sphase_logic.h`, `calibration.c`, `test/test_sphase.c`).**
+**Firmware (`main/sphase_logic.h`, `calibration_sphase.c`, `test/test_sphase.c`).**
 On the carrier (burst-confirmed sync, Direct Gain >= 6 steps below the
 table maximum):
 - *Choose:* the first carrier window of a boot (or the final startup step

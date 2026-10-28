@@ -98,7 +98,7 @@ int main(void) {
 ''')
 
     def test_actual_filter_measurement(self):
-        source = (ROOT / 'main/calibration.c').read_text()
+        source = ''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
         body = source[source.index('static bool measure_setting('):source.index('/* A channel is quiet')]
         run_c(r'''
 #include <assert.h>
@@ -155,8 +155,8 @@ int main(void) {
 ''')
 
     def test_actual_sampling_scan(self):
-        source = (ROOT / 'main/calibration.c').read_text()
-        body = source[source.index('static sphase_verdict_t sphase_scan_n('):source.index('static sphase_live_t s_sphase_live')]
+        source = ''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+        body = source[source.index('sphase_verdict_t sphase_scan_n('):source.index('static sphase_live_t s_sphase_live')]
         run_c(r'''
 #include <assert.h>
 #include <stdio.h>
@@ -202,8 +202,8 @@ int main(void) {
 ''')
 
     def test_actual_noise_cache(self):
-        source = (ROOT / 'main/calibration.c').read_text()
-        body = source[source.index('static void noise_map_startup('):source.index('/* Manual F: characterize', source.index('static void noise_map_startup('))]
+        source = ''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+        body = source[source.index('void noise_map_startup('):source.index('/* One-sided clipping', source.index('void noise_map_startup('))]
         run_c(r'''
 #include <assert.h>
 #include <stdio.h>
@@ -257,8 +257,8 @@ int main(void) {
 ''')
 
     def test_actual_deviation_wait(self):
-        source = (ROOT / 'main/calibration.c').read_text()
-        body = source[source.index('#define DEVIATION_WAIT_US'):source.index('/* C/N-AUTO noise map')]
+        source = ''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
+        body = source[source.index('#define DEVIATION_WAIT_US'):source.index('static void calib_record(bool manual, int64_t t0);')]
         run_c(r'''
 #include <assert.h>
 #include <stdio.h>

@@ -377,7 +377,7 @@ void receiver_level_feed(const uint8_t *window, size_t bytes)
  * The C/N every consumer reads (AFC, profile gates, flight
  * log), self-calibrating and with a confidence:
  * - noise per gain row for this channel and filter: measured at startup
- *   with no carrier (calibration.c), learned in service only on no-carrier
+ *   with no carrier (calibration_dc.c), learned in service only on no-carrier
  *   evidence (envelope kurtosis + level + no video for 2 s), kept in NVS;
  * - power around each row's long-term DC (not the window mean);
  * - M2M4 and envelope (cn_estimate.h) as diagnostics only. Actuators use
@@ -516,7 +516,7 @@ void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }
  * (dg_apply_measured_gain). Applied by the observer task, the core's only
  * writer, after every map change and every re-bind. */
 /* The gain table comes from the startup noise map only (no carrier,
- * kurtosis-checked, calibration.c): the gain per row does not depend on the
+ * kurtosis-checked, calibration_dc.c): the gain per row does not depend on the
  * channel or the analog filter, so it is kept for the whole boot and stored
  * ("gtab") for a boot with the VTX on. The live map is not used: it follows
  * the channel and filter (measured_rows=0 after a profile switch, board

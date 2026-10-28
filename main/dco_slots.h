@@ -7,7 +7,7 @@
  * blobs ("dco0".."dco5", bounded NVS use, no erase needed) with a small
  * index of their frequencies and use order. A frequency without its own
  * table starts from the nearest stored one: the baseband offset per gain
- * row changes little across the band (calibration.c), and the live drift
+ * row changes little across the band (calibration_dc.c), and the live drift
  * nudges trim the rest. The first measured table is thus the template for
  * every channel. Per row, the index remembers which rows of a channel still
  * come from a template; a measurement on the own channel (VTX off at boot,
@@ -34,7 +34,7 @@ typedef struct {
     uint16_t filt[DCO_SLOTS];   /* dco_filter_key() of the slot's table */
 } dco_index_t;
 
-/* Version 2 layout, for the one-time upgrade (calibration.c). */
+/* Version 2 layout, for the one-time upgrade (calibration_dc.c). */
 typedef struct {
     uint16_t version;
     uint16_t freq[DCO_SLOTS], seq[DCO_SLOTS], next_seq;
@@ -139,7 +139,7 @@ static inline void dco_index_touch(dco_index_t *x, unsigned slot, uint16_t freq,
  * normal filter and kept a DC of (-0.9, -3.6) cells against 0.68 cells of
  * receiver noise per axis, which also parked Direct Gain at G71. A table
  * from another filter is re-measured at startup like a manual CALIBRATE of
- * the DC rows (calibration.c dco_startup). */
+ * the DC rows (calibration_dc.c dco_startup). */
 static inline bool dco_filter_same(int table_code, int table_skirt, unsigned table_bw20, int code, int skirt,
                                    unsigned bw20)
 {

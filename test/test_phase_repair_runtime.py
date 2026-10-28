@@ -70,9 +70,9 @@ int main(void) {
 
 class PhaseRepairTest(unittest.TestCase):
     def test_production_repair(self):
-        source = (ROOT / 'main/calibration.c').read_text()
+        source = ''.join(p.read_text() for p in sorted((ROOT/'main').glob('calibration*.c')))
         begin = source.index('#define PHASE_REPAIR_EXCESS')
-        end = source.index('/* VTX deviation', begin)
+        end = source.index('uint8_t sphase_code(void)', begin)
         with tempfile.TemporaryDirectory() as directory:
             c = Path(directory) / 'repair.c'
             binary = Path(directory) / 'repair'
