@@ -47,6 +47,16 @@
  * and only beyond the window (a smaller "radius" is noise peaks folding). */
 #define FOLD_FIT_MIN    (-(FOLD_SCALE * 16 / 5))
 #define FOLD_R_MIN_X16  (8 * 16)
+/* Whether LEVEL acts on the fold radius. Off: measured and logged only
+ * (attack events). Board walk 290 with it on: the steps down from G77 and
+ * below grew from one home row (median 3 rows) to 9, but LEVEL then climbed
+ * back (releases 50 -> 90 per walk) and folded again within ~80 ms; folds
+ * and video were unchanged and -85..-80 dBm read 46 % against 68-77 %. The
+ * radius it took is logged so the next walk can tell an overestimate from a
+ * release too early. Host: -DLEVEL_FOLD_RADIUS=1 (test_agc_compare). */
+#ifndef LEVEL_FOLD_RADIUS
+#define LEVEL_FOLD_RADIUS 0
+#endif
 
 /* RSSI parameters. */
 #ifndef RSSI_DECIDE_US
@@ -213,7 +223,7 @@ uint8_t agc_level_tick(agc_level_t *a, const dg_observation_t *o, uint8_t curren
     const int rel = a->rel_q8[current];
     const uint32_t noise = a->noise_x16[current];
     if (agc_folded(o)) {
-        if (o->fold_r_x16) {
+        if (LEVEL_FOLD_RADIUS && o->fold_r_x16) {
             /* The carrier's own radius, unfolded (agc_level_fold_radius): one
              * decision goes to the row that fits. The window's power reads
              * low, several dB under the carrier, and the old estimate below
@@ -317,8 +327,11 @@ static inline unsigned fold_class(uint8_t b)
  * folded or not. Host model: exact to the 0.25-cell step for noise up to
  * 0.7 cells per axis, radii 4-24 cells, 64 or 256 samples. Integer only;
  * ~7500 multiply-adds, run on folded windows only. */
-uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current)
+uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current,
+                               uint16_t *raw_x16, int8_t *fit_out)
 {
+    if (raw_x16) *raw_x16 = 0;
+    if (fit_out) *fit_out = INT8_MIN;
     if (!a->homes || current > a->max_index || !n) return 0;
     /* noise_x16 is cells^2 x16 for both axes; per axis sigma^2 x256 = 8 x it */
     const uint32_t var_x256 = 8u * a->noise_x16[current];
@@ -337,8 +350,12 @@ uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, uns
     }
     const int32_t fit = best * 16 / (int32_t)n - fold_expect[s][best_r];
     const unsigned r_x16 = FOLD_R0_X16 + best_r * FOLD_R_STEP_X16;
+    if (raw_x16) *raw_x16 = (uint16_t)r_x16;
+    if (fit_out) *fit_out = (int8_t)(fit < -127 ? -127 : fit > 127 ? 127 : fit);
     return fit >= FOLD_FIT_MIN && r_x16 >= FOLD_R_MIN_X16 ? (uint16_t)r_x16 : 0;
 }
+
+bool agc_level_fold_radius_used(void) { return LEVEL_FOLD_RADIUS != 0; }
 
 /* ---- RSSI ---- */
 

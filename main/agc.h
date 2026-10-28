@@ -73,8 +73,13 @@ void agc_level_reset(agc_level_t *a, const int16_t row_db_q8[DG_STATES], uint8_t
 uint8_t agc_level_tick(agc_level_t *a, const dg_observation_t *o, uint8_t current, uint64_t now_us);
 /* The carrier radius of a folded window at row `current`, cells x16, for
  * dg_observation_t.fold_r_x16; 0 when the window is no clear circle over
- * the 4-bit window or the row's noise is too high to tell (agc.c). */
-uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current);
+ * the 4-bit window or the row's noise is too high to tell (agc.c). raw_x16
+ * and fit (optional) receive the best radius before the fit check and the
+ * fit (fold_fit units); raw 0 when the row was too noisy to estimate. */
+uint16_t agc_level_fold_radius(const agc_level_t *a, const uint8_t *samples, unsigned n, uint8_t current,
+                               uint16_t *raw_x16, int8_t *fit);
+/* Whether LEVEL acts on the fold radius (LEVEL_FOLD_RADIUS, agc.c) or only logs it. */
+bool agc_level_fold_radius_used(void);
 
 void agc_rssi_reset(agc_rssi_t *a, const int16_t row_db_q8[DG_STATES], uint8_t max_index);
 uint8_t agc_rssi_tick(agc_rssi_t *a, const dg_observation_t *o, uint8_t current, uint64_t now_us);

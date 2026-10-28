@@ -127,7 +127,14 @@ uptime (ms) and type, then:
   unlock that remains continuously observed for at least 100 ms;
 - **dropout onset**: the existing 16-before/16-after trace at 50 ms
   (`diag_trace.h`), and its end with duration;
-- snapshot taken (index, trigger).
+- snapshot taken (index, trigger);
+- **gain step down** (`attack`, at most 4 a second): source (observer or
+  sentinel), from and to row, the window's P95/P50, clip and rails, time since
+  the previous write; since 2026-10-28 also that window's fold radius
+  (agc_level_fold_radius): the radius LEVEL could take (x16 cells, 0 none),
+  the best radius before the fit check (0: the row too noisy to estimate) and
+  the fit (1/192 nat per sample, taken at >= -38). LEVEL logs it only
+  (`LEVEL_FOLD_RADIUS` 0 in agc.c).
 
 ## IQ snapshots (64 x 8 KiB ring)
 

@@ -73,7 +73,21 @@ Other scenarios within +-0.6 points; the edge is unchanged. With 3 dB of
 gain-model error LEVEL falls under KEEL-1 at the edge (39.9 against 41.2 %
 at 3 dB C/N, 9 writes a second at 6 dB): the board measures 13 rows from
 receiver noise and models the rest, so a measured row table is the next
-step. Board walk pending.
+step.
+
+**Board walk 290 with LEVEL acting on it: no gain, so LEVEL only logs it.**
+Steps down from G77 and below (where the row noise allows an estimate) grew
+from one home row (median 3 rows, 14 % over several homes, walk 286) to a
+median 9 rows (59 %): the radius is used. But LEVEL climbed back (releases
+50 -> 90 per walk, folds a median 77 ms after the previous write against
+107) and folded again: folds at > -78 dBm 14.0/s (14.5 and 12.3 in walks 286
+and 288), video while the gain moved 70.8 % (73.2, 71.3), and -85..-80 dBm
+46 % (n=26) against 77 % (n=8) and 68 % (n=18). Either the radius
+overestimates on board IQ (the 0.7-cell table separates noise from a circle
+far less than the 0.35-cell one) or LEVEL's 200 ms history pulls it back to
+the pre-fold rows. `LEVEL_FOLD_RADIUS` is 0: LEVEL reads folds as before,
+and every attack event carries the radius it could have taken, the best one
+before the fit check and the fit, to tell the two apart on the next walk.
 
 ## DC fault after a walk: vendor bank 1 copied into the hold (board, 2026-10-27)
 

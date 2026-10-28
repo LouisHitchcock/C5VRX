@@ -145,12 +145,16 @@ static uint8_t agc_decision(uint8_t mode, const dg_observation_t *o)
                                    : agc_rssi_tick(&s_agc.rssi, o, s_current_gain, o->observed_us);
 }
 
-/* LEVEL reads a folded window by its carrier radius (agc_level_fold_radius);
- * only folded windows pay for the estimate. */
+/* The carrier radius of a folded window on LEVEL (agc_level_fold_radius),
+ * for LEVEL and the attack events; only folded windows pay for it. */
+static uint32_t s_fold_taken, s_fold_rejected, s_fold_noisy;
 static void fold_measure(dg_observation_t *o, const uint8_t *samples, unsigned n)
 {
-    if (s_gain_mode == GAIN_MODE_LEVEL && s_agc_mode == GAIN_MODE_LEVEL && agc_folded(o))
-        o->fold_r_x16 = agc_level_fold_radius(&s_agc.level, samples, n, s_current_gain);
+    if (s_gain_mode != GAIN_MODE_LEVEL || s_agc_mode != GAIN_MODE_LEVEL || !agc_folded(o)) return;
+    o->fold_r_x16 = agc_level_fold_radius(&s_agc.level, samples, n, s_current_gain, &o->fold_raw_x16, &o->fold_fit);
+    if (o->fold_r_x16) ++s_fold_taken;
+    else if (o->fold_raw_x16) ++s_fold_rejected;
+    else ++s_fold_noisy;
 }
 
 /* Fixed modes bypass the controller; apply_target clamps to the live table. */
@@ -220,7 +224,9 @@ static uint32_t s_rebinds;
  * milliseconds later (blackbox session 32: every overload snapshot was
  * clean). Bytes: source (0 observer, 1 sentinel), from, to, saturated run
  * (1) or folding (0), us since the last write / 10 (u16), P95, clip per
- * mille / 4, rails, P50. */
+ * mille / 4, rails, P50; since 2026-10-28 the fold radius of that window
+ * (LEVEL, agc_level_fold_radius): taken radius x16 (u16, 0 none), best
+ * radius x16 before the fit check (u16, 0 not estimated), fit (s8). */
 static void attack_record(const dg_observation_t *o, uint8_t source, uint8_t from, uint32_t severe_before)
 {
     static int64_t window_us;
@@ -231,9 +237,10 @@ static void attack_record(const dg_observation_t *o, uint8_t source, uint8_t fro
     if (++in_window > 4u) return;
     const int64_t since = s_gain_epoch ? (int64_t)o->observed_us - s_attack_prev_write_us : 0;
     const uint32_t since10 = since < 0 ? 0u : since / 10 > 65535 ? 65535u : (uint32_t)(since / 10);
-    const uint8_t d[10] = {source, from, s_current_gain, (uint8_t)(s_gain.saturated_run ? 1u : 0u),
+    const uint8_t d[15] = {source, from, s_current_gain, (uint8_t)(s_gain.saturated_run ? 1u : 0u),
                            (uint8_t)since10, (uint8_t)(since10 >> 8), o->p95, (uint8_t)(o->clip_pm / 4u > 255u ? 255u : o->clip_pm / 4u),
-                           o->rails, o->p50};
+                           o->rails, o->p50, (uint8_t)o->fold_r_x16, (uint8_t)(o->fold_r_x16 >> 8),
+                           (uint8_t)o->fold_raw_x16, (uint8_t)(o->fold_raw_x16 >> 8), (uint8_t)o->fold_fit};
     flightlog_event(FLOG_E_ATTACK, d, sizeof(d));
 }
 static void gain_map_bind(const dg_map_context_t *context, uint32_t control, uint32_t phy, uint32_t table)
@@ -934,10 +941,12 @@ void receiver_start(void)
 void receiver_print(void)
 {
     if (s_gain_mode == GAIN_MODE_LEVEL)
-        printf("AGC model=LEVEL decisions=%lu moves=%lu folds=%lu learned=%lu jumps=%lu (agc.c; rows corrected from the "
-               "level before/after a move; jumps: the fast history took over)\n", (unsigned long)s_agc.level.decisions,
-               (unsigned long)s_agc.level.moves, (unsigned long)s_agc.level.folds, (unsigned long)s_agc.level.learned,
-               (unsigned long)s_agc.level.jumps);
+        printf("AGC model=LEVEL decisions=%lu moves=%lu folds=%lu learned=%lu jumps=%lu fold_radius=%lu/%lu/%lu "
+               "(agc.c; rows corrected from the level before/after a move; jumps: the fast history took over; "
+               "fold_radius taken/rejected/row too noisy, logged in attack events, used by LEVEL=%u)\n",
+               (unsigned long)s_agc.level.decisions, (unsigned long)s_agc.level.moves, (unsigned long)s_agc.level.folds,
+               (unsigned long)s_agc.level.learned, (unsigned long)s_agc.level.jumps, (unsigned long)s_fold_taken,
+               (unsigned long)s_fold_rejected, (unsigned long)s_fold_noisy, (unsigned)agc_level_fold_radius_used());
     else if (s_gain_mode == GAIN_MODE_RSSI)
         printf("AGC model=RSSI moves=%lu folds=%lu (agc.c)\n", (unsigned long)s_agc.rssi.moves,
                (unsigned long)s_agc.rssi.folds);

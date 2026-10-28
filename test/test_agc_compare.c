@@ -288,9 +288,9 @@ static result_t run(const scenario_t *sc, uint32_t seed, ctl_t ctl, int fixed_ro
         uint8_t target = applied;
         if (ctl != C_STATIC) {
             dg_observation_t o = observe(lv, applied, t);
-#ifndef NO_FOLD_RADIUS   /* -DNO_FOLD_RADIUS: LEVEL as before agc_level_fold_radius */
-            if (ctl == C_LEVEL && agc_folded(&o)) o.fold_r_x16 = agc_level_fold_radius(&s_lv, b, sizeof(b), applied);
-#endif
+            /* As receiver.c fold_measure; LEVEL acts on it with -DLEVEL_FOLD_RADIUS=1 only. */
+            if (ctl == C_LEVEL && agc_folded(&o))
+                o.fold_r_x16 = agc_level_fold_radius(&s_lv, b, sizeof(b), applied, &o.fold_raw_x16, &o.fold_fit);
             target = ctl == C_KEEL ? dg_tick(&g, &o) : ctl == C_LEVEL ? agc_level_tick(&s_lv, &o, applied, t)
                                                                       : agc_rssi_tick(&s_rs, &o, applied, t);
         }

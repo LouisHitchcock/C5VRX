@@ -61,7 +61,7 @@ int main(void)
             for (unsigned ri = 0; ri < sizeof(radii) / sizeof(radii[0]); ++ri)
                 for (unsigned t = 0; t < 100; ++t, ++total) {
                     carrier(b, sizes[ni], radii[ri], sigmas[si], 0.3 * gauss(), 0.3 * gauss());
-                    const uint16_t r = agc_level_fold_radius(&s_a, b, sizes[ni], 40);
+                    const uint16_t r = agc_level_fold_radius(&s_a, b, sizes[ni], 40, NULL, NULL);
                     if (!r) ++none;
                     else if (fabs(r / 16.0 - radii[ri]) <= 0.5) ++good;
                 }
@@ -73,7 +73,7 @@ int main(void)
     /* An unfolded carrier is no evidence of being over the window. */
     row_noise(0.3);
     unsigned small = 0;
-    for (unsigned t = 0; t < 200; ++t) { carrier(b, 256, 5.0, 0.3, 0, 0); small += agc_level_fold_radius(&s_a, b, 256, 40) != 0; }
+    for (unsigned t = 0; t < 200; ++t) { carrier(b, 256, 5.0, 0.3, 0, 0); small += agc_level_fold_radius(&s_a, b, 256, 40, NULL, NULL) != 0; }
     printf("radius 5 (inside the window): %u of 200 estimated\n", small);
     if (small) { printf("FAIL estimate inside the window\n"); ++fail; }
     /* Noise clouds and a DC-pushed cloud on a quiet row: no circle. */
@@ -81,14 +81,14 @@ int main(void)
         {4.0, 0, 0, "noise 4 cells"}, {8.0, 0, 0, "noise 8 cells"}, {2.1, 4.1, -3.7, "noise 2.1 + DC 4.1/-3.7"}};
     for (unsigned c = 0; c < 3; ++c) {
         unsigned took = 0;
-        for (unsigned t = 0; t < 200; ++t) { cloud(b, 256, clouds[c].sigma, clouds[c].di, clouds[c].dq); took += agc_level_fold_radius(&s_a, b, 256, 40) != 0; }
+        for (unsigned t = 0; t < 200; ++t) { cloud(b, 256, clouds[c].sigma, clouds[c].di, clouds[c].dq); took += agc_level_fold_radius(&s_a, b, 256, 40, NULL, NULL) != 0; }
         printf("%-26s: %3u of 200 taken as a carrier\n", clouds[c].name, took);
         if (took > 4) { printf("FAIL noise taken as a carrier\n"); ++fail; }
     }
     /* A row too noisy to tell: no estimate at all. */
     row_noise(1.5);
     carrier(b, 256, 12.0, 1.5, 0, 0);
-    if (agc_level_fold_radius(&s_a, b, 256, 40)) { printf("FAIL estimate on a noisy row\n"); ++fail; }
+    if (agc_level_fold_radius(&s_a, b, 256, 40, NULL, NULL)) { printf("FAIL estimate on a noisy row\n"); ++fail; }
     printf("%s: fold radius checks\n", fail ? "FAIL" : "PASS");
     return fail != 0;
 }
