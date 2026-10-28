@@ -207,7 +207,10 @@ void phase_service(void)
     const int before = s_sphase_excess;
     ++s_phase_repairs;
     const sphase_verdict_t v = sphase_scan();
-    s_sphase_state = v == SPHASE_SETTLED ? "settled" : "unverified";
+    /* NOISE_LIMITED: every position reads the same noise, no slip and no
+     * fault (it used to read unverified and stop the DC servo). It keeps the
+     * failure backoff: another scan would only pause the receiver again. */
+    s_sphase_state = v == SPHASE_SETTLED ? "settled" : v == SPHASE_NOISE_LIMITED ? "noise_limited" : "unverified";
     if (v == SPHASE_SETTLED) {
         backoff_us = PHASE_REPAIR_BACKOFF_US;
         next_us = now + 10000000LL;

@@ -1102,8 +1102,9 @@ void servo_service(void)
     /* A sampling phase that reads mixed IQ bits turns every mean into noise
      * of its own: board 2026-10-26, one boot in five came up unverified
      * (excess 1883 against 300) and the servo walked I to its -96 limit with
-     * the IQ fully clipped. Correct DC only on a settled phase; F repairs it. */
-    if (strcmp(s_sphase_state, "settled")) {
+     * the IQ fully clipped. Correct DC only on a settled phase; F repairs it.
+     * NOISE_LIMITED is no phase fault (every position reads the same noise). */
+    if (!calibration_sphase_settled()) {
         if (!s_servo_phase_hold) dc_servo_forget_all(&s_servo);
         s_servo_phase_hold = true;
         ++s_servo_skip[2];
@@ -1271,7 +1272,7 @@ void drift_service(void)
         s_cal_notice = true;
         s_cal_notice_freq = rf_frequency_mhz(); s_cal_notice_key = live_filter_key(); s_cal_notice_gain = s_current_gain;
         if (!already) printf("CAL_NEEDED reason=%s dc_mcells=%d/%d action=MENU_CALIBRATE auto_cal=0\n",
-                             mismatch > 0 ? "filter_readback" : strcmp(s_sphase_state, "settled") ? "sampling_phase" :
+                             mismatch > 0 ? "filter_readback" : !calibration_sphase_settled() ? "sampling_phase" :
                              persistent ? "dc_servo_failed" : "dc_servo_limit",
                              w.dc_i, w.dc_q);
     } else if (s_basemap_watch.state == CAL_GOOD && s_cal_notice && s_cal_notice_gain == s_current_gain &&
@@ -1280,10 +1281,18 @@ void drift_service(void)
         printf("CAL_HEALTH state=good recommendation=cleared auto_cal=0\n");
     }
     /* A high absolute HF statistic alone is intrinsic noise or phase mixing,
-     * not enough evidence to label the base map bad. No automatic slips. */
+     * not enough evidence to label the base map bad. No automatic slips.
+     * A clean block proves the phase (a mixing read cannot read low); a high
+     * one does not disprove it, so it never demotes the verdict: receiver
+     * noise on the top rows reads ~725 on a clean position (limit 300), and
+     * every block there used to mark the phase unverified, which stopped the
+     * DC servo on exactly the rows of the range edge (blackbox session 286:
+     * G83 without a carrier, 2.4-4.2 cells of DC for 12 s, 0 servo writes,
+     * until a gain change). Demotion is a scan's verdict (phase_service,
+     * sphase_qualify, the carrier scans). */
     if (copied && w.windows == 24u && !menu_splash_active()) {
         (void)sphase_record(&w);
-        s_sphase_state = s_sphase_excess < (carrier ? SPHASE_LIVE_LIMIT : SPHASE_LIMIT) ? "settled" : "unverified";
+        if (s_sphase_excess < (carrier ? SPHASE_LIVE_LIMIT : SPHASE_LIMIT)) s_sphase_state = "settled";
     }
 }
 

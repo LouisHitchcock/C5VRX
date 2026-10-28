@@ -30,6 +30,7 @@ static unsigned s_health_blocks,s_health_rejected;
 static int64_t s_health_us,s_last_gain_write_us;
 static int s_drift_avg[2],s_sphase_excess;
 static const char *s_sphase_state="unverified";
+static bool calibration_sphase_settled(void){return !strcmp(s_sphase_state,"settled")||!strcmp(s_sphase_state,"noise_limited");}
 static bool s_dc_urgent,s_startup,s_scan_active,s_menu_active;
 static bool paused,busy,splash,copy_ok=true,qualified=true,dither=true,video,circle,change_context;
 static int measured_i,measured_q,mismatch,phase=20;
@@ -82,7 +83,13 @@ int main(void){
  qualified=dither=true;copy_ok=false;tick();tick();assert(warnings==1);
  copy_ok=true;change_context=true;tick();tick();assert(warnings==1);change_context=false;
  ++context;measured_i=0;phase=900;tick();tick();tick();
- assert(warnings==1 && !strcmp(s_sphase_state,"unverified")); /* high HF is not proof of bad map */
+ /* High HF is no proof of a bad map, and no proof of a bad phase either:
+  * receiver noise on the top rows reads ~725 on a clean position. It never
+  * demotes the verdict (that stopped the DC servo, blackbox session 286);
+  * only a clean block promotes one. */
+ assert(warnings==1 && !strcmp(s_sphase_state,"settled"));
+ s_sphase_state="unverified";tick();tick();assert(!strcmp(s_sphase_state,"unverified"));
+ phase=20;tick();assert(!strcmp(s_sphase_state,"settled"));phase=900;
  /* Hardware readback is independently qualified even without a valid DC cloud. */
  ++context;copy_ok=false;mismatch=2;tick();tick();tick();assert(warnings==2);
  mismatch=0;copy_ok=qualified=true;measured_i=0;tick();tick();tick();
